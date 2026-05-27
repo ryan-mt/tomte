@@ -30,7 +30,21 @@ impl BuiltinTool for Grep {
 \n\
 Output format: one match per line, `path:lineno:content`. Output is capped at ~8000 bytes; refine the pattern, narrow with `glob`, or scope with `path` if you need to see more.\n\
 \n\
-Use this when you want to know *where* something appears. Prefer `glob` when you only need filenames matching a pattern. Prefer `read_file` when you already know the file and want full contents.\n\
+When to use:\n\
+- \"Where is X used / defined / referenced\" across the codebase.\n\
+- Finding every TODO/FIXME, every call site of a function, every import of a module.\n\
+- Narrowing a search with `glob` (e.g. `\"*.test.ts\"`) when you only care about a file type.\n\
+\n\
+When NOT to use:\n\
+- Enumerate matching paths only — use `glob`, it's cheaper.\n\
+- Full contents of one known file — use `read_file`.\n\
+- Shell-style `grep -r`/`find -exec grep` — use this tool instead; it's faster and structured.\n\
+\n\
+Pattern tips:\n\
+- Use word boundaries (`\\b`) or anchored matches to avoid noise: `\\bfoo\\b` instead of `foo`.\n\
+- Combine with `glob` to skip vendored code (`*.rs`, `!target/**`).\n\
+- Patterns are extended regex (ripgrep flavor); `^`, `$`, `|`, `()`, `?`, `+`, `*`, `[...]` all work.\n\
+- Patterns starting with `-` need `--` escaping — write them like `\\-flag` or pass them through `path`.\n\
 \n\
 Parameters:\n\
 - `pattern`: Regex to search for (ripgrep / grep -E syntax).\n\
@@ -109,7 +123,21 @@ impl BuiltinTool for Glob {
     fn description(&self) -> &'static str {
         "List files whose path matches a glob pattern. Supports `**` for recursive matches (e.g. `**/*.rs`, `src/**/*.test.ts`). Respects `.gitignore` when ripgrep is available.\n\
 \n\
-Use this to enumerate matching files when you already know the file shape but not where they live. For content search use `grep`.\n\
+When to use:\n\
+- Enumerate matching files when you know the shape (extension, name pattern) but not the location.\n\
+- Discover where a file type lives — \"all `*.test.ts`\", \"every `Cargo.toml`\".\n\
+- Build a list of candidates before bulk reads or edits.\n\
+\n\
+When NOT to use:\n\
+- Content search — use `grep`.\n\
+- One specific known path — use `read_file` directly.\n\
+- Listing immediate children of one directory — use `list_dir`.\n\
+\n\
+Pattern examples:\n\
+- `**/*.rs` — every Rust file in the project.\n\
+- `src/**/*.tsx` — every TSX file under src/.\n\
+- `Cargo.toml` — match by exact basename anywhere.\n\
+- `**/test_*.py` — every Python test file.\n\
 \n\
 Parameters:\n\
 - `pattern`: Glob pattern. `**` matches any depth; `*` matches one path segment.\n\

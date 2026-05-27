@@ -48,12 +48,30 @@ impl BuiltinTool for RunShell {
     fn description(&self) -> &'static str {
         "Run a shell command via `sh -c` in the working directory. Returns combined exit code, stdout, and stderr in a single string.\n\
 \n\
-Use this for builds, tests, formatters, version checks, package managers, git operations, and any other one-shot CLI invocation. Prefer the dedicated tools (`read_file`, `grep`, `glob`, `list_dir`) over their shell equivalents (`cat`, `grep`, `find`, `ls`) — they are faster and return structured output.\n\
+When to use:\n\
+- Builds and tests: `cargo build`, `cargo test`, `npm test`, `pytest`, `go test ./...`.\n\
+- Formatters and linters: `cargo fmt`, `prettier`, `eslint`, `black`.\n\
+- Git operations the user asked for: `git status`, `git diff`, `git log`, `git add`, `git commit`.\n\
+- Package managers: `pnpm add`, `cargo add`, `pip install`.\n\
+- One-shot scripts and binaries the user provides.\n\
+\n\
+When NOT to use (use the dedicated tool instead — faster, structured):\n\
+- `cat file` → `read_file`\n\
+- `grep -rn pattern .` → `grep`\n\
+- `find . -name '*.rs'` → `glob`\n\
+- `ls path` → `list_dir`\n\
+- Editing a file via `sed -i`/`awk` → `edit_file` or `multi_edit`\n\
 \n\
 Safety:\n\
 - Default timeout is 120 seconds. Pass `timeout_ms` for long-running commands. On timeout the child process is sent SIGKILL.\n\
 - Environment variables that look like secrets (names containing TOKEN, SECRET, KEY, OPENAI, AWS_, GITHUB_, etc.) are stripped from the child process.\n\
-- Never run destructive commands (rm -rf, force-push, dropping tables, etc.) unless the user explicitly asked.\n\
+- Never run destructive commands (`rm -rf`, `git reset --hard`, force-push, dropping tables, etc.) unless the user explicitly asked.\n\
+- Network commands (curl, wget) are allowed but prefer `web_fetch` for HTTP — it has stricter limits and won't pull in unexpected redirects.\n\
+\n\
+Common mistakes:\n\
+- Forgetting to quote paths with spaces — wrap them in single quotes.\n\
+- Pipelines without `set -o pipefail` swallow upstream failures; check intermediate exit codes when it matters.\n\
+- Long-running interactive commands (REPLs, watchers) will block until timeout — only run non-interactive commands.\n\
 \n\
 Parameters:\n\
 - `command`: Shell command to execute. Quote arguments that contain spaces.\n\
