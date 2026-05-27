@@ -4,13 +4,14 @@ pub mod shell;
 pub mod todo;
 pub mod web;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 
 use crate::openai::{Tool, ToolFunctionDef};
 
@@ -65,11 +66,53 @@ pub struct TodoItem {
     pub active_form: String,
 }
 
+/// Status of a background shell command. Returned as part of every
+/// `bash_output` poll so the model can tell when a job has finished.
+#[derive(Debug, Clone)]
+pub enum BgStatus {
+    Running,
+    Exited(i32),
+    Killed,
+    Error(String),
+}
+
+impl BgStatus {
+    pub fn label(&self) -> String {
+        match self {
+            BgStatus::Running => "running".into(),
+            BgStatus::Exited(c) => format!("exited({c})"),
+            BgStatus::Killed => "killed".into(),
+            BgStatus::Error(e) => format!("error({e})"),
+        }
+    }
+    pub fn is_terminal(&self) -> bool {
+        !matches!(self, BgStatus::Running)
+    }
+}
+
+/// Handle to a background shell command spawned by `run_shell {run_in_background: true}`.
+/// Lives inside `SessionState.background_shells` so the model can later poll
+/// output via `bash_output` or terminate via `kill_shell`.
+#[derive(Debug)]
+pub struct BackgroundShellState {
+    pub command: String,
+    pub started_at_ms: u64,
+    pub stdout: Mutex<Vec<u8>>,
+    pub stderr: Mutex<Vec<u8>>,
+    pub status: Mutex<BgStatus>,
+    /// Read cursors so successive `bash_output` calls only return new bytes.
+    pub stdout_cursor: Mutex<usize>,
+    pub stderr_cursor: Mutex<usize>,
+    /// `Some` while the child is alive; `None` after termination or kill.
+    pub kill_tx: Mutex<Option<oneshot::Sender<()>>>,
+}
+
 /// Per-session mutable state that tools can read or write. Lives behind an
 /// Arc<Mutex<>> so it survives across turns and across concurrent tool calls.
 #[derive(Debug, Default)]
 pub struct SessionState {
     pub todos: Vec<TodoItem>,
+    pub background_shells: HashMap<String, Arc<BackgroundShellState>>,
 }
 
 /// Per-call execution context: working directory, approval policy, and a
@@ -129,6 +172,8 @@ impl Registry {
                 Box::new(search::Grep),
                 Box::new(search::Glob),
                 Box::new(shell::RunShell),
+                Box::new(shell::BashOutput),
+                Box::new(shell::KillShell),
                 Box::new(todo::TodoWrite),
                 Box::new(web::WebFetch),
             ],
