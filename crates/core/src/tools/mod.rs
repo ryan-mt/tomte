@@ -1,3 +1,4 @@
+pub mod ask;
 pub mod fs;
 pub mod search;
 pub mod shell;
@@ -176,6 +177,7 @@ impl Registry {
                 Box::new(shell::KillShell),
                 Box::new(todo::TodoWrite),
                 Box::new(web::WebFetch),
+                Box::new(ask::AskUserQuestion),
             ],
         }
     }
