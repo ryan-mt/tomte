@@ -19,8 +19,8 @@ pub struct SessionMeta {
     pub id: String,
     pub cwd: PathBuf,
     pub model: String,
-    pub created_at_ms: u128,
-    pub updated_at_ms: u128,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
     pub message_count: usize,
     /// First user message, trimmed to a single line for the picker preview.
     pub preview: String,
@@ -67,7 +67,7 @@ fn slug_for(cwd: &Path) -> String {
 pub fn new_session_id() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     let rand: u32 = {
         use std::hash::{Hash, Hasher};
@@ -79,7 +79,7 @@ pub fn new_session_id() -> String {
     format!("{now:x}-{rand:x}")
 }
 
-pub fn now_ms() -> u128 {
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())

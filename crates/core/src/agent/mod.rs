@@ -42,6 +42,19 @@ pub enum AgentEvent {
     Usage { input_tokens: u64, output_tokens: u64, total_tokens: u64 },
     TurnComplete,
     Error { message: String },
+    ContextWarning { used: u64, limit: u64 },
+    ApprovalRequest { call_id: String, tool_name: String, args_json: String, diff_preview: Option<String> },
+    ApprovalGranted { call_id: String },
+    ApprovalDenied { call_id: String },
+}
+
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
+
+pub fn model_context_limit(model: &str) -> u64 {
+    let m = model.to_ascii_lowercase();
+    if m.contains("nano") { 200_000 }
+    else if m.contains("mini") { 400_000 }
+    else { 1_000_000 }
 }
 
 pub struct Agent {
@@ -58,13 +71,15 @@ pub struct Agent {
     pub session_id: String,
     /// Wall-clock epoch (ms) when this session was first opened. Carried
     /// through restores so a resumed session keeps its original birthtime.
-    pub session_created_ms: u128,
+    pub session_created_ms: u64,
     /// Mutable per-session state shared across tool calls (todo list, etc.).
     pub session: Arc<Mutex<SessionState>>,
     /// Lifecycle hooks loaded from `~/.config/opencli/settings.json`. Pre-tool
     /// hooks can block a tool call by exiting with code 2; the model receives
     /// the hook's stdout as the block reason.
     pub hooks: Arc<crate::hooks::HookSet>,
+    pub pending_approvals: Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+    pub require_approval: bool,
 }
 
 impl Agent {
@@ -81,7 +96,14 @@ impl Agent {
             hooks: Arc::new(crate::hooks::load()),
             session_id: crate::session::new_session_id(),
             session_created_ms: crate::session::now_ms(),
+            pending_approvals: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            require_approval: false,
         }
+    }
+
+    pub async fn respond_approval(&self, call_id: &str, granted: bool) {
+        let sender = { let mut map = self.pending_approvals.lock().await; map.remove(call_id) };
+        if let Some(s) = sender { let _ = s.send(granted); }
     }
 
     /// Replace this agent's history and identity from a stored session so
@@ -98,25 +120,34 @@ impl Agent {
     /// Idempotent — call after `cwd` is set; reading is best-effort and
     /// silently no-ops if either file is missing.
     pub fn apply_project_memory(&mut self) {
+        let cfg_dir = crate::config::config_dir();
+        let globals = [cfg_dir.join("CLAUDE.md"), cfg_dir.join("AGENTS.md")];
+        let projects = [self.cwd.join("CLAUDE.md"), self.cwd.join("AGENTS.md")];
+        let read_first = |paths: &[std::path::PathBuf]| -> Option<(std::path::PathBuf, String)> {
+            for p in paths {
+                if let Ok(text) = std::fs::read_to_string(p) {
+                    let t = text.trim();
+                    if !t.is_empty() { return Some((p.clone(), t.to_string())); }
+                }
+            }
+            None
+        };
         let mut additions = String::new();
-        // Global personal notes first so the project file gets the last word.
-        let global = crate::config::config_dir().join("CLAUDE.md");
-        if let Ok(text) = std::fs::read_to_string(&global) {
-            let t = text.trim();
-            if !t.is_empty() {
-                additions.push_str(
-                    "\n\n# Global memory (~/.config/opencli/CLAUDE.md)\n\n",
-                );
-                additions.push_str(t);
-            }
+        if let Some((path, text)) = read_first(&globals) {
+            additions.push_str(&format!("
+
+# Global memory ({})
+
+", path.display()));
+            additions.push_str(&text);
         }
-        let project = self.cwd.join("CLAUDE.md");
-        if let Ok(text) = std::fs::read_to_string(&project) {
-            let t = text.trim();
-            if !t.is_empty() {
-                additions.push_str("\n\n# Project memory (./CLAUDE.md)\n\n");
-                additions.push_str(t);
-            }
+        if let Some((path, text)) = read_first(&projects) {
+            additions.push_str(&format!("
+
+# Project memory ({})
+
+", path.display()));
+            additions.push_str(&text);
         }
         if !additions.is_empty() {
             self.system_prompt.push_str(&additions);
@@ -344,14 +375,14 @@ impl Agent {
                         reasoning_text = text;
                     }
                     ResponseStreamEvent::Completed { response } => {
-                        emit_usage(&response, &tx).await;
+                        emit_usage(&response, &tx, &self.config.model).await;
                         break;
                     }
                     ResponseStreamEvent::Failed { response } => {
                         // Previously handled identically to Completed, which
                         // masked content-filter / quota / 5xx errors as a
                         // successful empty turn. Surface them instead.
-                        emit_usage(&response, &tx).await;
+                        emit_usage(&response, &tx, &self.config.model).await;
                         let message = response
                             .get("error")
                             .and_then(|e| e.get("message"))
@@ -392,16 +423,7 @@ impl Agent {
                 session: self.session.clone(),
             };
 
-            // Push every function_call to history first so the request that
-            // carries the outputs back to the model is well-formed regardless
-            // of completion order.
-            for pc in &pending_calls {
-                self.history.push(InputItem::FunctionCall {
-                    call_id: pc.call_id.clone(),
-                    name: pc.name.clone(),
-                    arguments: pc.args_buf.clone(),
-                });
-            }
+            // History pushes deferred until after outputs computed (cancel-safety).
 
             // Split into runnable tasks vs pre-computed errors (malformed JSON,
             // unknown tool name) so the executable set can be driven in parallel
@@ -470,7 +492,36 @@ impl Agent {
                                         ));
                                     }
                                     crate::hooks::HookDecision::Allow => {
-                                        runnable.push((pc.call_id.clone(), args, t));
+                                        let needs_gate = self.require_approval
+                                            && matches!(self.approval, ApprovalMode::OnRequest | ApprovalMode::Manual)
+                                            && !t.is_read_only();
+                                        if needs_gate {
+                                            let diff_preview = t.compute_preview(&args, &ctx).await;
+                                            let (resp_tx, resp_rx) = tokio::sync::oneshot::channel::<bool>();
+                                            self.pending_approvals.lock().await.insert(pc.call_id.clone(), resp_tx);
+                                            let _ = tx.send(AgentEvent::ApprovalRequest {
+                                                call_id: pc.call_id.clone(),
+                                                tool_name: pc.name.clone(),
+                                                args_json: pc.args_buf.clone(),
+                                                diff_preview,
+                                            }).await;
+                                            let granted = match tokio::time::timeout(APPROVAL_TIMEOUT, resp_rx).await {
+                                                Ok(Ok(g)) => g,
+                                                _ => { self.pending_approvals.lock().await.remove(&pc.call_id); false }
+                                            };
+                                            let _ = tx.send(if granted {
+                                                AgentEvent::ApprovalGranted { call_id: pc.call_id.clone() }
+                                            } else {
+                                                AgentEvent::ApprovalDenied { call_id: pc.call_id.clone() }
+                                            }).await;
+                                            if granted {
+                                                runnable.push((pc.call_id.clone(), args, t));
+                                            } else {
+                                                precomputed.push((pc.call_id.clone(), "Error: tool call denied by user".to_string(), true));
+                                            }
+                                        } else {
+                                            runnable.push((pc.call_id.clone(), args, t));
+                                        }
                                     }
                                 }
                             }
@@ -567,6 +618,11 @@ impl Agent {
                 results.into_iter().map(|(id, out, _)| (id, out)).collect();
             for pc in &pending_calls {
                 if let Some(output) = by_id.remove(&pc.call_id) {
+                    self.history.push(InputItem::FunctionCall {
+                        call_id: pc.call_id.clone(),
+                        name: pc.name.clone(),
+                        arguments: pc.args_buf.clone(),
+                    });
                     self.history.push(InputItem::FunctionCallOutput {
                         call_id: pc.call_id.clone(),
                         output,
@@ -598,21 +654,16 @@ struct PendingCall {
     args_buf: String,
 }
 
-async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>) {
+async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, model: &str) {
     if let Some(usage) = response.get("usage") {
         let i = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
         let o = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let t = usage
-            .get("total_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(i + o);
-        let _ = tx
-            .send(AgentEvent::Usage {
-                input_tokens: i,
-                output_tokens: o,
-                total_tokens: t,
-            })
-            .await;
+        let t = usage.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(i + o);
+        let _ = tx.send(AgentEvent::Usage { input_tokens: i, output_tokens: o, total_tokens: t }).await;
+        let limit = model_context_limit(model);
+        if i * 10 >= limit * 8 {
+            let _ = tx.send(AgentEvent::ContextWarning { used: i, limit }).await;
+        }
     }
 }
 

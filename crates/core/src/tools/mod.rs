@@ -37,6 +37,7 @@ pub trait BuiltinTool: Send + Sync {
     fn is_read_only(&self) -> bool {
         false
     }
+    async fn compute_preview(&self, _args: &Value, _ctx: &ToolContext) -> Option<String> { None }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String>;
 
     fn definition(&self) -> Tool {
@@ -119,12 +120,25 @@ pub struct BackgroundShellState {
     pub kill_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
 
-/// Per-session mutable state that tools can read or write. Lives behind an
-/// Arc<Mutex<>> so it survives across turns and across concurrent tool calls.
+#[derive(Debug, Clone)]
+pub struct UndoEntry {
+    pub path: std::path::PathBuf,
+    pub original_content: Option<String>,
+}
+
 #[derive(Debug, Default)]
 pub struct SessionState {
     pub todos: Vec<TodoItem>,
     pub background_shells: HashMap<String, Arc<BackgroundShellState>>,
+    pub undo_stack: std::collections::VecDeque<UndoEntry>,
+}
+
+impl SessionState {
+    pub fn push_undo_entry(&mut self, entry: UndoEntry) {
+        const MAX_UNDO: usize = 32;
+        if self.undo_stack.len() >= MAX_UNDO { self.undo_stack.pop_front(); }
+        self.undo_stack.push_back(entry);
+    }
 }
 
 /// Per-call execution context: working directory, approval policy, and a
@@ -180,6 +194,7 @@ impl Registry {
                 Box::new(fs::WriteFile),
                 Box::new(fs::EditFile),
                 Box::new(fs::MultiEdit),
+                Box::new(fs::UndoLastEdit),
                 Box::new(fs::ListDir),
                 Box::new(search::Grep),
                 Box::new(search::Glob),

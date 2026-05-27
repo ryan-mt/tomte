@@ -306,10 +306,10 @@ pub fn sessions(metas: &[opencli_core::session::SessionMeta]) -> Vec<PickerItem>
         .collect()
 }
 
-fn ago(ms: u128) -> String {
+fn ago(ms: u64) -> String {
     let now = opencli_core::session::now_ms();
     let diff = now.saturating_sub(ms);
-    let secs = (diff / 1000) as u64;
+    let secs = diff / 1000;
     if secs < 60 {
         format!("{secs}s ago")
     } else if secs < 3600 {
