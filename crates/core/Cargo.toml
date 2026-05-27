@@ -29,3 +29,6 @@ once_cell.workspace = true
 webbrowser.workspace = true
 axum.workspace = true
 tower-http.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

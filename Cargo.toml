@@ -42,3 +42,4 @@ textwrap = "0.16"
 unicode-width = "0.2"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control", "image-data"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+tempfile = "3"

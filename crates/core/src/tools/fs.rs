@@ -52,9 +52,14 @@ Common mistakes:\n\
 Parameters:\n\
 - `path`: Relative path inside the working directory. Absolute paths and `..` traversal are rejected.\n\
 - `offset`: Zero-indexed line to start reading from, or `null` to start at the top.\n\
-- `limit`: Maximum number of lines to return, or `null` to read to the end.\n\
+- `limit`: Maximum number of lines to return, or `null` to use the default cap.\n\
 \n\
-Constraints: files larger than 5 MB must be read with an explicit `limit`. Binary files are not supported by this tool."
+Output rules:\n\
+- Default cap is 2000 lines per call when `limit` is null; the response includes a truncation notice telling you how to read the next slice with `offset` + `limit`.\n\
+- Lines longer than 2000 characters are truncated and marked `… [line truncated]` so a minified file can't blow out your context window.\n\
+- An empty file returns a `<system-reminder>` warning instead of a blank string, so you don't assume the read failed.\n\
+\n\
+Constraints: files larger than 5 MB must be read with an explicit `limit`. Binary files are not supported by this tool — use `grep` or `run_shell` (e.g. `file`, `hexdump`) for non-text artefacts."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -77,6 +82,14 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         // Bound the read so the LLM can't request /dev/zero or a multi-GB log
         // and OOM the process.
         const MAX_BYTES: u64 = 5_000_000;
+        // Default lines-per-call when caller does not pass `limit`. Matches
+        // Claude Code's Read tool — keeps a single read from flooding the
+        // context window with a large file.
+        const DEFAULT_LINE_LIMIT: usize = 2000;
+        // Per-line truncation so a minified bundle (one giant line) can't
+        // blow out the context. Mirrors Claude Code's 2000-char-per-line cap.
+        const MAX_LINE_CHARS: usize = 2000;
+
         let meta = tokio::fs::metadata(&path)
             .await
             .with_context(|| format!("stat {}", path.display()))?;
@@ -90,15 +103,40 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         let text = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("read {}", path.display()))?;
+        if text.is_empty() {
+            return Ok(format!(
+                "<system-reminder>The file `{}` exists but is empty.</system-reminder>\n",
+                a.path
+            ));
+        }
         let lines: Vec<&str> = text.lines().collect();
-        let start = a.offset.unwrap_or(0);
-        let end = a
-            .limit
-            .map(|l| (start + l).min(lines.len()))
-            .unwrap_or(lines.len());
+        let total = lines.len();
+        let start = a.offset.unwrap_or(0).min(total);
+        // Caller's explicit limit wins; otherwise apply the default cap.
+        let effective_limit = a.limit.unwrap_or(DEFAULT_LINE_LIMIT);
+        let end = (start + effective_limit).min(total);
         let mut out = String::new();
-        for (i, line) in lines[start.min(lines.len())..end].iter().enumerate() {
-            out.push_str(&format!("{:>6}\t{}\n", start + i + 1, line));
+        for (i, line) in lines[start..end].iter().enumerate() {
+            // Truncate by characters (not bytes) so we don't slice mid-codepoint.
+            let printed: String = if line.chars().count() > MAX_LINE_CHARS {
+                let head: String = line.chars().take(MAX_LINE_CHARS).collect();
+                format!("{head}… [line truncated]")
+            } else {
+                (*line).to_string()
+            };
+            out.push_str(&format!("{:>6}\t{}\n", start + i + 1, printed));
+        }
+        // Tell the model how to grab the next slice when we hit the cap.
+        if end < total {
+            let remaining = total - end;
+            out.push_str(&format!(
+                "<system-reminder>Showing lines {}-{} of {}. {} more line(s) remain — call read_file again with offset={} and an explicit limit to continue.</system-reminder>\n",
+                start + 1,
+                end,
+                total,
+                remaining,
+                end
+            ));
         }
         Ok(out)
     }
@@ -461,4 +499,90 @@ fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathBuf> {
         }
     }
     Ok(cwd.join(normalized))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::{ApprovalMode, SessionState};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn ctx(cwd: std::path::PathBuf) -> ToolContext {
+        ToolContext {
+            cwd,
+            approval: ApprovalMode::Auto,
+            session: Arc::new(Mutex::new(SessionState::default())),
+        }
+    }
+
+    fn read_args(path: &str, offset: Option<usize>, limit: Option<usize>) -> Value {
+        json!({"path": path, "offset": offset, "limit": limit})
+    }
+
+    #[tokio::test]
+    async fn read_file_empty_returns_system_reminder() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("empty.txt"), "").unwrap();
+        let out = ReadFile
+            .execute(read_args("empty.txt", None, None), &ctx(dir.path().to_path_buf()))
+            .await
+            .unwrap();
+        assert!(out.contains("exists but is empty"), "got: {out}");
+        assert!(out.contains("<system-reminder>"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn read_file_caps_at_default_limit_and_emits_continuation_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        // 2500 lines: hits the 2000-line default cap, leaves 500 remaining.
+        let content: String = (1..=2500).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.path().join("big.txt"), &content).unwrap();
+        let out = ReadFile
+            .execute(read_args("big.txt", None, None), &ctx(dir.path().to_path_buf()))
+            .await
+            .unwrap();
+        // First and last printed lines fall inside [1, 2000].
+        assert!(out.contains("\tline 1\n"), "missing first line");
+        assert!(out.contains("\tline 2000\n"), "missing 2000th line");
+        assert!(!out.contains("\tline 2001\n"), "should have stopped at default cap");
+        assert!(out.contains("500 more line"), "missing continuation hint: {out}");
+        assert!(out.contains("offset=2000"), "missing offset hint: {out}");
+    }
+
+    #[tokio::test]
+    async fn read_file_truncates_long_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        // 3000 'a' characters on one line → must be truncated to 2000 + marker.
+        let huge_line: String = "a".repeat(3000);
+        std::fs::write(dir.path().join("min.js"), &huge_line).unwrap();
+        let out = ReadFile
+            .execute(read_args("min.js", None, None), &ctx(dir.path().to_path_buf()))
+            .await
+            .unwrap();
+        assert!(out.contains("[line truncated]"), "missing truncation marker: {out}");
+        // The full 3000-char line must NOT have been emitted verbatim.
+        assert!(!out.contains(&"a".repeat(3000)), "long line was not truncated");
+    }
+
+    #[tokio::test]
+    async fn read_file_respects_explicit_offset_and_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let content: String = (1..=10).map(|i| format!("L{i}\n")).collect();
+        std::fs::write(dir.path().join("small.txt"), &content).unwrap();
+        let out = ReadFile
+            .execute(
+                read_args("small.txt", Some(3), Some(2)),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+        // Lines 4 and 5 (offset is zero-indexed in the slice, displayed 1-indexed).
+        assert!(out.contains("\tL4\n"), "got: {out}");
+        assert!(out.contains("\tL5\n"), "got: {out}");
+        assert!(!out.contains("\tL3\n"), "should not include L3");
+        assert!(!out.contains("\tL6\n"), "should not include L6");
+        // 5 lines after offset 5 remain → continuation notice expected.
+        assert!(out.contains("more line"), "missing continuation: {out}");
+    }
 }
