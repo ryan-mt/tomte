@@ -60,7 +60,7 @@ Returns a short summary of how many items were stored and how many are still pen
         })
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
-        let a: TodoWriteArgs = serde_json::from_value(args)?;
+        let a: TodoWriteArgs = super::parse_args("todo_write", args)?;
         let mut items: Vec<TodoItem> = Vec::with_capacity(a.todos.len());
         let mut in_progress = 0usize;
         for (i, t) in a.todos.into_iter().enumerate() {

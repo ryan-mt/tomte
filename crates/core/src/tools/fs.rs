@@ -77,7 +77,7 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         true
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
-        let a: ReadArgs = serde_json::from_value(args)?;
+        let a: ReadArgs = super::parse_args("read_file", args)?;
         let path = resolve(&ctx.cwd, &a.path)?;
         // Bound the read so the LLM can't request /dev/zero or a multi-GB log
         // and OOM the process.
@@ -184,7 +184,7 @@ Parameters:\n\
         })
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
-        let a: WriteArgs = serde_json::from_value(args)?;
+        let a: WriteArgs = super::parse_args("write_file", args)?;
         let path = resolve(&ctx.cwd, &a.path)?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
@@ -252,7 +252,7 @@ Parameters:\n\
         })
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
-        let a: EditArgs = serde_json::from_value(args)?;
+        let a: EditArgs = super::parse_args("edit_file", args)?;
         let path = resolve(&ctx.cwd, &a.path)?;
         let original = tokio::fs::read_to_string(&path)
             .await
@@ -322,7 +322,7 @@ Parameters:\n\
         true
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
-        let a: ListArgs = serde_json::from_value(args)?;
+        let a: ListArgs = super::parse_args("list_dir", args)?;
         let path = resolve(&ctx.cwd, &a.path)?;
         let mut entries = tokio::fs::read_dir(&path).await?;
         let mut items: Vec<String> = Vec::new();
@@ -416,7 +416,7 @@ Parameters:\n\
         })
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
-        let a: MultiEditArgs = serde_json::from_value(args)?;
+        let a: MultiEditArgs = super::parse_args("multi_edit", args)?;
         if a.edits.is_empty() {
             return Err(anyhow!("`edits` must contain at least one entry"));
         }

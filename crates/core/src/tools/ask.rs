@@ -103,7 +103,7 @@ Parameters:\n\
         true
     }
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<String> {
-        let a: Args = serde_json::from_value(args)?;
+        let a: Args = super::parse_args("ask_user_question", args)?;
         if a.questions.is_empty() || a.questions.len() > 4 {
             return Err(anyhow!("must supply 1..=4 questions"));
         }

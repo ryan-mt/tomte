@@ -5,6 +5,17 @@ pub mod shell;
 pub mod todo;
 pub mod web;
 
+/// Deserialize a tool's `Value` arguments into the tool's typed struct,
+/// prefixing the error with `tool <name>` so the model receives an actionable
+/// hint instead of a bare serde message.
+pub fn parse_args<T: serde::de::DeserializeOwned>(
+    tool: &str,
+    args: serde_json::Value,
+) -> anyhow::Result<T> {
+    serde_json::from_value::<T>(args)
+        .map_err(|e| anyhow::anyhow!("tool `{tool}` argument schema mismatch: {e}"))
+}
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

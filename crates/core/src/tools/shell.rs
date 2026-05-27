@@ -126,7 +126,7 @@ Parameters:\n\
         })
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
-        let a: ShellArgs = serde_json::from_value(args)?;
+        let a: ShellArgs = super::parse_args("run_shell", args)?;
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
             .arg(&a.command)
@@ -315,7 +315,7 @@ Parameters:\n\
         true
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
-        let a: BashOutputArgs = serde_json::from_value(args)?;
+        let a: BashOutputArgs = super::parse_args("bash_output", args)?;
         let state = {
             let session = ctx.session.lock().await;
             session
@@ -380,7 +380,7 @@ Parameters:\n\
         })
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
-        let a: KillShellArgs = serde_json::from_value(args)?;
+        let a: KillShellArgs = super::parse_args("kill_shell", args)?;
         let state = {
             let session = ctx.session.lock().await;
             session

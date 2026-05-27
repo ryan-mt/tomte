@@ -54,7 +54,7 @@ Parameters:\n\
         true
     }
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<String> {
-        let a: WebFetchArgs = serde_json::from_value(args)?;
+        let a: WebFetchArgs = super::parse_args("web_fetch", args)?;
         if !(a.url.starts_with("http://") || a.url.starts_with("https://")) {
             return Err(anyhow!("URL must start with http:// or https://"));
         }
@@ -66,11 +66,44 @@ Parameters:\n\
             .user_agent(concat!("opencli/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
             .build()?;
-        let resp = client
-            .get(&a.url)
-            .send()
-            .await
-            .with_context(|| format!("GET {}", a.url))?;
+
+        // Retry transient failures: connection errors, DNS hiccups, 5xx.
+        // 4xx and parse failures are surfaced immediately — those aren't
+        // going to succeed by trying again.
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut attempt: u32 = 0;
+        let resp = loop {
+            attempt += 1;
+            match client.get(&a.url).send().await {
+                Ok(r) => {
+                    if r.status().is_server_error() && attempt < MAX_ATTEMPTS {
+                        let code = r.status().as_u16();
+                        tracing::warn!(
+                            url = %a.url,
+                            attempt,
+                            status = code,
+                            "web_fetch: server error, will retry"
+                        );
+                        tokio::time::sleep(backoff(attempt)).await;
+                        continue;
+                    }
+                    break r;
+                }
+                Err(e) => {
+                    if attempt < MAX_ATTEMPTS && is_transient(&e) {
+                        tracing::warn!(
+                            url = %a.url,
+                            attempt,
+                            error = %e,
+                            "web_fetch: transient network error, will retry"
+                        );
+                        tokio::time::sleep(backoff(attempt)).await;
+                        continue;
+                    }
+                    return Err(anyhow::Error::from(e).context(format!("GET {}", a.url)));
+                }
+            }
+        };
         let status = resp.status();
         let content_type = resp
             .headers()
@@ -78,7 +111,10 @@ Parameters:\n\
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let bytes = resp.bytes().await?;
+        let bytes = resp
+            .bytes()
+            .await
+            .with_context(|| format!("read body from {}", a.url))?;
         let total = bytes.len();
         let truncated = total > cap;
         let slice = &bytes[..total.min(cap)];
@@ -93,4 +129,19 @@ Parameters:\n\
             body
         ))
     }
+}
+
+/// Linear-ish backoff with a small jitter floor. 200ms → 500ms → 1s.
+fn backoff(attempt: u32) -> Duration {
+    match attempt {
+        1 => Duration::from_millis(200),
+        2 => Duration::from_millis(500),
+        _ => Duration::from_secs(1),
+    }
+}
+
+/// A network error is retryable when it's a connect/timeout/IO failure rather
+/// than a definitive protocol error like an invalid URL or redirect loop.
+fn is_transient(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect() || e.is_request()
 }

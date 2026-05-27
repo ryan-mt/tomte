@@ -110,7 +110,7 @@ Parameters:\n\
         true
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
-        let a: GrepArgs = serde_json::from_value(args)?;
+        let a: GrepArgs = super::parse_args("grep", args)?;
         let mode = a.output_mode.as_deref().unwrap_or("content");
         if !matches!(mode, "content" | "files_with_matches" | "count") {
             return Err(anyhow::anyhow!(
@@ -250,7 +250,7 @@ Parameters:\n\
         true
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
-        let a: GlobArgs = serde_json::from_value(args)?;
+        let a: GlobArgs = super::parse_args("glob", args)?;
         let sort = a.sort.as_deref().unwrap_or("name");
         if !matches!(sort, "name" | "mtime") {
             return Err(anyhow::anyhow!(

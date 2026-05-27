@@ -11,6 +11,12 @@ use tokio::sync::{mpsc, Mutex};
 /// forever with no way to recover.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Per-tool execution hard cap. A misbehaving tool (e.g. an MCP server that
+/// stops responding) used to be able to wedge the whole turn indefinitely.
+/// `run_shell` already enforces its own foreground timeout internally; this
+/// outer cap is generous enough to clear it (default 120s) plus margin.
+const TOOL_HARD_TIMEOUT: Duration = Duration::from_secs(180);
+
 use crate::config::Config;
 use crate::openai::{
     InputItem, MessageContent, OpenAiClient, ResponseStreamEvent, ResponsesRequest,
@@ -375,11 +381,30 @@ impl Agent {
                     serde_json::from_str(&pc.args_buf)
                 };
                 match parsed {
-                    Err(e) => precomputed.push((
-                        pc.call_id.clone(),
-                        format!("Error: tool args are not valid JSON: {e}"),
-                        true,
-                    )),
+                    Err(e) => {
+                        // Surface enough detail that the model can self-correct
+                        // on the next turn: which tool, which byte offset, what
+                        // the parser actually saw at the failure point.
+                        let preview = if pc.args_buf.len() > 200 {
+                            format!("{}…", &pc.args_buf[..200])
+                        } else {
+                            pc.args_buf.clone()
+                        };
+                        tracing::warn!(
+                            tool = %pc.name,
+                            call_id = %pc.call_id,
+                            error = %e,
+                            "tool.args.invalid_json"
+                        );
+                        precomputed.push((
+                            pc.call_id.clone(),
+                            format!(
+                                "Error: tool `{}` arguments are not valid JSON ({e}). Received: {preview}",
+                                pc.name
+                            ),
+                            true,
+                        ));
+                    }
                     Ok(args) => match self.registry.find(&pc.name) {
                         Some(t) => {
                             // Plan mode is read-only: any tool that mutates
@@ -429,15 +454,51 @@ impl Agent {
             // them sequentially here would force them to serialize and
             // dominate the turn latency. `join_all` polls the futures on the
             // current task — true concurrency for I/O-bound tools.
+            //
+            // Each tool call is also wrapped in `TOOL_HARD_TIMEOUT` so a
+            // hanging tool (MCP server that stops responding, stuck reqwest
+            // due to DNS) can't wedge the entire turn forever.
             let futures = runnable.into_iter().map(|(call_id, args, tool)| {
                 let ctx = ctx.clone();
                 let tx = tx.clone();
+                let tool_name = tool.name().to_string();
                 async move {
-                    let res = tool.execute(args, &ctx).await;
+                    let started = std::time::Instant::now();
+                    tracing::info!(
+                        tool = %tool_name,
+                        call_id = %call_id,
+                        "tool.start"
+                    );
+                    let res =
+                        tokio::time::timeout(TOOL_HARD_TIMEOUT, tool.execute(args, &ctx)).await;
                     let (output, is_err) = match res {
-                        Ok(s) => (s, false),
-                        Err(e) => (format!("Error: {e}"), true),
+                        Ok(Ok(s)) => (s, false),
+                        Ok(Err(e)) => (format!("Error: {e}"), true),
+                        Err(_) => (
+                            format!(
+                                "Error: tool `{tool_name}` exceeded the {}s hard timeout and was aborted",
+                                TOOL_HARD_TIMEOUT.as_secs()
+                            ),
+                            true,
+                        ),
                     };
+                    let elapsed_ms = started.elapsed().as_millis() as u64;
+                    if is_err {
+                        tracing::warn!(
+                            tool = %tool_name,
+                            call_id = %call_id,
+                            elapsed_ms,
+                            "tool.error"
+                        );
+                    } else {
+                        tracing::info!(
+                            tool = %tool_name,
+                            call_id = %call_id,
+                            elapsed_ms,
+                            bytes = output.len(),
+                            "tool.ok"
+                        );
+                    }
                     let _ = tx
                         .send(AgentEvent::ToolResult {
                             call_id: call_id.clone(),
