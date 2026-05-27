@@ -5,4 +5,4 @@ mod login;
 mod picker;
 mod ui;
 
-pub use app::run;
+pub use app::{run, run_resume};

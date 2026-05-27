@@ -50,6 +50,8 @@ enum Command {
         #[arg(long, default_value = "text")]
         output_format: String,
     },
+    /// Open the TUI with the resume-session picker open
+    Resume,
     /// Start the Web UI (React) in the browser
     Web {
         /// Do not open the browser automatically
@@ -89,6 +91,7 @@ async fn main() -> Result<()> {
         Some(Command::Chat { prompt, model, reasoning, output_format }) => {
             commands::chat::run(prompt.join(" "), model, reasoning, output_format).await
         }
+        Some(Command::Resume) => tui::run_resume().await,
         Some(Command::Web { no_open }) => commands::ui::run(cli.port, !no_open).await,
         Some(Command::Config { show, set_model, set_reasoning }) => {
             commands::config_cmd::run(show, set_model, set_reasoning).await

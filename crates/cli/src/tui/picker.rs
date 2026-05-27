@@ -246,6 +246,11 @@ pub fn slash_commands() -> Vec<PickerItem> {
             description: "list all commands".into(),
         },
         PickerItem {
+            key: "resume".into(),
+            title: "/resume".into(),
+            description: "pick a previous session to continue".into(),
+        },
+        PickerItem {
             key: "plan".into(),
             title: "/plan".into(),
             description: "enter plan mode (read-only tools)".into(),
@@ -326,6 +331,39 @@ pub fn efforts() -> Vec<PickerItem> {
             description: "hardest async / eval workloads".into(),
         },
     ]
+}
+
+/// Build picker items from a snapshot of stored sessions for the current cwd.
+/// Newest first, with a single-line preview shaped like the slash command rows.
+pub fn sessions(metas: &[opencli_core::session::SessionMeta]) -> Vec<PickerItem> {
+    metas
+        .iter()
+        .map(|m| PickerItem {
+            key: m.id.clone(),
+            title: m.preview.clone(),
+            description: format!(
+                "{}  ·  {} msgs  ·  {}",
+                ago(m.updated_at_ms),
+                m.message_count,
+                m.model
+            ),
+        })
+        .collect()
+}
+
+fn ago(ms: u128) -> String {
+    let now = opencli_core::session::now_ms();
+    let diff = now.saturating_sub(ms);
+    let secs = (diff / 1000) as u64;
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86_400)
+    }
 }
 
 pub fn verbosities() -> Vec<PickerItem> {

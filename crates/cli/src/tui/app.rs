@@ -31,6 +31,7 @@ pub enum OverlayKind {
     ModelPicker,
     EffortPicker,
     VerbosityPicker,
+    ResumePicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +41,16 @@ pub enum Screen {
 }
 
 pub async fn run() -> Result<()> {
+    run_with(false).await
+}
+
+/// Same as [`run`] but opens the resume-session picker on first frame so
+/// `opencli resume` lands the user directly on the session list.
+pub async fn run_resume() -> Result<()> {
+    run_with(true).await
+}
+
+async fn run_with(start_with_resume_picker: bool) -> Result<()> {
     // Install a panic hook that restores the terminal before unwinding, so a
     // panic inside main_loop (or any library it pulls in) doesn't leave the
     // user's shell stuck in raw mode + alternate screen.
@@ -51,7 +62,7 @@ pub async fn run() -> Result<()> {
     }));
 
     let mut terminal = setup_terminal()?;
-    let res = main_loop(&mut terminal).await;
+    let res = main_loop(&mut terminal, start_with_resume_picker).await;
     restore_terminal(&mut terminal)?;
     res
 }
@@ -139,6 +150,14 @@ pub struct App {
     /// these commands called std::process::exit(0) which skipped the
     /// terminal-restore path and left the shell in raw mode.
     pub should_exit: bool,
+    /// Picker writes the chosen session id here; main_loop performs the
+    /// actual restore (locking the agent and rebuilding blocks) on the
+    /// next tick. Going through a flag keeps `handle_overlay_select` free
+    /// of the agent Arc and avoids re-plumbing its signature.
+    pub pending_resume_id: Option<String>,
+    /// True until the first frame has opened the resume picker. Used by
+    /// `opencli resume` to bypass needing to type `/resume` after launch.
+    pub start_with_resume_picker: bool,
 }
 
 pub const SPINNER_WORDS: &[&str] = &[
@@ -227,6 +246,8 @@ impl App {
             current_turn: None,
             approval: ApprovalMode::OnRequest,
             should_exit: false,
+            pending_resume_id: None,
+            start_with_resume_picker: false,
         }
     }
 
@@ -263,13 +284,23 @@ impl App {
                 }
                 p
             }
+            OverlayKind::ResumePicker => {
+                let metas = opencli_core::session::list(&self.cwd);
+                Picker::new("resume session", picker::sessions(&metas))
+            }
         };
         self.overlay = Some((kind, picker));
     }
 }
 
-async fn main_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+async fn main_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    start_with_resume_picker: bool,
+) -> Result<()> {
     let mut app = App::new();
+    if start_with_resume_picker && app.screen == Screen::Chat {
+        app.start_with_resume_picker = true;
+    }
     let mut events = EventStream::new();
     let (agent_tx, mut agent_rx) = mpsc::channel::<AgentEvent>(256);
     // Persistent agent kept across turns to preserve history.
@@ -279,6 +310,18 @@ async fn main_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Res
     loop {
         if app.should_exit {
             break;
+        }
+        // Open the resume picker once on first frame when launched via
+        // `opencli resume`. Guarded so re-entry (eg. after Esc) doesn't pop
+        // the picker back open unexpectedly.
+        if app.start_with_resume_picker && app.screen == Screen::Chat && app.overlay.is_none() {
+            app.start_with_resume_picker = false;
+            app.open_overlay(OverlayKind::ResumePicker);
+        }
+        // Resume picker leaves the chosen session id here; perform the load
+        // out-of-band so handle_overlay_select doesn't need the agent Arc.
+        if let Some(id) = app.pending_resume_id.take() {
+            apply_resume(&mut app, &agent, &id).await;
         }
         // Flush the message queue after a turn completes.
         if !app.busy && !app.message_queue.is_empty() && app.screen == Screen::Chat {
@@ -605,7 +648,137 @@ async fn handle_overlay_select(app: &mut App, kind: OverlayKind, key_sel: &str) 
             app.blocks
                 .push(Block::System(format!("verbosity → {key_sel}")));
         }
+        OverlayKind::ResumePicker => {
+            if !key_sel.is_empty() {
+                app.pending_resume_id = Some(key_sel.to_string());
+            }
+        }
     }
+}
+
+/// Carry out a resume after the picker has set `pending_resume_id`. Loads the
+/// session from disk, rebuilds visible blocks from the persisted history, and
+/// replaces the agent's in-memory state in place.
+async fn apply_resume(
+    app: &mut App,
+    agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
+    id: &str,
+) {
+    let record = match opencli_core::session::load(&app.cwd, id) {
+        Ok(r) => r,
+        Err(e) => {
+            app.blocks
+                .push(Block::System(format!("resume failed: {e}")));
+            return;
+        }
+    };
+    let preview = record.meta.preview.clone();
+    let msg_count = record.meta.message_count;
+
+    // Rebuild visible blocks BEFORE we hand the history off to the agent so
+    // we still own the record's contents.
+    let rebuilt = rebuild_blocks_from_history(&record.history);
+
+    {
+        let mut guard = agent.lock().await;
+        if guard.is_none() {
+            // Lazily construct an Agent so we can stash the restored state
+            // on it. The client will be created on the next turn via
+            // launch_turn, which rebuilds it from the active credential.
+            let credential = match opencli_core::auth::resolve_credential().await {
+                Ok(c) => c,
+                Err(e) => {
+                    app.blocks
+                        .push(Block::System(format!("resume auth error: {e}")));
+                    return;
+                }
+            };
+            let client = match OpenAiClient::new(credential) {
+                Ok(c) => c,
+                Err(e) => {
+                    app.blocks
+                        .push(Block::System(format!("resume client error: {e}")));
+                    return;
+                }
+            };
+            let mut a = Agent::new(client, app.config.clone());
+            a.cwd = app.cwd.clone();
+            a.approval = app.approval;
+            a.restore_from(record);
+            *guard = Some(a);
+        } else if let Some(a) = guard.as_mut() {
+            a.restore_from(record);
+        }
+    }
+
+    app.blocks.clear();
+    app.blocks.push(Block::Welcome);
+    app.blocks.extend(rebuilt);
+    app.blocks.push(Block::System(format!(
+        "↻ resumed: {preview} ({msg_count} messages)"
+    )));
+    app.auto_scroll = true;
+}
+
+/// Reconstruct chat-visible blocks from a persisted history. The Responses
+/// API history is a flat list of `InputItem`s; we group function_call +
+/// function_call_output by call_id and drop the reasoning items (they were
+/// only ever streamed deltas).
+fn rebuild_blocks_from_history(history: &[opencli_core::openai::InputItem]) -> Vec<Block> {
+    use opencli_core::openai::{InputItem, MessageContent};
+    use std::collections::HashMap;
+
+    let mut outputs: HashMap<String, (String, bool)> = HashMap::new();
+    for item in history {
+        if let InputItem::FunctionCallOutput { call_id, output } = item {
+            let is_err = output.starts_with("Error:");
+            outputs.insert(call_id.clone(), (output.clone(), is_err));
+        }
+    }
+
+    let mut blocks: Vec<Block> = Vec::new();
+    for item in history {
+        match item {
+            InputItem::Message { role, content } => {
+                let mut text = String::new();
+                for c in content {
+                    match c {
+                        MessageContent::InputText { text: t } => text.push_str(t),
+                        MessageContent::OutputText { text: t } => text.push_str(t),
+                        MessageContent::InputImage { .. } => text.push_str("[image]"),
+                    }
+                }
+                if role == "user" {
+                    blocks.push(Block::User(text));
+                } else if role == "assistant" {
+                    blocks.push(Block::Assistant {
+                        text,
+                        reasoning: String::new(),
+                        done: true,
+                        thought_for_secs: None,
+                        reasoning_started_at: None,
+                    });
+                }
+            }
+            InputItem::FunctionCall { call_id, name, arguments } => {
+                let (output, error) = outputs
+                    .get(call_id)
+                    .cloned()
+                    .map(|(o, e)| (Some(o), e))
+                    .unwrap_or((None, false));
+                blocks.push(Block::Tool {
+                    call_id: call_id.clone(),
+                    name: name.clone(),
+                    args: arguments.clone(),
+                    output,
+                    error,
+                });
+            }
+            InputItem::FunctionCallOutput { .. } => { /* attached above */ }
+            InputItem::Reasoning { .. } => { /* not persisted visually */ }
+        }
+    }
+    blocks
 }
 
 async fn handle_slash(app: &mut App, cmd: &str) {
@@ -624,6 +797,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  /verbosity          pick verbosity (low|medium|high)\n  \
                  /img <path>         attach a file as an image (or use Ctrl+V)\n  \
                  /clear              clear conversation\n  \
+                 /resume             pick a previous session to continue\n  \
                  /cwd [path]         show / set working directory\n  \
                  /status             show auth status\n  \
                  /quit               exit\n\n\
@@ -768,6 +942,9 @@ async fn handle_slash(app: &mut App, cmd: &str) {
         "clear" => {
             app.blocks.clear();
         }
+        "resume" => {
+            app.open_overlay(OverlayKind::ResumePicker);
+        }
         "quit" | "exit" => app.should_exit = true,
         other => app
             .blocks
@@ -844,6 +1021,14 @@ async fn launch_turn(
                         message: e.to_string(),
                     })
                     .await;
+            }
+            // Persist the conversation after every turn so /resume can pick
+            // it up later. Failure to save is logged at debug level only —
+            // we don't want to spam the chat with disk-error popups, and the
+            // session is still safe in memory for the remainder of the run.
+            let record = a.to_session_record();
+            if let Err(e) = opencli_core::session::save(&record) {
+                tracing::debug!(error = %e, "session save failed");
             }
         }
     });

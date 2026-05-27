@@ -42,6 +42,13 @@ pub struct Agent {
     pub approval: ApprovalMode,
     pub history: Vec<InputItem>,
     pub system_prompt: String,
+    /// Unique id for the current chat session. Stable across the lifetime of
+    /// an `Agent` so persisted records can be updated in place rather than
+    /// duplicated on every turn.
+    pub session_id: String,
+    /// Wall-clock epoch (ms) when this session was first opened. Carried
+    /// through restores so a resumed session keeps its original birthtime.
+    pub session_created_ms: u128,
     /// Mutable per-session state shared across tool calls (todo list, etc.).
     pub session: Arc<Mutex<SessionState>>,
     /// Lifecycle hooks loaded from `~/.config/opencli/settings.json`. Pre-tool
@@ -62,6 +69,33 @@ impl Agent {
             system_prompt: default_system_prompt(),
             session: Arc::new(Mutex::new(SessionState::default())),
             hooks: Arc::new(crate::hooks::load()),
+            session_id: crate::session::new_session_id(),
+            session_created_ms: crate::session::now_ms(),
+        }
+    }
+
+    /// Replace this agent's history and identity from a stored session so
+    /// `/resume` can pick up exactly where the previous run left off.
+    pub fn restore_from(&mut self, record: crate::session::SessionRecord) {
+        self.history = record.history;
+        self.session_id = record.meta.id;
+        self.session_created_ms = record.meta.created_at_ms;
+    }
+
+    /// Build a `SessionRecord` snapshot of the current conversation. Cheap
+    /// enough to call after every turn — the history is just `InputItem`s.
+    pub fn to_session_record(&self) -> crate::session::SessionRecord {
+        crate::session::SessionRecord {
+            meta: crate::session::SessionMeta {
+                id: self.session_id.clone(),
+                cwd: self.cwd.clone(),
+                model: self.config.model.clone(),
+                created_at_ms: self.session_created_ms,
+                updated_at_ms: crate::session::now_ms(),
+                message_count: self.history.len(),
+                preview: crate::session::derive_preview(&self.history),
+            },
+            history: self.history.clone(),
         }
     }
 
