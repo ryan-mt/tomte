@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# UI
+/ui/node_modules
+/ui/dist
+/ui/.vite
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
