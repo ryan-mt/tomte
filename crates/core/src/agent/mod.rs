@@ -21,7 +21,7 @@ use crate::config::Config;
 use crate::openai::{
     InputItem, MessageContent, OpenAiClient, ResponseStreamEvent, ResponsesRequest,
 };
-use crate::tools::{ApprovalMode, Registry, SessionState, ToolContext};
+use crate::tools::{ApprovalMode, Registry, SessionState, TodoItem, ToolContext};
 
 /// Streaming event surfaced to the UI/CLI layer.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -35,6 +35,10 @@ pub enum AgentEvent {
     ToolCallArgsDelta { call_id: String, delta: String },
     ToolCallArgsDone { call_id: String, arguments: String },
     ToolResult { call_id: String, output: String, error: bool },
+    /// Snapshot of the session todo list. Emitted after every tool batch so
+    /// the UI can render `/todos` and the status line without locking the
+    /// agent mutex itself. Replaces the entire client-side cache each time.
+    TodosSnapshot { todos: Vec<TodoItem> },
     Usage { input_tokens: u64, output_tokens: u64, total_tokens: u64 },
     TurnComplete,
     Error { message: String },
@@ -569,6 +573,19 @@ impl Agent {
                     });
                 }
             }
+
+            // Push a todos snapshot so the UI can render `/todos` and a
+            // status-line hint without having to lock the agent itself.
+            // Cheap: clones the vector (typically <20 items).
+            let todos_snapshot = {
+                let session = self.session.lock().await;
+                session.todos.clone()
+            };
+            let _ = tx
+                .send(AgentEvent::TodosSnapshot {
+                    todos: todos_snapshot,
+                })
+                .await;
             // continue loop to send tool outputs back
         }
     }

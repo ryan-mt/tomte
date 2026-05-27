@@ -15,7 +15,7 @@ use opencli_core::agent::{Agent, AgentEvent};
 use opencli_core::auth::{self, AuthMode};
 use opencli_core::config::{self, Config};
 use opencli_core::openai::OpenAiClient;
-use opencli_core::tools::ApprovalMode;
+use opencli_core::tools::{ApprovalMode, TodoItem, TodoStatus};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
@@ -165,6 +165,9 @@ pub struct App {
     /// True until the first frame has opened the resume picker. Used by
     /// `opencli resume` to bypass needing to type `/resume` after launch.
     pub start_with_resume_picker: bool,
+    /// Snapshot of the agent's session todo list, refreshed after every
+    /// tool batch via `AgentEvent::TodosSnapshot`. Read by `/todos`.
+    pub session_todos: Vec<TodoItem>,
 }
 
 pub const SPINNER_WORDS: &[&str] = &[
@@ -258,6 +261,7 @@ impl App {
             should_exit: false,
             pending_resume_id: None,
             start_with_resume_picker: false,
+            session_todos: Vec::new(),
         }
     }
 
@@ -1189,17 +1193,38 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             ));
         }
         "todos" | "todo" => {
-            // Session todos live behind the agent mutex (`Arc<Mutex<SessionState>>`).
-            // We can't grab them here without plumbing the Arc through; for
-            // now, surface a hint that points the user at the in-chat
-            // rendering (todo_write tool output) instead of lying about an
-            // empty list.
-            app.blocks.push(Block::System(
-                "Session todos are written by the model via `todo_write`. \
-                 They render as a tool call block above when active. \
-                 (Persistent surfacing in this command is on the roadmap.)"
-                    .into(),
-            ));
+            if app.session_todos.is_empty() {
+                app.blocks.push(Block::System(
+                    "No session todos. The model writes them with `todo_write` \
+                     when it plans a multi-step task."
+                        .into(),
+                ));
+            } else {
+                let mut msg = String::from("Session todos:\n");
+                for (i, t) in app.session_todos.iter().enumerate() {
+                    let marker = match t.status {
+                        TodoStatus::Completed => "[x]",
+                        TodoStatus::InProgress => "[~]",
+                        TodoStatus::Pending => "[ ]",
+                    };
+                    let label = match t.status {
+                        TodoStatus::InProgress => &t.active_form,
+                        _ => &t.content,
+                    };
+                    msg.push_str(&format!("  {} {}. {label}\n", marker, i + 1));
+                }
+                let done = app
+                    .session_todos
+                    .iter()
+                    .filter(|t| matches!(t.status, TodoStatus::Completed))
+                    .count();
+                msg.push_str(&format!(
+                    "\n  {} / {} completed",
+                    done,
+                    app.session_todos.len()
+                ));
+                app.blocks.push(Block::System(msg));
+            }
         }
         "about" => {
             app.blocks.push(Block::System(format!(
@@ -1515,6 +1540,9 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             app.tokens_used = app.tokens_used.saturating_add(total_tokens);
             app.input_tokens_total = app.input_tokens_total.saturating_add(input_tokens);
             app.output_tokens_total = app.output_tokens_total.saturating_add(output_tokens);
+        }
+        AgentEvent::TodosSnapshot { todos } => {
+            app.session_todos = todos;
         }
         AgentEvent::Error { message } => {
             app.blocks.push(Block::System(format!("error: {message}")));
