@@ -12,6 +12,14 @@ export type Config = {
   auto_approve_write: boolean;
 };
 
+export type TodoStatus = "pending" | "in_progress" | "completed";
+
+export type TodoItem = {
+  content: string;
+  status: TodoStatus;
+  active_form: string;
+};
+
 export type AgentEvent =
   | { kind: "AssistantTextDelta"; text: string }
   | { kind: "AssistantTextDone"; text: string }
@@ -21,8 +29,20 @@ export type AgentEvent =
   | { kind: "ToolCallArgsDelta"; call_id: string; delta: string }
   | { kind: "ToolCallArgsDone"; call_id: string; arguments: string }
   | { kind: "ToolResult"; call_id: string; output: string; error: boolean }
+  | { kind: "TodosSnapshot"; todos: TodoItem[] }
+  | { kind: "Usage"; input_tokens: number; output_tokens: number; total_tokens: number }
   | { kind: "TurnComplete" }
-  | { kind: "Error"; message: string };
+  | { kind: "Error"; message: string }
+  | { kind: "ContextWarning"; used: number; limit: number }
+  | {
+      kind: "ApprovalRequest";
+      call_id: string;
+      tool_name: string;
+      args_json: string;
+      diff_preview: string | null;
+    }
+  | { kind: "ApprovalGranted"; call_id: string }
+  | { kind: "ApprovalDenied"; call_id: string };
 
 const API = "/api";
 

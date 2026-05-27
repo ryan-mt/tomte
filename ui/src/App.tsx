@@ -33,6 +33,19 @@ export default function App() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingApproval, setPendingApproval] = useState<
+    | {
+        call_id: string;
+        tool_name: string;
+        args_json: string;
+        diff_preview: string | null;
+      }
+    | null
+  >(null);
+  const [contextWarning, setContextWarning] = useState<{
+    used: number;
+    limit: number;
+  } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [sessionId] = useState(() => Math.random().toString(36).slice(2));
@@ -188,6 +201,23 @@ export default function App() {
           case "Error":
             next.push({ id: newId(), kind: "assistant", text: `❌ ${ev.message}` });
             return next;
+          case "ContextWarning":
+            setContextWarning({ used: ev.used, limit: ev.limit });
+            return next;
+          case "ApprovalRequest":
+            setPendingApproval({
+              call_id: ev.call_id,
+              tool_name: ev.tool_name,
+              args_json: ev.args_json,
+              diff_preview: ev.diff_preview,
+            });
+            return next;
+          case "ApprovalGranted":
+          case "ApprovalDenied":
+            setPendingApproval((p) =>
+              p && p.call_id === ev.call_id ? null : p
+            );
+            return next;
           default:
             return next;
         }
@@ -206,6 +236,22 @@ export default function App() {
       e.preventDefault();
       send();
     }
+  }
+
+  function decideApproval(granted: boolean) {
+    const ap = pendingApproval;
+    if (!ap) return;
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          kind: "approval_decision",
+          call_id: ap.call_id,
+          granted,
+        })
+      );
+    }
+    setPendingApproval(null);
   }
 
   return (
@@ -242,6 +288,54 @@ export default function App() {
       </aside>
 
       <main className="main">
+        {contextWarning ? (
+          <div className="banner warn">
+            ⚠ Context window {Math.round(
+              (contextWarning.used / contextWarning.limit) * 100
+            )}% full ({contextWarning.used.toLocaleString()} /{" "}
+            {contextWarning.limit.toLocaleString()} tokens). Consider /compact.
+            <button
+              className="banner-dismiss"
+              onClick={() => setContextWarning(null)}
+              aria-label="dismiss"
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
+        {pendingApproval ? (
+          <div
+            className="modal-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Approve tool call"
+          >
+            <div className="modal">
+              <div className="modal-title">
+                Approve <code>{pendingApproval.tool_name}</code>?
+              </div>
+              <pre className="modal-args">{pendingApproval.args_json}</pre>
+              {pendingApproval.diff_preview ? (
+                <pre className="modal-diff">{pendingApproval.diff_preview}</pre>
+              ) : null}
+              <div className="modal-actions">
+                <button
+                  className="btn"
+                  onClick={() => decideApproval(true)}
+                  autoFocus
+                >
+                  Approve (Y)
+                </button>
+                <button
+                  className="btn secondary"
+                  onClick={() => decideApproval(false)}
+                >
+                  Deny (N)
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div className="topbar">
           <div>
             <strong>Chat</strong>{" "}
