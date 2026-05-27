@@ -419,10 +419,12 @@ fn render_markdown_inline(line: &str) -> Vec<Span<'static>> {
 
 fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
     let dim = Style::default().fg(Color::Rgb(160, 160, 160));
+    let muted = Style::default().fg(Color::Rgb(125, 125, 125));
     let strong = Style::default()
         .fg(Color::Rgb(230, 230, 230))
         .add_modifier(Modifier::BOLD);
     let accent = Style::default().fg(Color::Rgb(25, 195, 154));
+    let border = Style::default().fg(Color::Rgb(80, 80, 80));
 
     let mut cwd = app.cwd.display().to_string();
     if let Some(home) = dirs::home_dir() {
@@ -438,49 +440,89 @@ fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
         opencli_core::auth::AuthMode::None => "offline",
     };
 
+    // Each row is `(spans, visible_width)`. Width is precomputed so the
+    // right edge of the rounded border stays pinned even when the terminal
+    // resizes or the cwd changes — mirrors Claude Code's welcome card.
+    let version = env!("CARGO_PKG_VERSION");
+    let sparkle = "✻ ";
+    let title = "Welcome to opencli! ";
+    let version_label = format!("v{version}");
+    let header_w = sparkle.chars().count() + title.chars().count() + version_label.chars().count();
+    let header_row = (
+        vec![
+            Span::styled(sparkle, accent),
+            Span::styled(title, strong),
+            Span::styled(version_label, dim),
+        ],
+        header_w,
+    );
+
+    let help_text = "/help for commands · /clear to reset · Ctrl+C to exit";
+    let help_row = (vec![Span::styled(help_text, dim)], help_text.chars().count());
+
+    let paste_text = "Ctrl+V to paste text or an image from your clipboard";
+    let paste_row = (
+        vec![Span::styled(paste_text, dim)],
+        paste_text.chars().count(),
+    );
+
+    let model_summary = format!(
+        "{} · effort {} · verbosity {} · {}",
+        app.config.model, app.config.reasoning_effort, app.config.verbosity, auth_label
+    );
+    let model_row = (
+        vec![Span::styled(model_summary.clone(), muted)],
+        model_summary.chars().count(),
+    );
+
+    let cwd_label = "cwd: ";
+    let cwd_row = (
+        vec![
+            Span::styled(cwd_label, muted),
+            Span::styled(cwd.clone(), strong),
+        ],
+        cwd_label.chars().count() + cwd.chars().count(),
+    );
+
+    let rows: Vec<(Vec<Span<'static>>, usize)> = vec![
+        header_row,
+        (vec![], 0),
+        help_row,
+        paste_row,
+        (vec![], 0),
+        model_row,
+        cwd_row,
+    ];
+
+    const MIN_INNER: usize = 56;
+    let inner_width = rows
+        .iter()
+        .map(|(_, w)| *w)
+        .max()
+        .unwrap_or(0)
+        .max(MIN_INNER);
+
+    let horiz: String = "─".repeat(inner_width + 2);
+
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
-        Span::styled("  ", dim),
-        Span::styled("●", accent),
-        Span::styled(" opencli ", strong),
-        Span::styled(format!("v{}", env!("CARGO_PKG_VERSION")), dim),
+        Span::styled("  ", muted),
+        Span::styled(format!("╭{horiz}╮"), border),
     ]));
+    for (spans, w) in rows {
+        let pad = inner_width.saturating_sub(w);
+        let mut row: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 3);
+        row.push(Span::styled("  ", muted));
+        row.push(Span::styled("│ ", border));
+        row.extend(spans);
+        row.push(Span::styled(format!("{} ", " ".repeat(pad)), border));
+        row.push(Span::styled("│", border));
+        lines.push(Line::from(row));
+    }
     lines.push(Line::from(vec![
-        Span::styled("  ", dim),
-        Span::styled("●", accent),
-        Span::styled(" ", dim),
-        Span::styled(app.config.model.clone(), strong),
-        Span::styled(
-            format!(
-                " · effort {} · verbosity {} · {}",
-                app.config.reasoning_effort, app.config.verbosity, auth_label
-            ),
-            dim,
-        ),
+        Span::styled("  ", muted),
+        Span::styled(format!("╰{horiz}╯"), border),
     ]));
-    lines.push(Line::from(vec![
-        Span::styled("  ", dim),
-        Span::styled("●", accent),
-        Span::styled(" cwd ", dim),
-        Span::styled(cwd, strong),
-    ]));
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "  Tips:",
-        Style::default().fg(Color::Rgb(190, 190, 190)),
-    )));
-    lines.push(Line::from(Span::styled(
-        "    • Type a question and press Enter",
-        dim,
-    )));
-    lines.push(Line::from(Span::styled(
-        "    • /help for commands · /clear to reset · Ctrl+C to exit",
-        dim,
-    )));
-    lines.push(Line::from(Span::styled(
-        "    • Ctrl+V to paste text or an image from your clipboard",
-        dim,
-    )));
     lines.push(Line::raw(""));
 }
 
