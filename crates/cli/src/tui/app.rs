@@ -125,6 +125,13 @@ pub struct App {
     pub spinner_word: String,
     pub spinner_frame: usize,
     pub tokens_used: u64,
+    /// Cumulative input tokens for the session — used by `/cost` to estimate
+    /// USD spend and break down the bill.
+    pub input_tokens_total: u64,
+    /// Cumulative output (reasoning + completion) tokens for the session.
+    pub output_tokens_total: u64,
+    /// Number of turns the user has run this session. Surfaced by `/cost`.
+    pub turn_count: u64,
     pub pending_images: Vec<std::path::PathBuf>,
     pub next_image_num: usize,
     pub overlay: Option<(OverlayKind, Picker)>,
@@ -236,6 +243,9 @@ impl App {
             spinner_word: String::new(),
             spinner_frame: 0,
             tokens_used: 0,
+            input_tokens_total: 0,
+            output_tokens_total: 0,
+            turn_count: 0,
             pending_images: Vec::new(),
             next_image_num: 1,
             overlay: None,
@@ -704,6 +714,7 @@ async fn apply_resume(
             let mut a = Agent::new(client, app.config.clone());
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
+            a.apply_project_memory();
             a.restore_from(record);
             *guard = Some(a);
         } else if let Some(a) = guard.as_mut() {
@@ -800,6 +811,18 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  /resume             pick a previous session to continue\n  \
                  /cwd [path]         show / set working directory\n  \
                  /status             show auth status\n  \
+                 /cost               show token usage and estimated cost\n  \
+                 /config             show current configuration\n  \
+                 /hooks              list configured PreToolUse hooks\n  \
+                 /mcp                list configured MCP servers\n  \
+                 /init               create CLAUDE.md for this project\n  \
+                 /memory             show CLAUDE.md\n  \
+                 /diff               show `git diff` for the working tree\n  \
+                 /review             ask the agent to review uncommitted changes\n  \
+                 /export [path]      save conversation as markdown\n  \
+                 /compact            ask the agent to compact the conversation\n  \
+                 /todos              show the session todo list\n  \
+                 /about              show opencli version + build info\n  \
                  /quit               exit\n\n\
                  Keyboard shortcuts:\n  \
                  Esc                 cancel the running turn (while busy)\n  \
@@ -945,11 +968,324 @@ async fn handle_slash(app: &mut App, cmd: &str) {
         "resume" => {
             app.open_overlay(OverlayKind::ResumePicker);
         }
+        "cost" | "usage" => {
+            let input = app.input_tokens_total;
+            let output = app.output_tokens_total;
+            let total = input.saturating_add(output);
+            let (in_per_m, out_per_m) = pricing_for(&app.config.model);
+            let in_cost = (input as f64) * in_per_m / 1_000_000.0;
+            let out_cost = (output as f64) * out_per_m / 1_000_000.0;
+            let total_cost = in_cost + out_cost;
+            let mut msg = String::new();
+            msg.push_str(&format!("Session usage — model: {}\n", app.config.model));
+            msg.push_str(&format!("  Turns:           {}\n", app.turn_count));
+            msg.push_str(&format!(
+                "  Input tokens:    {input:>12}  ·  ${in_cost:.4}\n",
+                in_cost = in_cost
+            ));
+            msg.push_str(&format!(
+                "  Output tokens:   {output:>12}  ·  ${out_cost:.4}\n",
+                out_cost = out_cost
+            ));
+            msg.push_str(&format!(
+                "  Total tokens:    {total:>12}\n  Estimated cost:  ${total_cost:.4}\n"
+            ));
+            msg.push_str(&format!(
+                "  Pricing assumed: ${in_per_m:.2}/M input, ${out_per_m:.2}/M output"
+            ));
+            app.blocks.push(Block::System(msg));
+        }
+        "config" => {
+            let auth = match app.auth_mode {
+                AuthMode::None => "none",
+                AuthMode::ApiKey => "api_key",
+                AuthMode::ChatGPT => "chatgpt",
+            };
+            let mcp_count = opencli_core::mcp::load_servers_config().len();
+            let hooks = opencli_core::hooks::load();
+            let hook_count = hooks.config.pre_tool_use.len();
+            let approval = match app.approval {
+                ApprovalMode::Auto => "auto",
+                ApprovalMode::OnRequest => "on_request",
+                ApprovalMode::Manual => "manual",
+                ApprovalMode::Plan => "plan",
+            };
+            app.blocks.push(Block::System(format!(
+                "Current configuration:\n  \
+                 model:            {}\n  \
+                 reasoning_effort: {}\n  \
+                 verbosity:        {}\n  \
+                 cwd:              {}\n  \
+                 approval:         {}\n  \
+                 auth_mode:        {}\n  \
+                 mcp_servers:      {}\n  \
+                 hooks (PreToolUse): {}",
+                app.config.model,
+                app.config.reasoning_effort,
+                app.config.verbosity,
+                app.cwd.display(),
+                approval,
+                auth,
+                mcp_count,
+                hook_count,
+            )));
+        }
+        "hooks" => {
+            let hooks = opencli_core::hooks::load();
+            let entries = &hooks.config.pre_tool_use;
+            if entries.is_empty() {
+                app.blocks.push(Block::System(
+                    "No PreToolUse hooks configured.\n\
+                     Add some in ~/.config/opencli/settings.json under .hooks.PreToolUse"
+                        .into(),
+                ));
+            } else {
+                let mut msg = String::from("PreToolUse hooks:\n");
+                for (i, h) in entries.iter().enumerate() {
+                    msg.push_str(&format!(
+                        "  {}. matcher={:<14}  command={}\n",
+                        i + 1,
+                        h.matcher,
+                        h.command
+                    ));
+                }
+                app.blocks.push(Block::System(msg));
+            }
+        }
+        "mcp" => {
+            let servers = opencli_core::mcp::load_servers_config();
+            if servers.is_empty() {
+                app.blocks.push(Block::System(
+                    "No MCP servers configured.\n\
+                     Add some in ~/.config/opencli/settings.json under .mcp_servers"
+                        .into(),
+                ));
+            } else {
+                let mut msg = String::from("MCP servers (from settings.json):\n");
+                let mut names: Vec<&String> = servers.keys().collect();
+                names.sort();
+                for n in names {
+                    let cfg = &servers[n];
+                    msg.push_str(&format!(
+                        "  · {}  ·  {} {}\n",
+                        n,
+                        cfg.command,
+                        cfg.args.join(" ")
+                    ));
+                }
+                msg.push_str("\nServers are spawned on first turn; tools register under mcp__<server>__<tool>.");
+                app.blocks.push(Block::System(msg));
+            }
+        }
+        "init" => {
+            let claude_md = app.cwd.join("CLAUDE.md");
+            if claude_md.exists() {
+                app.blocks.push(Block::System(format!(
+                    "CLAUDE.md already exists at {}. Use /memory to view it.",
+                    claude_md.display()
+                )));
+            } else {
+                // Queue a prompt asking the agent to analyse the repo and
+                // write a CLAUDE.md. The Enter handler will run it on the
+                // next tick of main_loop.
+                let prompt = "Analyze this repository and create a CLAUDE.md file at the repo root. \
+                              The file should describe: project purpose, tech stack, key architecture / \
+                              module layout, build + test commands, and any non-obvious conventions a new \
+                              contributor must know. Keep it concise (under 80 lines) and write it as \
+                              terse engineer-to-engineer notes, not a tutorial.";
+                app.message_queue.push(prompt.to_string());
+                app.blocks.push(Block::System(
+                    "Queued: agent will analyse the repo and create CLAUDE.md.".into(),
+                ));
+            }
+        }
+        "memory" => {
+            let claude_md = app.cwd.join("CLAUDE.md");
+            match std::fs::read_to_string(&claude_md) {
+                Ok(text) => app.blocks.push(Block::System(format!(
+                    "CLAUDE.md ({}):\n{}",
+                    claude_md.display(),
+                    text
+                ))),
+                Err(_) => app.blocks.push(Block::System(format!(
+                    "No CLAUDE.md at {}. Run /init to create one.",
+                    claude_md.display()
+                ))),
+            }
+        }
+        "diff" => {
+            // Pipe `git diff` from the cwd and surface its output. Empty
+            // output means a clean tree; non-zero exit (no git, not a repo)
+            // surfaces stderr so the user knows why.
+            let cwd = app.cwd.clone();
+            let out = tokio::process::Command::new("git")
+                .args(["diff", "--no-color"])
+                .current_dir(&cwd)
+                .output()
+                .await;
+            match out {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    if stdout.trim().is_empty() {
+                        app.blocks
+                            .push(Block::System("(no uncommitted changes)".into()));
+                    } else {
+                        app.blocks
+                            .push(Block::System(format!("$ git diff\n{stdout}")));
+                    }
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    app.blocks
+                        .push(Block::System(format!("git diff failed:\n{stderr}")));
+                }
+                Err(e) => app
+                    .blocks
+                    .push(Block::System(format!("git diff: {e}"))),
+            }
+        }
+        "review" => {
+            let prompt = "Review the uncommitted changes in this repository. Run `git diff` (or \
+                          the run_shell tool) to see them, then assess for correctness, security \
+                          risks, and obvious bugs. Cite locations as `path:line`. Surface only \
+                          findings that are CRITICAL/HIGH/MEDIUM — skip stylistic nits.";
+            app.message_queue.push(prompt.to_string());
+            app.blocks.push(Block::System(
+                "Queued: agent will review the uncommitted changes.".into(),
+            ));
+        }
+        "export" => {
+            let default_name = format!(
+                "opencli-export-{}.md",
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
+            );
+            let path = if arg.is_empty() {
+                app.cwd.join(default_name)
+            } else {
+                let p = std::path::PathBuf::from(arg);
+                if p.is_absolute() { p } else { app.cwd.join(p) }
+            };
+            let md = render_blocks_as_markdown(&app.blocks);
+            match std::fs::write(&path, md) {
+                Ok(_) => app
+                    .blocks
+                    .push(Block::System(format!("Exported conversation → {}", path.display()))),
+                Err(e) => app
+                    .blocks
+                    .push(Block::System(format!("export failed: {e}"))),
+            }
+        }
+        "compact" => {
+            // Ask the agent itself to produce a tight summary. The model
+            // sees the full history; its next assistant message becomes the
+            // new compact baseline that the user can keep iterating on.
+            let prompt = "Summarize the conversation so far into a single self-contained block: \
+                          what we worked on, what files / decisions matter going forward, and \
+                          where we left off. Keep it under 30 lines. After this turn, treat the \
+                          summary as the canonical context — earlier messages can be ignored.";
+            app.message_queue.push(prompt.to_string());
+            app.blocks.push(Block::System(
+                "Queued: agent will compact the conversation.".into(),
+            ));
+        }
+        "todos" | "todo" => {
+            // Session todos live behind the agent mutex (`Arc<Mutex<SessionState>>`).
+            // We can't grab them here without plumbing the Arc through; for
+            // now, surface a hint that points the user at the in-chat
+            // rendering (todo_write tool output) instead of lying about an
+            // empty list.
+            app.blocks.push(Block::System(
+                "Session todos are written by the model via `todo_write`. \
+                 They render as a tool call block above when active. \
+                 (Persistent surfacing in this command is on the roadmap.)"
+                    .into(),
+            ));
+        }
+        "about" => {
+            app.blocks.push(Block::System(format!(
+                "opencli v{}\n\
+                 model:  {}\n\
+                 effort: {}\n\
+                 build:  {}",
+                env!("CARGO_PKG_VERSION"),
+                app.config.model,
+                app.config.reasoning_effort,
+                if cfg!(debug_assertions) { "debug" } else { "release" },
+            )));
+        }
         "quit" | "exit" => app.should_exit = true,
         other => app
             .blocks
             .push(Block::System(format!("Unknown command /{other}. Try /help."))),
     }
+}
+
+/// Rough OpenAI Responses pricing per model — used by `/cost` for a local
+/// estimate. Returns `(input_$_per_million, output_$_per_million)`.
+/// Update when official pricing changes; an inexact estimate beats none.
+fn pricing_for(model: &str) -> (f64, f64) {
+    match model {
+        "gpt-5.5" => (1.25, 10.0),
+        "gpt-5.5-pro" => (5.00, 20.0),
+        "gpt-5.4" => (1.25, 10.0),
+        "gpt-5.4-pro" => (5.00, 20.0),
+        "gpt-5.4-mini" => (0.15, 0.60),
+        "gpt-5.4-nano" => (0.05, 0.20),
+        _ => (1.25, 10.0),
+    }
+}
+
+/// Render the visible chat blocks as a portable Markdown transcript for
+/// `/export`. Reasoning bodies and tool args/outputs are included so the
+/// export captures the same shape the user saw on screen.
+fn render_blocks_as_markdown(blocks: &[Block]) -> String {
+    let mut out = String::new();
+    out.push_str("# opencli conversation\n\n");
+    for b in blocks {
+        match b {
+            Block::Welcome => {}
+            Block::User(text) => {
+                out.push_str("## 🧑 user\n\n");
+                out.push_str(text);
+                out.push_str("\n\n");
+            }
+            Block::Assistant { text, reasoning, thought_for_secs, .. } => {
+                out.push_str("## 🤖 assistant\n\n");
+                if let Some(secs) = thought_for_secs {
+                    out.push_str(&format!("_thought for {secs}s_\n\n"));
+                }
+                if !reasoning.is_empty() {
+                    out.push_str("<details><summary>reasoning</summary>\n\n```\n");
+                    out.push_str(reasoning);
+                    out.push_str("\n```\n\n</details>\n\n");
+                }
+                if !text.is_empty() {
+                    out.push_str(text);
+                    out.push_str("\n\n");
+                }
+            }
+            Block::Tool { name, args, output, error, .. } => {
+                let marker = if *error { "❌" } else { "🔧" };
+                out.push_str(&format!("### {marker} tool: `{name}`\n\n"));
+                if !args.is_empty() {
+                    out.push_str("**args:**\n\n```json\n");
+                    out.push_str(args);
+                    out.push_str("\n```\n\n");
+                }
+                if let Some(o) = output {
+                    out.push_str("**output:**\n\n```\n");
+                    out.push_str(o);
+                    out.push_str("\n```\n\n");
+                }
+            }
+            Block::System(s) => {
+                out.push_str("> ");
+                out.push_str(&s.replace('\n', "\n> "));
+                out.push_str("\n\n");
+            }
+        }
+    }
+    out
 }
 
 
@@ -980,6 +1316,7 @@ async fn launch_turn(
             let mut a = Agent::new(client, app.config.clone());
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
+            a.apply_project_memory();
             *guard = Some(a);
         } else {
             // Update mutable config every turn so /model, /effort, /plan take effect.
@@ -1002,6 +1339,7 @@ async fn launch_turn(
     app.turn_started_at = Some(std::time::Instant::now());
     app.spinner_word = pick_spinner_word();
     app.spinner_frame = 0;
+    app.turn_count = app.turn_count.saturating_add(1);
     app.status_line.clear();
     app.blocks.push(Block::Assistant {
         text: String::new(),
@@ -1173,8 +1511,10 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 app.status_line = "(flushing queued messages…)".into();
             }
         }
-        AgentEvent::Usage { total_tokens, .. } => {
+        AgentEvent::Usage { input_tokens, output_tokens, total_tokens } => {
             app.tokens_used = app.tokens_used.saturating_add(total_tokens);
+            app.input_tokens_total = app.input_tokens_total.saturating_add(input_tokens);
+            app.output_tokens_total = app.output_tokens_total.saturating_add(output_tokens);
         }
         AgentEvent::Error { message } => {
             app.blocks.push(Block::System(format!("error: {message}")));

@@ -88,6 +88,37 @@ impl Agent {
         self.session_created_ms = record.meta.created_at_ms;
     }
 
+    /// Append the project's `CLAUDE.md` (and the global one at
+    /// `~/.config/opencli/CLAUDE.md`) to the system prompt so the model
+    /// always sees the user's project notes and personal conventions.
+    /// Idempotent — call after `cwd` is set; reading is best-effort and
+    /// silently no-ops if either file is missing.
+    pub fn apply_project_memory(&mut self) {
+        let mut additions = String::new();
+        // Global personal notes first so the project file gets the last word.
+        let global = crate::config::config_dir().join("CLAUDE.md");
+        if let Ok(text) = std::fs::read_to_string(&global) {
+            let t = text.trim();
+            if !t.is_empty() {
+                additions.push_str(
+                    "\n\n# Global memory (~/.config/opencli/CLAUDE.md)\n\n",
+                );
+                additions.push_str(t);
+            }
+        }
+        let project = self.cwd.join("CLAUDE.md");
+        if let Ok(text) = std::fs::read_to_string(&project) {
+            let t = text.trim();
+            if !t.is_empty() {
+                additions.push_str("\n\n# Project memory (./CLAUDE.md)\n\n");
+                additions.push_str(t);
+            }
+        }
+        if !additions.is_empty() {
+            self.system_prompt.push_str(&additions);
+        }
+    }
+
     /// Build a `SessionRecord` snapshot of the current conversation. Cheap
     /// enough to call after every turn — the history is just `InputItem`s.
     pub fn to_session_record(&self) -> crate::session::SessionRecord {

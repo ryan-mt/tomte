@@ -184,87 +184,42 @@ pub fn render(f: &mut Frame, anchor_area: Rect, picker: &Picker) {
 // ============ predefined item builders ============
 
 pub fn slash_commands() -> Vec<PickerItem> {
+    fn item(key: &str, title: &str, desc: &str) -> PickerItem {
+        PickerItem {
+            key: key.into(),
+            title: title.into(),
+            description: desc.into(),
+        }
+    }
     vec![
-        PickerItem {
-            key: "model".into(),
-            title: "/model".into(),
-            description: "change the model".into(),
-        },
-        PickerItem {
-            key: "thinking".into(),
-            title: "/thinking".into(),
-            description: "change reasoning effort".into(),
-        },
-        PickerItem {
-            key: "effort".into(),
-            title: "/effort".into(),
-            description: "alias for /thinking".into(),
-        },
-        PickerItem {
-            key: "verbosity".into(),
-            title: "/verbosity".into(),
-            description: "change output verbosity".into(),
-        },
-        PickerItem {
-            key: "login".into(),
-            title: "/login".into(),
-            description: "sign in with ChatGPT".into(),
-        },
-        PickerItem {
-            key: "apikey".into(),
-            title: "/apikey".into(),
-            description: "save an OpenAI API key".into(),
-        },
-        PickerItem {
-            key: "logout".into(),
-            title: "/logout".into(),
-            description: "clear credentials".into(),
-        },
-        PickerItem {
-            key: "status".into(),
-            title: "/status".into(),
-            description: "show auth status".into(),
-        },
-        PickerItem {
-            key: "img".into(),
-            title: "/img".into(),
-            description: "attach an image to next message".into(),
-        },
-        PickerItem {
-            key: "cwd".into(),
-            title: "/cwd".into(),
-            description: "show / set working directory".into(),
-        },
-        PickerItem {
-            key: "clear".into(),
-            title: "/clear".into(),
-            description: "clear the conversation".into(),
-        },
-        PickerItem {
-            key: "help".into(),
-            title: "/help".into(),
-            description: "list all commands".into(),
-        },
-        PickerItem {
-            key: "resume".into(),
-            title: "/resume".into(),
-            description: "pick a previous session to continue".into(),
-        },
-        PickerItem {
-            key: "plan".into(),
-            title: "/plan".into(),
-            description: "enter plan mode (read-only tools)".into(),
-        },
-        PickerItem {
-            key: "normal".into(),
-            title: "/normal".into(),
-            description: "leave plan mode".into(),
-        },
-        PickerItem {
-            key: "quit".into(),
-            title: "/quit".into(),
-            description: "exit opencli".into(),
-        },
+        item("help", "/help", "list all commands"),
+        item("model", "/model", "change the model"),
+        item("thinking", "/thinking", "change reasoning effort"),
+        item("effort", "/effort", "alias for /thinking"),
+        item("verbosity", "/verbosity", "change output verbosity"),
+        item("cost", "/cost", "show token usage and estimated cost"),
+        item("config", "/config", "show current configuration"),
+        item("hooks", "/hooks", "list configured PreToolUse hooks"),
+        item("mcp", "/mcp", "list configured MCP servers"),
+        item("init", "/init", "create CLAUDE.md for this project"),
+        item("memory", "/memory", "show CLAUDE.md"),
+        item("diff", "/diff", "show `git diff` for the working tree"),
+        item("review", "/review", "ask the agent to review uncommitted changes"),
+        item("export", "/export", "save conversation as markdown"),
+        item("compact", "/compact", "ask the agent to compact the conversation"),
+        item("todos", "/todos", "show the session todo list"),
+        item("about", "/about", "show opencli version + build info"),
+        item("login", "/login", "sign in with ChatGPT"),
+        item("apikey", "/apikey", "save an OpenAI API key"),
+        item("logout", "/logout", "clear credentials"),
+        item("status", "/status", "show auth status"),
+        item("img", "/img", "attach an image to next message"),
+        item("cwd", "/cwd", "show / set working directory"),
+        item("clear", "/clear", "clear the conversation"),
+        item("resume", "/resume", "pick a previous session to continue"),
+        item("plan", "/plan", "enter plan mode (read-only tools)"),
+        item("normal", "/normal", "leave plan mode"),
+        item("quit", "/quit", "exit opencli"),
     ]
 }
 
