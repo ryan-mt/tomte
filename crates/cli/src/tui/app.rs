@@ -152,6 +152,10 @@ pub struct App {
     /// (read-only); `/normal` flips back to `ApprovalMode::OnRequest`. The
     /// value is copied onto the active `Agent` each turn in `launch_turn`.
     pub approval: ApprovalMode,
+    /// Whether destructive tool calls require a TUI approval modal. Toggled
+    /// by `/perms`. Defaults to true so the modal stays on unless the user
+    /// explicitly opts out.
+    pub require_approval: bool,
     /// Set true by /quit and /exit so the main loop can break cleanly,
     /// letting `run()` call restore_terminal before returning. Previously
     /// these commands called std::process::exit(0) which skipped the
@@ -162,6 +166,9 @@ pub struct App {
     /// next tick. Going through a flag keeps `handle_overlay_select` free
     /// of the agent Arc and avoids re-plumbing its signature.
     pub pending_resume_id: Option<String>,
+    /// Set true by `/undo` so main_loop can invoke `Agent::undo_last_edit()`
+    /// on the next tick (slash handlers don't have the agent Arc).
+    pub pending_undo: bool,
     /// True until the first frame has opened the resume picker. Used by
     /// `opencli resume` to bypass needing to type `/resume` after launch.
     pub start_with_resume_picker: bool,
@@ -266,8 +273,10 @@ impl App {
             expanded_tools: false,
             current_turn: None,
             approval: ApprovalMode::OnRequest,
+            require_approval: true,
             should_exit: false,
             pending_resume_id: None,
+            pending_undo: false,
             start_with_resume_picker: false,
             session_todos: Vec::new(),
             pending_approval: None,
@@ -345,6 +354,21 @@ async fn main_loop(
         // out-of-band so handle_overlay_select doesn't need the agent Arc.
         if let Some(id) = app.pending_resume_id.take() {
             apply_resume(&mut app, &agent, &id).await;
+        }
+        // `/undo` sets this so the agent Arc can stay out of handle_slash.
+        if std::mem::take(&mut app.pending_undo) {
+            let result = {
+                let mut g = agent.lock().await;
+                match g.as_mut() {
+                    Some(a) => a.undo_last_edit().await,
+                    None => Err(anyhow::anyhow!("no agent yet — nothing to undo")),
+                }
+            };
+            let msg = match result {
+                Ok(s) => s,
+                Err(e) => format!("undo: {e}"),
+            };
+            app.blocks.push(Block::System(msg));
         }
         // Flush the message queue after a turn completes.
         if !app.busy && !app.message_queue.is_empty() && app.screen == Screen::Chat {
@@ -746,7 +770,7 @@ async fn apply_resume(
                 }
             };
             let mut a = Agent::new(client, app.config.clone());
-            a.require_approval = true;
+            a.require_approval = app.require_approval;
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
             a.apply_project_memory();
@@ -858,6 +882,8 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  /compact            ask the agent to compact the conversation\n  \
                  /todos              show the session todo list\n  \
                  /about              show opencli version + build info\n  \
+                 /perms [on|off]     toggle the approval modal for writes/shell\n  \
+                 /undo               revert the most recent file edit\n  \
                  /quit               exit\n\n\
                  Keyboard shortcuts:\n  \
                  Esc                 cancel the running turn (while busy)\n  \
@@ -996,6 +1022,30 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             app.approval = ApprovalMode::OnRequest;
             app.blocks
                 .push(Block::System("plan mode → off".into()));
+        }
+        "perms" | "approvals" => {
+            let new_state = match arg {
+                "on" | "true" | "1" => true,
+                "off" | "false" | "0" => false,
+                "" => !app.require_approval,
+                other => {
+                    app.blocks.push(Block::System(format!(
+                        "Usage: /perms [on|off]  (current: {}). Got: {other}",
+                        if app.require_approval { "on" } else { "off" }
+                    )));
+                    return;
+                }
+            };
+            app.require_approval = new_state;
+            app.blocks.push(Block::System(format!(
+                "approval modal → {}",
+                if new_state { "on" } else { "off (writes/shell auto-approved)" }
+            )));
+        }
+        "undo" => {
+            // main_loop drains this flag so the agent Arc stays out of
+            // handle_slash (same pattern as `pending_resume_id`).
+            app.pending_undo = true;
         }
         "clear" => {
             app.blocks.clear();
@@ -1370,7 +1420,7 @@ async fn launch_turn(
         let mut guard = agent.lock().await;
         if guard.is_none() {
             let mut a = Agent::new(client, app.config.clone());
-            a.require_approval = true;
+            a.require_approval = app.require_approval;
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
             a.apply_project_memory();
@@ -1381,6 +1431,7 @@ async fn launch_turn(
                 a.config = app.config.clone();
                 a.cwd = app.cwd.clone();
                 a.approval = app.approval;
+                a.require_approval = app.require_approval;
             }
         }
         if let Some(a) = guard.as_mut() {

@@ -219,6 +219,8 @@ pub fn slash_commands() -> Vec<PickerItem> {
         item("resume", "/resume", "pick a previous session to continue"),
         item("plan", "/plan", "enter plan mode (read-only tools)"),
         item("normal", "/normal", "leave plan mode"),
+        item("perms", "/perms", "toggle the approval modal for writes/shell"),
+        item("undo", "/undo", "revert the most recent file edit"),
         item("quit", "/quit", "exit opencli"),
     ]
 }
