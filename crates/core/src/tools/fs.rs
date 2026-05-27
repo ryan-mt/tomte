@@ -183,15 +183,26 @@ Parameters:\n\
             "additionalProperties": false
         })
     }
+    async fn compute_preview(&self, args: &Value, ctx: &ToolContext) -> Option<String> {
+        let a: WriteArgs = serde_json::from_value(args.clone()).ok()?;
+        let path = resolve(&ctx.cwd, &a.path).ok()?;
+        let existing = tokio::fs::metadata(&path).await.ok().map(|m| m.len());
+        Some(match existing {
+            Some(n) => format!("Overwrite {} ({n} bytes -> {} bytes)", a.path, a.content.len()),
+            None => format!("Create new file {} ({} bytes)", a.path, a.content.len()),
+        })
+    }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: WriteArgs = super::parse_args("write_file", args)?;
         let path = resolve(&ctx.cwd, &a.path)?;
+        let original = tokio::fs::read_to_string(&path).await.ok();
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
         }
         tokio::fs::write(&path, a.content.as_bytes())
             .await
             .with_context(|| format!("write {}", path.display()))?;
+        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: original });
         Ok(format!("Wrote {} bytes to {}", a.content.len(), path.display()))
     }
 }
@@ -251,6 +262,14 @@ Parameters:\n\
             "additionalProperties": false
         })
     }
+    async fn compute_preview(&self, args: &Value, _ctx: &ToolContext) -> Option<String> {
+        let a: EditArgs = serde_json::from_value(args.clone()).ok()?;
+        let trunc = |s: &str| -> String {
+            let one = s.replace('\n', "/");
+            if one.chars().count() > 60 { format!("{}...", one.chars().take(60).collect::<String>()) } else { one }
+        };
+        Some(format!("Edit {} - `{}` -> `{}`{}", a.path, trunc(&a.old_string), trunc(&a.new_string), if a.replace_all { " (all)" } else { "" }))
+    }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: EditArgs = super::parse_args("edit_file", args)?;
         let path = resolve(&ctx.cwd, &a.path)?;
@@ -280,6 +299,7 @@ Parameters:\n\
         tokio::fs::rename(&tmp, &path)
             .await
             .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: Some(original) });
         Ok(format!("Replaced {} occurrence(s) in {}", count, path.display()))
     }
 }
@@ -415,6 +435,10 @@ Parameters:\n\
             "additionalProperties": false
         })
     }
+    async fn compute_preview(&self, args: &Value, _ctx: &ToolContext) -> Option<String> {
+        let a: MultiEditArgs = serde_json::from_value(args.clone()).ok()?;
+        Some(format!("Multi-edit {} ({} edit(s))", a.path, a.edits.len()))
+    }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: MultiEditArgs = super::parse_args("multi_edit", args)?;
         if a.edits.is_empty() {
@@ -424,6 +448,7 @@ Parameters:\n\
         let mut content = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("read {}", path.display()))?;
+        let original_for_undo = content.clone();
         let mut total_replacements = 0usize;
         for (i, edit) in a.edits.iter().enumerate() {
             let count = content.matches(&edit.old_string).count();
@@ -455,12 +480,42 @@ Parameters:\n\
         tokio::fs::rename(&tmp, &path)
             .await
             .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: Some(original_for_undo) });
         Ok(format!(
             "Applied {} edit(s) ({} total replacement(s)) to {}",
             a.edits.len(),
             total_replacements,
             path.display()
         ))
+    }
+}
+
+pub struct UndoLastEdit;
+
+#[async_trait]
+impl BuiltinTool for UndoLastEdit {
+    fn name(&self) -> &'static str { "undo_last_edit" }
+    fn description(&self) -> &'static str {
+        "Roll back the most recent file edit. If that write created a new file, undo removes it.\n\nParameters: none."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })
+    }
+    async fn execute(&self, _args: Value, ctx: &ToolContext) -> Result<String> {
+        let entry = { let mut session = ctx.session.lock().await; session.undo_stack.pop_back() };
+        let entry = entry.ok_or_else(|| anyhow!("no edits to undo"))?;
+        match entry.original_content {
+            Some(content) => {
+                tokio::fs::write(&entry.path, content).await
+                    .with_context(|| format!("restore {}", entry.path.display()))?;
+                Ok(format!("Restored {}", entry.path.display()))
+            }
+            None => {
+                tokio::fs::remove_file(&entry.path).await
+                    .with_context(|| format!("remove {}", entry.path.display()))?;
+                Ok(format!("Removed (was a new file): {}", entry.path.display()))
+            }
+        }
     }
 }
 

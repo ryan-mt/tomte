@@ -72,14 +72,28 @@ enum Command {
     },
 }
 
+fn init_tracing() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,opencli=info"));
+    let log_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("opencli").join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join(format!("opencli-{}.log", chrono::Utc::now().format("%Y-%m-%d")));
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).ok();
+    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    let registry = tracing_subscriber::registry().with(env_filter).with(stderr_layer);
+    if let Some(f) = file {
+        let file_layer = tracing_subscriber::fmt::layer().with_writer(std::sync::Mutex::new(f)).with_ansi(false);
+        let _ = registry.with(file_layer).try_init();
+    } else {
+        let _ = registry.try_init();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,opencli=info")),
-        )
-        .try_init();
+    init_tracing();
 
     let cli = Cli::parse();
 

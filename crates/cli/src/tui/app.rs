@@ -168,6 +168,14 @@ pub struct App {
     /// Snapshot of the agent's session todo list, refreshed after every
     /// tool batch via `AgentEvent::TodosSnapshot`. Read by `/todos`.
     pub session_todos: Vec<TodoItem>,
+    pub pending_approval: Option<PendingApproval>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingApproval {
+    pub call_id: String,
+    pub tool_name: String,
+    pub diff_preview: Option<String>,
 }
 
 pub const SPINNER_WORDS: &[&str] = &[
@@ -262,6 +270,7 @@ impl App {
             pending_resume_id: None,
             start_with_resume_picker: false,
             session_todos: Vec::new(),
+            pending_approval: None,
         }
     }
 
@@ -460,7 +469,28 @@ async fn handle_key(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
 
-    // Overlay key handling takes precedence.
+    if let Some(p) = app.pending_approval.clone() {
+        let decision = match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => Some(true),
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Some(false),
+            _ => None,
+        };
+        if let Some(granted) = decision {
+            app.pending_approval = None;
+            let label = if granted { "approved" } else { "denied" };
+            app.blocks.push(Block::System(format!("{label}: {}", p.tool_name)));
+            let agent = agent.clone();
+            let call_id = p.call_id.clone();
+            tokio::spawn(async move {
+                if let Some(a) = agent.lock().await.as_ref() {
+                    a.respond_approval(&call_id, granted).await;
+                }
+            });
+            return Ok(false);
+        }
+        return Ok(false);
+    }
+
     if app.overlay.is_some() {
         return handle_overlay_key(app, key).await;
     }
@@ -716,6 +746,7 @@ async fn apply_resume(
                 }
             };
             let mut a = Agent::new(client, app.config.clone());
+            a.require_approval = true;
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
             a.apply_project_memory();
@@ -1339,6 +1370,7 @@ async fn launch_turn(
         let mut guard = agent.lock().await;
         if guard.is_none() {
             let mut a = Agent::new(client, app.config.clone());
+            a.require_approval = true;
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
             a.apply_project_memory();
@@ -1550,6 +1582,25 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             app.turn_started_at = None;
             app.status_line.clear();
             app.current_turn = None;
+        }
+        AgentEvent::ContextWarning { used, limit } => {
+            let pct = (used as f64 / limit.max(1) as f64 * 100.0) as u64;
+            app.blocks.push(Block::System(format!("context {used}/{limit} tokens ({pct}%) - consider /compact")));
+        }
+        AgentEvent::ApprovalRequest { call_id, tool_name, args_json: _, diff_preview } => {
+            let preview = diff_preview.as_deref().unwrap_or("(no preview)").to_string();
+            app.blocks.push(Block::System(format!("approval needed - {tool_name}\n  {preview}\n  press [y]es / [n]o or Esc")));
+            app.pending_approval = Some(PendingApproval { call_id, tool_name, diff_preview });
+        }
+        AgentEvent::ApprovalGranted { call_id } => {
+            if app.pending_approval.as_ref().is_some_and(|p| p.call_id == call_id) {
+                app.pending_approval = None;
+            }
+        }
+        AgentEvent::ApprovalDenied { call_id } => {
+            if app.pending_approval.as_ref().is_some_and(|p| p.call_id == call_id) {
+                app.pending_approval = None;
+            }
         }
     }
 }

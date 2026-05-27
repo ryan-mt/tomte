@@ -242,6 +242,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 cfg.reasoning_effort = r;
             }
             let mut agent = Agent::new(client, cfg);
+            agent.require_approval = true;
             if let Some(cwd) = start.cwd {
                 let p = std::path::PathBuf::from(cwd);
                 if p.is_dir() {
@@ -266,13 +267,34 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         agent.run_turn(tx).await
     });
 
-    while let Some(ev) = rx.recv().await {
-        let payload = match serde_json::to_string(&ev) {
-            Ok(s) => s,
-            Err(e) => json_err(format!("serialize: {e}")),
-        };
-        if socket.send(Message::Text(payload)).await.is_err() {
-            break;
+    loop {
+        tokio::select! {
+            ev = rx.recv() => {
+                let Some(ev) = ev else { break };
+                let payload = match serde_json::to_string(&ev) {
+                    Ok(s) => s,
+                    Err(e) => json_err(format!("serialize: {e}")),
+                };
+                if socket.send(Message::Text(payload)).await.is_err() { break; }
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if v.get("kind").and_then(|k| k.as_str()) == Some("approval_decision") {
+                                let call_id = v.get("call_id").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                                let granted = v.get("granted").and_then(|g| g.as_bool()).unwrap_or(false);
+                                if !call_id.is_empty() {
+                                    let a = agent_arc.lock().await;
+                                    a.respond_approval(&call_id, granted).await;
+                                }
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
         }
     }
     let _ = run_task.await;
