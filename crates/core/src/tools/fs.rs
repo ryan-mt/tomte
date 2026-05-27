@@ -320,15 +320,38 @@ impl BuiltinTool for MultiEdit {
         "multi_edit"
     }
     fn description(&self) -> &'static str {
-        "Apply a sequence of replacements to a single file atomically. Each edit is `{old_string, new_string, replace_all}` and runs in order against the output of the previous edit. The file is read once, transformed entirely in memory, and written back via a temp-file + rename so a crash mid-write leaves the original intact.\n\
+        "Apply a sequence of replacements to a single file atomically. Each edit is `{old_string, new_string, replace_all}` and runs in order against the output of the previous edit, so edit #2 sees the file as if edit #1 already happened. The file is read once, transformed entirely in memory, and written back via a temp-file + rename — a crash mid-write leaves the original intact, and a failure on edit #N reverts every prior edit in the same call.\n\
 \n\
-Use this when you need to make several related changes to the same file. It is faster and safer than calling `edit_file` repeatedly: the model only spends one tool call, and a failure on edit #3 reverts edits #1 and #2 too.\n\
+When to use:\n\
+- Several related changes to the same file in one shot — e.g. rename a symbol at its declaration and every call site in the file, or restructure a function and update its docs.\n\
+- A refactor where the edits depend on each other (the second `old_string` only exists after the first edit applied).\n\
+- Any time you'd otherwise issue 2+ `edit_file` calls against the same path — `multi_edit` is one tool call, one atomic write, one rollback boundary.\n\
 \n\
-Always read the file first. `old_string` is matched literally; provide enough surrounding context to make it unique unless `replace_all` is true.\n\
+When NOT to use:\n\
+- One change to a file — `edit_file` is simpler.\n\
+- Changes across multiple files — call `multi_edit` once per file.\n\
+- Creating a new file — use `write_file`.\n\
+- Wholesale rewrites — use `write_file`.\n\
+\n\
+How edits chain:\n\
+- Edits apply in array order; each one sees the cumulative result of the previous edits, not the original file.\n\
+- If edit #2's `old_string` overlaps text edit #1 just rewrote, write edit #2 to match the rewritten text.\n\
+- If an edit fails (no match, ambiguous match) the whole call aborts and the file on disk is unchanged.\n\
+\n\
+How to make each `old_string` unique:\n\
+- Include the whole line(s) you're changing, not just a substring.\n\
+- Include 1–3 neighboring lines (above or below) for additional context.\n\
+- For repeated tokens (imports, identical method calls), set `replace_all: true`.\n\
+\n\
+Common mistakes:\n\
+- Skipping `read_file` first — `old_string` will be a guess and edit #1 won't match.\n\
+- Writing edit #2's `old_string` against the original file when edit #1 already changed those lines.\n\
+- Putting independent files into one call — `path` is a single string, this tool does not span files.\n\
+- Reordering edits without re-reading: changing the order changes the result when edits touch overlapping regions.\n\
 \n\
 Parameters:\n\
 - `path`: Relative path inside the working directory; file must exist.\n\
-- `edits`: Ordered list of replacements. Each entry must include `old_string`, `new_string`, and `replace_all` (boolean)."
+- `edits`: Ordered list of replacements; at least one entry. Each entry must include `old_string`, `new_string`, and `replace_all` (boolean)."
     }
     fn parameters_schema(&self) -> Value {
         json!({
