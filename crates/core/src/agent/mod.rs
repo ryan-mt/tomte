@@ -106,6 +106,27 @@ impl Agent {
         if let Some(s) = sender { let _ = s.send(granted); }
     }
 
+    /// Roll back the most recent file edit on the agent's session undo stack.
+    /// Equivalent to the `undo_last_edit` tool but callable directly from the
+    /// host (e.g. a `/undo` slash command) without round-tripping the model.
+    pub async fn undo_last_edit(&self) -> anyhow::Result<String> {
+        use anyhow::{anyhow, Context};
+        let entry = { let mut session = self.session.lock().await; session.undo_stack.pop_back() };
+        let entry = entry.ok_or_else(|| anyhow!("no edits to undo"))?;
+        match entry.original_content {
+            Some(content) => {
+                tokio::fs::write(&entry.path, content).await
+                    .with_context(|| format!("restore {}", entry.path.display()))?;
+                Ok(format!("Restored {}", entry.path.display()))
+            }
+            None => {
+                tokio::fs::remove_file(&entry.path).await
+                    .with_context(|| format!("remove {}", entry.path.display()))?;
+                Ok(format!("Removed (was a new file): {}", entry.path.display()))
+            }
+        }
+    }
+
     /// Replace this agent's history and identity from a stored session so
     /// `/resume` can pick up exactly where the previous run left off.
     pub fn restore_from(&mut self, record: crate::session::SessionRecord) {
