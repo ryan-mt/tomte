@@ -182,7 +182,6 @@ pub struct App {
 pub struct PendingApproval {
     pub call_id: String,
     pub tool_name: String,
-    pub diff_preview: Option<String>,
 }
 
 pub const SPINNER_WORDS: &[&str] = &[
@@ -1641,7 +1640,7 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
         AgentEvent::ApprovalRequest { call_id, tool_name, args_json: _, diff_preview } => {
             let preview = diff_preview.as_deref().unwrap_or("(no preview)").to_string();
             app.blocks.push(Block::System(format!("approval needed - {tool_name}\n  {preview}\n  press [y]es / [n]o or Esc")));
-            app.pending_approval = Some(PendingApproval { call_id, tool_name, diff_preview });
+            app.pending_approval = Some(PendingApproval { call_id, tool_name });
         }
         AgentEvent::ApprovalGranted { call_id } => {
             if app.pending_approval.as_ref().is_some_and(|p| p.call_id == call_id) {

@@ -68,7 +68,7 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
     if has("git") && has("push") && tokens.iter().any(|t| matches!(*t, "--force" | "-f" | "--force-with-lease")) {
         return Some("git push --force rewrites remote history");
     }
-    if has("git") && has("reset") && tokens.iter().any(|t| *t == "--hard") {
+    if has("git") && has("reset") && tokens.contains(&"--hard") {
         return Some("git reset --hard discards uncommitted work");
     }
     if has("git") && has("clean") {

@@ -8,7 +8,7 @@
 
 use opencli_core::openai::{InputItem, MessageContent};
 use opencli_core::session::{self, SessionMeta, SessionRecord};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn sample_history(prompt: &str) -> Vec<InputItem> {
     vec![
@@ -25,7 +25,7 @@ fn sample_history(prompt: &str) -> Vec<InputItem> {
     ]
 }
 
-fn record(cwd: &PathBuf, id: &str, ts: u64) -> SessionRecord {
+fn record(cwd: &Path, id: &str, ts: u64) -> SessionRecord {
     SessionRecord {
         meta: SessionMeta {
             id: id.into(),
