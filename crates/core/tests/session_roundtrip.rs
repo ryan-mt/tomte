@@ -29,7 +29,7 @@ fn record(cwd: &Path, id: &str, ts: u64) -> SessionRecord {
     SessionRecord {
         meta: SessionMeta {
             id: id.into(),
-            cwd: cwd.clone(),
+            cwd: cwd.to_path_buf(),
             model: "gpt-5.5".into(),
             created_at_ms: ts,
             updated_at_ms: ts,
