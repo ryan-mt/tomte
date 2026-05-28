@@ -82,17 +82,18 @@ impl OpenAiClient {
         );
         h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         h.insert("Accept", HeaderValue::from_static("text/event-stream"));
-        if let Credential::OAuth { account_id: Some(id), .. } = &self.credential {
+        if let Credential::OAuth {
+            account_id: Some(id),
+            ..
+        } = &self.credential
+        {
             h.insert("ChatGPT-Account-ID", HeaderValue::from_str(id)?);
         }
         if self.credential.is_chatgpt_subscription() {
             h.insert("OpenAI-Beta", HeaderValue::from_static("responses=v1"));
             h.insert("OAI-Product-Sku", HeaderValue::from_static("codex"));
             h.insert("originator", HeaderValue::from_static("opencli"));
-            h.insert(
-                "session_id",
-                HeaderValue::from_str(&self.session_id)?,
-            );
+            h.insert("session_id", HeaderValue::from_str(&self.session_id)?);
         }
         Ok(h)
     }
@@ -169,7 +170,11 @@ pub async fn raw_post<B: Serialize>(
         .header(AUTHORIZATION, credential.auth_header_value())
         .header(CONTENT_TYPE, "application/json")
         .json(body);
-    if let Credential::OAuth { account_id: Some(id), .. } = credential {
+    if let Credential::OAuth {
+        account_id: Some(id),
+        ..
+    } = credential
+    {
         req = req.header("ChatGPT-Account-ID", id.clone());
     }
     let resp = req.send().await?;

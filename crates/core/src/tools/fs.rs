@@ -188,7 +188,11 @@ Parameters:\n\
         let path = resolve(&ctx.cwd, &a.path).ok()?;
         let existing = tokio::fs::metadata(&path).await.ok().map(|m| m.len());
         Some(match existing {
-            Some(n) => format!("Overwrite {} ({n} bytes -> {} bytes)", a.path, a.content.len()),
+            Some(n) => format!(
+                "Overwrite {} ({n} bytes -> {} bytes)",
+                a.path,
+                a.content.len()
+            ),
             None => format!("Create new file {} ({} bytes)", a.path, a.content.len()),
         })
     }
@@ -203,8 +207,16 @@ Parameters:\n\
             .await
             .with_context(|| format!("write {}", path.display()))?;
         let post_edit_mtime = snapshot_mtime(&path);
-        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: original, post_edit_mtime });
-        Ok(format!("Wrote {} bytes to {}", a.content.len(), path.display()))
+        ctx.session.lock().await.push_undo_entry(super::UndoEntry {
+            path: path.clone(),
+            original_content: original,
+            post_edit_mtime,
+        });
+        Ok(format!(
+            "Wrote {} bytes to {}",
+            a.content.len(),
+            path.display()
+        ))
     }
 }
 
@@ -267,9 +279,19 @@ Parameters:\n\
         let a: EditArgs = serde_json::from_value(args.clone()).ok()?;
         let trunc = |s: &str| -> String {
             let one = s.replace('\n', "/");
-            if one.chars().count() > 60 { format!("{}...", one.chars().take(60).collect::<String>()) } else { one }
+            if one.chars().count() > 60 {
+                format!("{}...", one.chars().take(60).collect::<String>())
+            } else {
+                one
+            }
         };
-        Some(format!("Edit {} - `{}` -> `{}`{}", a.path, trunc(&a.old_string), trunc(&a.new_string), if a.replace_all { " (all)" } else { "" }))
+        Some(format!(
+            "Edit {} - `{}` -> `{}`{}",
+            a.path,
+            trunc(&a.old_string),
+            trunc(&a.new_string),
+            if a.replace_all { " (all)" } else { "" }
+        ))
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: EditArgs = super::parse_args("edit_file", args)?;
@@ -301,8 +323,16 @@ Parameters:\n\
             .await
             .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
         let post_edit_mtime = snapshot_mtime(&path);
-        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: Some(original), post_edit_mtime });
-        Ok(format!("Replaced {} occurrence(s) in {}", count, path.display()))
+        ctx.session.lock().await.push_undo_entry(super::UndoEntry {
+            path: path.clone(),
+            original_content: Some(original),
+            post_edit_mtime,
+        });
+        Ok(format!(
+            "Replaced {} occurrence(s) in {}",
+            count,
+            path.display()
+        ))
     }
 }
 
@@ -351,7 +381,11 @@ Parameters:\n\
         while let Some(e) = entries.next_entry().await? {
             let ft = e.file_type().await?;
             let name = e.file_name().to_string_lossy().to_string();
-            items.push(if ft.is_dir() { format!("{name}/") } else { name });
+            items.push(if ft.is_dir() {
+                format!("{name}/")
+            } else {
+                name
+            });
         }
         items.sort();
         Ok(items.join("\n"))
@@ -483,7 +517,11 @@ Parameters:\n\
             .await
             .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
         let post_edit_mtime = snapshot_mtime(&path);
-        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: Some(original_for_undo), post_edit_mtime });
+        ctx.session.lock().await.push_undo_entry(super::UndoEntry {
+            path: path.clone(),
+            original_content: Some(original_for_undo),
+            post_edit_mtime,
+        });
         Ok(format!(
             "Applied {} edit(s) ({} total replacement(s)) to {}",
             a.edits.len(),
@@ -497,7 +535,9 @@ pub struct UndoLastEdit;
 
 #[async_trait]
 impl BuiltinTool for UndoLastEdit {
-    fn name(&self) -> &'static str { "undo_last_edit" }
+    fn name(&self) -> &'static str {
+        "undo_last_edit"
+    }
     fn description(&self) -> &'static str {
         "Roll back the most recent file edit. If that write created a new file, undo removes it.\n\nParameters: none."
     }
@@ -505,7 +545,10 @@ impl BuiltinTool for UndoLastEdit {
         json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })
     }
     async fn execute(&self, _args: Value, ctx: &ToolContext) -> Result<String> {
-        let entry = { let mut session = ctx.session.lock().await; session.undo_stack.pop_back() };
+        let entry = {
+            let mut session = ctx.session.lock().await;
+            session.undo_stack.pop_back()
+        };
         let entry = entry.ok_or_else(|| anyhow!("no edits to undo"))?;
         // TOCTOU guard: refuse to restore if the file has been touched since
         // the edit. Without this, an `undo_last_edit` after the user manually
@@ -522,14 +565,19 @@ impl BuiltinTool for UndoLastEdit {
         }
         match entry.original_content {
             Some(content) => {
-                tokio::fs::write(&entry.path, content).await
+                tokio::fs::write(&entry.path, content)
+                    .await
                     .with_context(|| format!("restore {}", entry.path.display()))?;
                 Ok(format!("Restored {}", entry.path.display()))
             }
             None => {
-                tokio::fs::remove_file(&entry.path).await
+                tokio::fs::remove_file(&entry.path)
+                    .await
                     .with_context(|| format!("remove {}", entry.path.display()))?;
-                Ok(format!("Removed (was a new file): {}", entry.path.display()))
+                Ok(format!(
+                    "Removed (was a new file): {}",
+                    entry.path.display()
+                ))
             }
         }
     }
@@ -561,18 +609,12 @@ fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathBuf> {
             Component::CurDir => {}
             Component::ParentDir => {
                 if !normalized.pop() {
-                    return Err(anyhow!(
-                        "path escapes the sandbox: {}",
-                        path.display()
-                    ));
+                    return Err(anyhow!("path escapes the sandbox: {}", path.display()));
                 }
             }
             Component::Normal(s) => normalized.push(s),
             Component::Prefix(_) | Component::RootDir => {
-                return Err(anyhow!(
-                    "invalid path component: {}",
-                    path.display()
-                ));
+                return Err(anyhow!("invalid path component: {}", path.display()));
             }
         }
     }
@@ -603,7 +645,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("empty.txt"), "").unwrap();
         let out = ReadFile
-            .execute(read_args("empty.txt", None, None), &ctx(dir.path().to_path_buf()))
+            .execute(
+                read_args("empty.txt", None, None),
+                &ctx(dir.path().to_path_buf()),
+            )
             .await
             .unwrap();
         assert!(out.contains("exists but is empty"), "got: {out}");
@@ -617,14 +662,23 @@ mod tests {
         let content: String = (1..=2500).map(|i| format!("line {i}\n")).collect();
         std::fs::write(dir.path().join("big.txt"), &content).unwrap();
         let out = ReadFile
-            .execute(read_args("big.txt", None, None), &ctx(dir.path().to_path_buf()))
+            .execute(
+                read_args("big.txt", None, None),
+                &ctx(dir.path().to_path_buf()),
+            )
             .await
             .unwrap();
         // First and last printed lines fall inside [1, 2000].
         assert!(out.contains("\tline 1\n"), "missing first line");
         assert!(out.contains("\tline 2000\n"), "missing 2000th line");
-        assert!(!out.contains("\tline 2001\n"), "should have stopped at default cap");
-        assert!(out.contains("500 more line"), "missing continuation hint: {out}");
+        assert!(
+            !out.contains("\tline 2001\n"),
+            "should have stopped at default cap"
+        );
+        assert!(
+            out.contains("500 more line"),
+            "missing continuation hint: {out}"
+        );
         assert!(out.contains("offset=2000"), "missing offset hint: {out}");
     }
 
@@ -635,12 +689,21 @@ mod tests {
         let huge_line: String = "a".repeat(3000);
         std::fs::write(dir.path().join("min.js"), &huge_line).unwrap();
         let out = ReadFile
-            .execute(read_args("min.js", None, None), &ctx(dir.path().to_path_buf()))
+            .execute(
+                read_args("min.js", None, None),
+                &ctx(dir.path().to_path_buf()),
+            )
             .await
             .unwrap();
-        assert!(out.contains("[line truncated]"), "missing truncation marker: {out}");
+        assert!(
+            out.contains("[line truncated]"),
+            "missing truncation marker: {out}"
+        );
         // The full 3000-char line must NOT have been emitted verbatim.
-        assert!(!out.contains(&"a".repeat(3000)), "long line was not truncated");
+        assert!(
+            !out.contains(&"a".repeat(3000)),
+            "long line was not truncated"
+        );
     }
 
     #[tokio::test]

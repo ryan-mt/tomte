@@ -77,7 +77,11 @@ pub enum MessageContent {
     #[serde(rename = "input_text")]
     InputText { text: String },
     #[serde(rename = "input_image")]
-    InputImage { image_url: String, #[serde(default)] detail: Option<String> },
+    InputImage {
+        image_url: String,
+        #[serde(default)]
+        detail: Option<String>,
+    },
     #[serde(rename = "output_text")]
     OutputText { text: String },
 }
@@ -156,7 +160,9 @@ impl ResponsesRequest {
         self
     }
     pub fn with_verbosity(mut self, v: impl Into<String>) -> Self {
-        self.text = Some(TextConfig { verbosity: Some(v.into()) });
+        self.text = Some(TextConfig {
+            verbosity: Some(v.into()),
+        });
         self
     }
 }

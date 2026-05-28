@@ -14,20 +14,52 @@ pub struct StreamHandle {
 /// their raw type name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResponseStreamEvent {
-    Created { response: Value },
-    OutputItemAdded { item: Value, output_index: u32 },
-    OutputItemDone { item: Value, output_index: u32 },
-    OutputTextDelta { delta: String, item_id: Option<String> },
-    OutputTextDone { text: String, item_id: Option<String> },
-    FunctionCallArgsDelta { item_id: String, delta: String },
-    FunctionCallArgsDone { item_id: String, arguments: String },
-    ReasoningDelta { delta: String },
-    ReasoningDone { text: String },
-    Completed { response: Value },
-    Failed { response: Value },
-    Error { message: String },
+    Created {
+        response: Value,
+    },
+    OutputItemAdded {
+        item: Value,
+        output_index: u32,
+    },
+    OutputItemDone {
+        item: Value,
+        output_index: u32,
+    },
+    OutputTextDelta {
+        delta: String,
+        item_id: Option<String>,
+    },
+    OutputTextDone {
+        text: String,
+        item_id: Option<String>,
+    },
+    FunctionCallArgsDelta {
+        item_id: String,
+        delta: String,
+    },
+    FunctionCallArgsDone {
+        item_id: String,
+        arguments: String,
+    },
+    ReasoningDelta {
+        delta: String,
+    },
+    ReasoningDone {
+        text: String,
+    },
+    Completed {
+        response: Value,
+    },
+    Failed {
+        response: Value,
+    },
+    Error {
+        message: String,
+    },
     /// Catch-all carrying the original `type` so it can be diagnosed.
-    Other { kind: String },
+    Other {
+        kind: String,
+    },
 }
 
 impl StreamHandle {
@@ -56,18 +88,13 @@ impl StreamHandle {
                                 }
                                 Err(e) => {
                                     let _ = tx
-                                        .send(Err(anyhow::anyhow!(
-                                            "parse SSE: {e}: {}",
-                                            ev.data
-                                        )))
+                                        .send(Err(anyhow::anyhow!("parse SSE: {e}: {}", ev.data)))
                                         .await;
                                 }
                             }
                         }
                         Err(e) => {
-                            let _ = tx
-                                .send(Err(anyhow::anyhow!("SSE transport: {e}")))
-                                .await;
+                            let _ = tx.send(Err(anyhow::anyhow!("SSE transport: {e}"))).await;
                             return;
                         }
                     }
@@ -102,9 +129,7 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
     let opt_s = |k: &str| -> Option<String> {
         value.get(k).and_then(|v| v.as_str()).map(|s| s.to_string())
     };
-    let u = |k: &str| -> u32 {
-        value.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as u32
-    };
+    let u = |k: &str| -> u32 { value.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as u32 };
 
     let ev = match kind.as_str() {
         "response.created" => ResponseStreamEvent::Created {
@@ -120,12 +145,12 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         },
         // Text deltas — handle multiple naming styles that have appeared
         // across Responses API revisions and the ChatGPT backend.
-        "response.output_text.delta"
-        | "response.text.delta"
-        | "response.message.delta" => ResponseStreamEvent::OutputTextDelta {
-            delta: s("delta"),
-            item_id: opt_s("item_id"),
-        },
+        "response.output_text.delta" | "response.text.delta" | "response.message.delta" => {
+            ResponseStreamEvent::OutputTextDelta {
+                delta: s("delta"),
+                item_id: opt_s("item_id"),
+            }
+        }
         "response.output_text.done" | "response.text.done" | "response.message.done" => {
             ResponseStreamEvent::OutputTextDone {
                 text: s("text"),
@@ -149,9 +174,9 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         "response.reasoning_summary_text.delta"
         | "response.reasoning_summary.delta"
         | "response.reasoning.delta"
-        | "response.reasoning_text.delta" => ResponseStreamEvent::ReasoningDelta {
-            delta: s("delta"),
-        },
+        | "response.reasoning_text.delta" => {
+            ResponseStreamEvent::ReasoningDelta { delta: s("delta") }
+        }
         "response.reasoning_summary_text.done"
         | "response.reasoning_summary.done"
         | "response.reasoning.done"

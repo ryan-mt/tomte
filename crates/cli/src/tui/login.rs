@@ -199,10 +199,10 @@ pub fn render(f: &mut Frame, area: Rect, screen: &LoginScreen, stage: &Stage, er
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),    // logo
-            Constraint::Length(3),    // tagline
-            Constraint::Min(8),       // body
-            Constraint::Length(1),    // footer
+            Constraint::Length(8), // logo
+            Constraint::Length(3), // tagline
+            Constraint::Min(8),    // body
+            Constraint::Length(1), // footer
         ])
         .split(centered(area));
 
@@ -237,7 +237,9 @@ fn render_logo(f: &mut Frame, area: Rect) {
     for raw in ASCII_LOGO.lines() {
         lines.push(Line::from(Span::styled(
             raw.to_string(),
-            Style::default().fg(Color::Rgb(16, 163, 127)).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Rgb(16, 163, 127))
+                .add_modifier(Modifier::BOLD),
         )));
     }
     f.render_widget(Paragraph::new(lines), area);
@@ -385,7 +387,12 @@ fn render_api_key(f: &mut Frame, area: Rect, input: &TextInput, err: Option<&str
         Span::styled(masked, Style::default().fg(Color::White))
     };
     lines.push(Line::from(vec![
-        Span::styled(" > ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " > ",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
         body,
         Span::styled(cursor, Style::default().fg(Color::Gray)),
     ]));

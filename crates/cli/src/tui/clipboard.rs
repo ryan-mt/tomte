@@ -21,8 +21,7 @@ pub enum PasteResult {
 
 /// Try to read whatever is on the system clipboard, preferring image data.
 pub fn try_paste() -> Result<PasteResult> {
-    let mut clip =
-        Clipboard::new().map_err(|e| anyhow!("cannot access clipboard: {e}"))?;
+    let mut clip = Clipboard::new().map_err(|e| anyhow!("cannot access clipboard: {e}"))?;
 
     // Try image first.
     if let Ok(img) = clip.get_image() {

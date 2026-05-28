@@ -27,25 +27,66 @@ use crate::tools::{ApprovalMode, Registry, SessionState, TodoItem, ToolContext};
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "kind")]
 pub enum AgentEvent {
-    AssistantTextDelta { text: String },
-    AssistantTextDone { text: String },
-    ReasoningDelta { text: String },
-    ReasoningDone { text: String },
-    ToolCallStarted { name: String, call_id: String },
-    ToolCallArgsDelta { call_id: String, delta: String },
-    ToolCallArgsDone { call_id: String, arguments: String },
-    ToolResult { call_id: String, output: String, error: bool },
+    AssistantTextDelta {
+        text: String,
+    },
+    AssistantTextDone {
+        text: String,
+    },
+    ReasoningDelta {
+        text: String,
+    },
+    ReasoningDone {
+        text: String,
+    },
+    ToolCallStarted {
+        name: String,
+        call_id: String,
+    },
+    ToolCallArgsDelta {
+        call_id: String,
+        delta: String,
+    },
+    ToolCallArgsDone {
+        call_id: String,
+        arguments: String,
+    },
+    ToolResult {
+        call_id: String,
+        output: String,
+        error: bool,
+    },
     /// Snapshot of the session todo list. Emitted after every tool batch so
     /// the UI can render `/todos` and the status line without locking the
     /// agent mutex itself. Replaces the entire client-side cache each time.
-    TodosSnapshot { todos: Vec<TodoItem> },
-    Usage { input_tokens: u64, output_tokens: u64, total_tokens: u64 },
+    TodosSnapshot {
+        todos: Vec<TodoItem>,
+    },
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+        total_tokens: u64,
+    },
     TurnComplete,
-    Error { message: String },
-    ContextWarning { used: u64, limit: u64 },
-    ApprovalRequest { call_id: String, tool_name: String, args_json: String, diff_preview: Option<String> },
-    ApprovalGranted { call_id: String },
-    ApprovalDenied { call_id: String },
+    Error {
+        message: String,
+    },
+    ContextWarning {
+        used: u64,
+        limit: u64,
+    },
+    ApprovalRequest {
+        call_id: String,
+        tool_name: String,
+        args_json: String,
+        diff_preview: Option<String>,
+    },
+    ApprovalGranted {
+        call_id: String,
+    },
+    ApprovalDenied {
+        call_id: String,
+    },
 }
 
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
@@ -59,9 +100,13 @@ const EDIT_TOOLS: &[&str] = &["write_file", "edit_file", "multi_edit", "undo_las
 
 pub fn model_context_limit(model: &str) -> u64 {
     let m = model.to_ascii_lowercase();
-    if m.contains("nano") { 200_000 }
-    else if m.contains("mini") { 400_000 }
-    else { 1_000_000 }
+    if m.contains("nano") {
+        200_000
+    } else if m.contains("mini") {
+        400_000
+    } else {
+        1_000_000
+    }
 }
 
 pub struct Agent {
@@ -85,7 +130,8 @@ pub struct Agent {
     /// hooks can block a tool call by exiting with code 2; the model receives
     /// the hook's stdout as the block reason.
     pub hooks: Arc<crate::hooks::HookSet>,
-    pub pending_approvals: Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+    pub pending_approvals:
+        Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
     pub require_approval: bool,
     /// When true, file-edit tools auto-approve even though `require_approval`
     /// is on. Powers "accept edits" mode in the TUI; shell still prompts.
@@ -113,8 +159,13 @@ impl Agent {
     }
 
     pub async fn respond_approval(&self, call_id: &str, granted: bool) {
-        let sender = { let mut map = self.pending_approvals.lock().await; map.remove(call_id) };
-        if let Some(s) = sender { let _ = s.send(granted); }
+        let sender = {
+            let mut map = self.pending_approvals.lock().await;
+            map.remove(call_id)
+        };
+        if let Some(s) = sender {
+            let _ = s.send(granted);
+        }
     }
 
     /// Roll back the most recent file edit on the agent's session undo stack.
@@ -122,7 +173,10 @@ impl Agent {
     /// host (e.g. a `/undo` slash command) without round-tripping the model.
     pub async fn undo_last_edit(&self) -> anyhow::Result<String> {
         use anyhow::{anyhow, Context};
-        let entry = { let mut session = self.session.lock().await; session.undo_stack.pop_back() };
+        let entry = {
+            let mut session = self.session.lock().await;
+            session.undo_stack.pop_back()
+        };
         let entry = entry.ok_or_else(|| anyhow!("no edits to undo"))?;
         // Mirrors the TOCTOU guard in the `undo_last_edit` tool: refuse to
         // overwrite a file that has been touched since we edited it, so a
@@ -140,14 +194,19 @@ impl Agent {
         }
         match entry.original_content {
             Some(content) => {
-                tokio::fs::write(&entry.path, content).await
+                tokio::fs::write(&entry.path, content)
+                    .await
                     .with_context(|| format!("restore {}", entry.path.display()))?;
                 Ok(format!("Restored {}", entry.path.display()))
             }
             None => {
-                tokio::fs::remove_file(&entry.path).await
+                tokio::fs::remove_file(&entry.path)
+                    .await
                     .with_context(|| format!("remove {}", entry.path.display()))?;
-                Ok(format!("Removed (was a new file): {}", entry.path.display()))
+                Ok(format!(
+                    "Removed (was a new file): {}",
+                    entry.path.display()
+                ))
             }
         }
     }
@@ -173,26 +232,34 @@ impl Agent {
             for p in paths {
                 if let Ok(text) = std::fs::read_to_string(p) {
                     let t = text.trim();
-                    if !t.is_empty() { return Some((p.clone(), t.to_string())); }
+                    if !t.is_empty() {
+                        return Some((p.clone(), t.to_string()));
+                    }
                 }
             }
             None
         };
         let mut additions = String::new();
         if let Some((path, text)) = read_first(&globals) {
-            additions.push_str(&format!("
+            additions.push_str(&format!(
+                "
 
 # Global memory ({})
 
-", path.display()));
+",
+                path.display()
+            ));
             additions.push_str(&text);
         }
         if let Some((path, text)) = read_first(&projects) {
-            additions.push_str(&format!("
+            additions.push_str(&format!(
+                "
 
 # Project memory ({})
 
-", path.display()));
+",
+                path.display()
+            ));
             additions.push_str(&text);
         }
         if !additions.is_empty() {
@@ -299,7 +366,9 @@ impl Agent {
                             STREAM_IDLE_TIMEOUT.as_secs()
                         );
                         let _ = tx
-                            .send(AgentEvent::Error { message: msg.clone() })
+                            .send(AgentEvent::Error {
+                                message: msg.clone(),
+                            })
                             .await;
                         return Err(anyhow::anyhow!(msg));
                     }
@@ -318,73 +387,71 @@ impl Agent {
                     ResponseStreamEvent::OutputItemAdded { item, .. }
                         if item.get("type").and_then(|v| v.as_str()) == Some("function_call") =>
                     {
-                            let call_id = item
-                                .get("call_id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let item_id = item
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let name = item
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            // If both ids are missing, downstream args deltas can't
-                            // be matched back to this call — pending_calls would
-                            // hold a ghost entry that any later "empty id" delta
-                            // would corrupt, eventually dispatching a tool with
-                            // bogus or empty arguments. Drop the event with a
-                            // warning instead of pretending it worked.
-                            if call_id.is_empty() && item_id.is_empty() {
-                                tracing::warn!(
-                                    name = %name,
-                                    "function_call event missing both call_id and id; skipping"
-                                );
-                                continue;
-                            }
-                            // Some models send the complete arguments inline on the
-                            // OutputItemAdded item; capture them as an initial buffer.
-                            let args_buf = item
-                                .get("arguments")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            pending_calls.push(PendingCall {
-                                call_id: call_id.clone(),
-                                item_id,
-                                name: name.clone(),
-                                args_buf,
-                            });
-                            let _ = tx
-                            .send(AgentEvent::ToolCallStarted { name, call_id })
-                            .await;
+                        let call_id = item
+                            .get("call_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let item_id = item
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        // If both ids are missing, downstream args deltas can't
+                        // be matched back to this call — pending_calls would
+                        // hold a ghost entry that any later "empty id" delta
+                        // would corrupt, eventually dispatching a tool with
+                        // bogus or empty arguments. Drop the event with a
+                        // warning instead of pretending it worked.
+                        if call_id.is_empty() && item_id.is_empty() {
+                            tracing::warn!(
+                                name = %name,
+                                "function_call event missing both call_id and id; skipping"
+                            );
+                            continue;
+                        }
+                        // Some models send the complete arguments inline on the
+                        // OutputItemAdded item; capture them as an initial buffer.
+                        let args_buf = item
+                            .get("arguments")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        pending_calls.push(PendingCall {
+                            call_id: call_id.clone(),
+                            item_id,
+                            name: name.clone(),
+                            args_buf,
+                        });
+                        let _ = tx.send(AgentEvent::ToolCallStarted { name, call_id }).await;
                     }
                     ResponseStreamEvent::OutputItemDone { item, .. }
                         if item.get("type").and_then(|v| v.as_str()) == Some("function_call") =>
                     {
-                            let call_id = item
-                                .get("call_id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let item_id = item
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let arguments = item
-                                .get("arguments")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if let Some(pc) = pending_calls
-                                .iter_mut()
-                                .find(|p| p.call_id == call_id || p.item_id == item_id)
-                            {
+                        let call_id = item
+                            .get("call_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let item_id = item
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let arguments = item
+                            .get("arguments")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if let Some(pc) = pending_calls
+                            .iter_mut()
+                            .find(|p| p.call_id == call_id || p.item_id == item_id)
+                        {
                             if !arguments.is_empty() {
                                 pc.args_buf = arguments.clone();
                             }
@@ -427,10 +494,7 @@ impl Agent {
                             })
                             .unwrap_or_else(|| item_id.clone());
                         let _ = tx
-                            .send(AgentEvent::ToolCallArgsDone {
-                                call_id,
-                                arguments,
-                            })
+                            .send(AgentEvent::ToolCallArgsDone { call_id, arguments })
                             .await;
                     }
                     ResponseStreamEvent::ReasoningDelta { delta } => {
@@ -459,12 +523,18 @@ impl Agent {
                             .unwrap_or("response.failed (no message)")
                             .to_string();
                         let _ = tx
-                            .send(AgentEvent::Error { message: message.clone() })
+                            .send(AgentEvent::Error {
+                                message: message.clone(),
+                            })
                             .await;
                         return Err(anyhow::anyhow!("response.failed: {message}"));
                     }
                     ResponseStreamEvent::Error { message } => {
-                        let _ = tx.send(AgentEvent::Error { message: message.clone() }).await;
+                        let _ = tx
+                            .send(AgentEvent::Error {
+                                message: message.clone(),
+                            })
+                            .await;
                         return Err(anyhow::anyhow!(message));
                     }
                     crate::openai::stream::ResponseStreamEvent::Other { kind } => {
@@ -561,37 +631,66 @@ impl Agent {
                                         ));
                                     }
                                     crate::hooks::HookDecision::Allow => {
-                                        let auto_via_accept_edits =
-                                            self.auto_approve_edits
-                                                && EDIT_TOOLS.contains(&pc.name.as_str());
+                                        let auto_via_accept_edits = self.auto_approve_edits
+                                            && EDIT_TOOLS.contains(&pc.name.as_str());
                                         let needs_gate = self.require_approval
-                                            && matches!(self.approval, ApprovalMode::OnRequest | ApprovalMode::Manual)
+                                            && matches!(
+                                                self.approval,
+                                                ApprovalMode::OnRequest | ApprovalMode::Manual
+                                            )
                                             && !t.is_read_only()
                                             && !ALWAYS_AUTO_TOOLS.contains(&pc.name.as_str())
                                             && !auto_via_accept_edits;
                                         if needs_gate {
                                             let diff_preview = t.compute_preview(&args, &ctx).await;
-                                            let (resp_tx, resp_rx) = tokio::sync::oneshot::channel::<bool>();
-                                            self.pending_approvals.lock().await.insert(pc.call_id.clone(), resp_tx);
-                                            let _ = tx.send(AgentEvent::ApprovalRequest {
-                                                call_id: pc.call_id.clone(),
-                                                tool_name: pc.name.clone(),
-                                                args_json: pc.args_buf.clone(),
-                                                diff_preview,
-                                            }).await;
-                                            let granted = match tokio::time::timeout(APPROVAL_TIMEOUT, resp_rx).await {
+                                            let (resp_tx, resp_rx) =
+                                                tokio::sync::oneshot::channel::<bool>();
+                                            self.pending_approvals
+                                                .lock()
+                                                .await
+                                                .insert(pc.call_id.clone(), resp_tx);
+                                            let _ = tx
+                                                .send(AgentEvent::ApprovalRequest {
+                                                    call_id: pc.call_id.clone(),
+                                                    tool_name: pc.name.clone(),
+                                                    args_json: pc.args_buf.clone(),
+                                                    diff_preview,
+                                                })
+                                                .await;
+                                            let granted = match tokio::time::timeout(
+                                                APPROVAL_TIMEOUT,
+                                                resp_rx,
+                                            )
+                                            .await
+                                            {
                                                 Ok(Ok(g)) => g,
-                                                _ => { self.pending_approvals.lock().await.remove(&pc.call_id); false }
+                                                _ => {
+                                                    self.pending_approvals
+                                                        .lock()
+                                                        .await
+                                                        .remove(&pc.call_id);
+                                                    false
+                                                }
                                             };
-                                            let _ = tx.send(if granted {
-                                                AgentEvent::ApprovalGranted { call_id: pc.call_id.clone() }
-                                            } else {
-                                                AgentEvent::ApprovalDenied { call_id: pc.call_id.clone() }
-                                            }).await;
+                                            let _ = tx
+                                                .send(if granted {
+                                                    AgentEvent::ApprovalGranted {
+                                                        call_id: pc.call_id.clone(),
+                                                    }
+                                                } else {
+                                                    AgentEvent::ApprovalDenied {
+                                                        call_id: pc.call_id.clone(),
+                                                    }
+                                                })
+                                                .await;
                                             if granted {
                                                 runnable.push((pc.call_id.clone(), args, t));
                                             } else {
-                                                precomputed.push((pc.call_id.clone(), "Error: tool call denied by user".to_string(), true));
+                                                precomputed.push((
+                                                    pc.call_id.clone(),
+                                                    "Error: tool call denied by user".to_string(),
+                                                    true,
+                                                ));
                                             }
                                         } else {
                                             runnable.push((pc.call_id.clone(), args, t));
@@ -669,8 +768,7 @@ impl Agent {
                     (call_id, output, is_err)
                 }
             });
-            let mut results: Vec<(String, String, bool)> =
-                futures::future::join_all(futures).await;
+            let mut results: Vec<(String, String, bool)> = futures::future::join_all(futures).await;
 
             // Surface precomputed errors via the same event stream so the UI
             // and model see them identically to runtime errors.
@@ -730,10 +828,25 @@ struct PendingCall {
 
 async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, model: &str) {
     if let Some(usage) = response.get("usage") {
-        let i = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let o = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        let t = usage.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(i + o);
-        let _ = tx.send(AgentEvent::Usage { input_tokens: i, output_tokens: o, total_tokens: t }).await;
+        let i = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let o = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let t = usage
+            .get("total_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(i + o);
+        let _ = tx
+            .send(AgentEvent::Usage {
+                input_tokens: i,
+                output_tokens: o,
+                total_tokens: t,
+            })
+            .await;
         let limit = model_context_limit(model);
         if i * 10 >= limit * 8 {
             let _ = tx.send(AgentEvent::ContextWarning { used: i, limit }).await;
@@ -742,7 +855,12 @@ async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, model: &str
 }
 
 fn guess_mime(p: &std::path::Path) -> &'static str {
-    match p.extension().and_then(|s| s.to_str()).map(|s| s.to_lowercase()).as_deref() {
+    match p
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase())
+        .as_deref()
+    {
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",

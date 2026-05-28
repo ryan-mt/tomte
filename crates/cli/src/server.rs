@@ -64,10 +64,7 @@ pub async fn serve(port: u16) -> Result<()> {
             "http://localhost:5173".parse::<HeaderValue>()?,
         ])
         .allow_methods([Method::GET, Method::POST])
-        .allow_headers([
-            axum::http::header::CONTENT_TYPE,
-            "x-opencli-token".parse()?,
-        ])
+        .allow_headers([axum::http::header::CONTENT_TYPE, "x-opencli-token".parse()?])
         .allow_credentials(true);
 
     let ui_dir = locate_ui_dist();
@@ -128,8 +125,8 @@ fn write_token_file(token: &str) -> std::io::Result<()> {
     let path = dir.join("server-token");
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
         use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -251,7 +248,11 @@ async fn api_status() -> Json<StatusResp> {
         opencli_core::auth::AuthMode::ApiKey => ("api_key".to_string(), None),
         opencli_core::auth::AuthMode::None => ("none".to_string(), None),
     };
-    Json(StatusResp { mode, account_id, model: cfg.model })
+    Json(StatusResp {
+        mode,
+        account_id,
+        model: cfg.model,
+    })
 }
 
 #[derive(Deserialize)]
@@ -345,7 +346,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let session_id = start.session_id.unwrap_or_else(nanoid_like);
     let prompt = start.prompt.unwrap_or_default();
     if prompt.trim().is_empty() {
-        let _ = socket.send(Message::Text(json_err("empty prompt".into()))).await;
+        let _ = socket
+            .send(Message::Text(json_err("empty prompt".into())))
+            .await;
         return;
     }
 

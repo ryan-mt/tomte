@@ -591,6 +591,9 @@ mod tests {
             .filter(|l| !l.starts_with('…'))
             .filter(|l| !l.is_empty())
             .count();
-        assert!(payload_lines <= 5, "got {payload_lines} payload lines: {out}");
+        assert!(
+            payload_lines <= 5,
+            "got {payload_lines} payload lines: {out}"
+        );
     }
 }

@@ -6,14 +6,17 @@ pub use oauth::{
     login_with_browser, refresh_access_token, start_browser_login, OauthClient, PendingLogin,
     TokenSet,
 };
-pub use storage::{load_auth, save_auth, AuthRecord, AuthMode};
+pub use storage::{load_auth, save_auth, AuthMode, AuthRecord};
 
 use anyhow::Result;
 
 /// Auth resolution: prefer OAuth tokens, fall back to API key (env or stored).
 #[derive(Debug, Clone)]
 pub enum Credential {
-    OAuth { access_token: String, account_id: Option<String> },
+    OAuth {
+        access_token: String,
+        account_id: Option<String>,
+    },
     ApiKey(String),
 }
 
@@ -39,20 +42,18 @@ pub async fn resolve_credential() -> Result<Credential> {
     let record = load_auth()?;
     match record.mode {
         AuthMode::ChatGPT => {
-            let tokens = record
-                .tokens
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("ChatGPT sign-in is incomplete. Run `opencli login`."))?;
+            let tokens = record.tokens.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("ChatGPT sign-in is incomplete. Run `opencli login`.")
+            })?;
             let access = oauth::ensure_fresh(&record).await?;
             Ok(Credential::OAuth {
                 access_token: access,
                 account_id: tokens.account_id.clone(),
             })
         }
-        AuthMode::ApiKey => record
-            .api_key
-            .map(Credential::ApiKey)
-            .ok_or_else(|| anyhow::anyhow!("No API key configured. Run `opencli login --api-key`.")),
+        AuthMode::ApiKey => record.api_key.map(Credential::ApiKey).ok_or_else(|| {
+            anyhow::anyhow!("No API key configured. Run `opencli login --api-key`.")
+        }),
         AuthMode::None => Err(anyhow::anyhow!(
             "Not signed in. Run `opencli login` or set OPENAI_API_KEY."
         )),

@@ -195,15 +195,17 @@ mod tests {
     #[tokio::test]
     async fn rejects_too_many_questions() {
         let qs: Vec<Value> = (0..5)
-            .map(|i| json!({
-                "question": format!("q{i}?"),
-                "header": "h",
-                "options": [
-                    {"label": "a", "description": "a"},
-                    {"label": "b", "description": "b"}
-                ],
-                "multi_select": false
-            }))
+            .map(|i| {
+                json!({
+                    "question": format!("q{i}?"),
+                    "header": "h",
+                    "options": [
+                        {"label": "a", "description": "a"},
+                        {"label": "b", "description": "b"}
+                    ],
+                    "multi_select": false
+                })
+            })
             .collect();
         let err = AskUserQuestion
             .execute(json!({ "questions": qs }), &ctx())

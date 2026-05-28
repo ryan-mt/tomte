@@ -29,9 +29,7 @@ use super::ui;
 /// `Agent.pending_approvals` BEFORE the long-lived `run_turn` lock is taken so
 /// the TUI can deliver Y/N decisions without blocking on the outer agent mutex.
 pub type ApprovalHandle = std::sync::Arc<
-    tokio::sync::Mutex<
-        std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>,
-    >,
+    tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
 >;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,36 +256,124 @@ pub struct PendingApproval {
 
 pub const SPINNER_WORDS: &[&str] = &[
     // Cognitive
-    "Thinking", "Pondering", "Cogitating", "Mulling", "Reasoning",
-    "Reflecting", "Deliberating", "Ruminating", "Contemplating", "Musing",
-    "Considering", "Reckoning", "Surmising", "Inferring", "Speculating",
+    "Thinking",
+    "Pondering",
+    "Cogitating",
+    "Mulling",
+    "Reasoning",
+    "Reflecting",
+    "Deliberating",
+    "Ruminating",
+    "Contemplating",
+    "Musing",
+    "Considering",
+    "Reckoning",
+    "Surmising",
+    "Inferring",
+    "Speculating",
     // Creative
-    "Composing", "Crafting", "Forging", "Brewing", "Hatching",
-    "Cooking", "Conjuring", "Sketching", "Imagining", "Drafting",
-    "Painting", "Concocting", "Designing", "Improvising", "Inventing",
+    "Composing",
+    "Crafting",
+    "Forging",
+    "Brewing",
+    "Hatching",
+    "Cooking",
+    "Conjuring",
+    "Sketching",
+    "Imagining",
+    "Drafting",
+    "Painting",
+    "Concocting",
+    "Designing",
+    "Improvising",
+    "Inventing",
     // Mechanical / process
-    "Computing", "Processing", "Whirring", "Calibrating", "Tuning",
-    "Spinning", "Threading", "Weaving", "Hammering", "Tinkering",
-    "Welding", "Wiring", "Polishing", "Refining", "Sharpening",
-    "Aligning", "Recalibrating", "Hashing", "Crunching", "Buffing",
+    "Computing",
+    "Processing",
+    "Whirring",
+    "Calibrating",
+    "Tuning",
+    "Spinning",
+    "Threading",
+    "Weaving",
+    "Hammering",
+    "Tinkering",
+    "Welding",
+    "Wiring",
+    "Polishing",
+    "Refining",
+    "Sharpening",
+    "Aligning",
+    "Recalibrating",
+    "Hashing",
+    "Crunching",
+    "Buffing",
     // Search / discovery
-    "Probing", "Investigating", "Surveying", "Mapping", "Scanning",
-    "Exploring", "Hunting", "Sleuthing", "Decoding", "Unraveling",
-    "Untangling", "Decrypting", "Foraging", "Excavating", "Quarrying",
-    "Sifting", "Tracing", "Reading", "Parsing", "Combing",
+    "Probing",
+    "Investigating",
+    "Surveying",
+    "Mapping",
+    "Scanning",
+    "Exploring",
+    "Hunting",
+    "Sleuthing",
+    "Decoding",
+    "Unraveling",
+    "Untangling",
+    "Decrypting",
+    "Foraging",
+    "Excavating",
+    "Quarrying",
+    "Sifting",
+    "Tracing",
+    "Reading",
+    "Parsing",
+    "Combing",
     // Action / strategy
-    "Plotting", "Scheming", "Charting", "Synthesizing", "Distilling",
-    "Brainstorming", "Wrangling", "Marshaling", "Orchestrating", "Solving",
-    "Sculpting", "Carving", "Molding", "Shaping", "Architecting",
-    "Engineering", "Bootstrapping", "Stitching", "Coaxing", "Steering",
+    "Plotting",
+    "Scheming",
+    "Charting",
+    "Synthesizing",
+    "Distilling",
+    "Brainstorming",
+    "Wrangling",
+    "Marshaling",
+    "Orchestrating",
+    "Solving",
+    "Sculpting",
+    "Carving",
+    "Molding",
+    "Shaping",
+    "Architecting",
+    "Engineering",
+    "Bootstrapping",
+    "Stitching",
+    "Coaxing",
+    "Steering",
     // Whimsical
-    "Noodling", "Doodling", "Stargazing", "Daydreaming", "Percolating",
-    "Bubbling", "Fermenting", "Marinating", "Stewing", "Simmering",
-    "Frothing", "Steeping", "Buzzing", "Humming", "Rumbling",
-    "Whisking", "Kneading", "Folding", "Layering", "Garnishing",
+    "Noodling",
+    "Doodling",
+    "Stargazing",
+    "Daydreaming",
+    "Percolating",
+    "Bubbling",
+    "Fermenting",
+    "Marinating",
+    "Stewing",
+    "Simmering",
+    "Frothing",
+    "Steeping",
+    "Buzzing",
+    "Humming",
+    "Rumbling",
+    "Whisking",
+    "Kneading",
+    "Folding",
+    "Layering",
+    "Garnishing",
 ];
 
-pub const SPINNER_FRAMES: &[&str] = &["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn pick_spinner_word() -> String {
     use rand::seq::SliceRandom;
@@ -612,7 +698,8 @@ async fn handle_key(
         if let Some(granted) = decision {
             app.pending_approval = None;
             let label = if granted { "approved" } else { "denied" };
-            app.blocks.push(Block::System(format!("{label}: {}", p.tool_name)));
+            app.blocks
+                .push(Block::System(format!("{label}: {}", p.tool_name)));
             // CRITICAL: do NOT lock the outer agent mutex here — run_turn
             // holds it for the entire turn and is itself awaiting this
             // approval. Use the handle Arc captured at turn start instead.
@@ -640,7 +727,8 @@ async fn handle_key(
     if matches!(key.code, KeyCode::BackTab) {
         let next = app.permission_mode().next();
         app.set_permission_mode(next);
-        app.blocks.push(Block::System(format!("mode → {}", next.label())));
+        app.blocks
+            .push(Block::System(format!("mode → {}", next.label())));
         return Ok(false);
     }
     match key.code {
@@ -732,8 +820,7 @@ async fn handle_paste(app: &mut App) {
         }
         Ok(PasteResult::Empty) => {}
         Err(e) => {
-            app.blocks
-                .push(Block::System(format!("paste failed: {e}")));
+            app.blocks.push(Block::System(format!("paste failed: {e}")));
         }
     }
 }
@@ -817,8 +904,7 @@ async fn handle_overlay_select(app: &mut App, kind: OverlayKind, key_sel: &str) 
         OverlayKind::ModelPicker => {
             app.config.model = key_sel.to_string();
             let _ = config::save(&app.config);
-            app.blocks
-                .push(Block::System(format!("model → {key_sel}")));
+            app.blocks.push(Block::System(format!("model → {key_sel}")));
             if app.chain_to_effort {
                 app.chain_to_effort = false;
                 app.open_overlay(OverlayKind::EffortPicker);
@@ -951,7 +1037,11 @@ fn rebuild_blocks_from_history(history: &[opencli_core::openai::InputItem]) -> V
                     });
                 }
             }
-            InputItem::FunctionCall { call_id, name, arguments } => {
+            InputItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } => {
                 let (output, error) = outputs
                     .get(call_id)
                     .cloned()
@@ -1078,8 +1168,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             } else {
                 app.config.reasoning_effort = arg.to_string();
                 let _ = config::save(&app.config);
-                app.blocks
-                    .push(Block::System(format!("effort → {arg}")));
+                app.blocks.push(Block::System(format!("effort → {arg}")));
             }
         }
         "verbosity" => {
@@ -1100,10 +1189,8 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 let p = std::path::PathBuf::from(arg);
                 let path = if p.is_absolute() { p } else { app.cwd.join(&p) };
                 if !path.is_file() {
-                    app.blocks.push(Block::System(format!(
-                        "File not found: {}",
-                        path.display()
-                    )));
+                    app.blocks
+                        .push(Block::System(format!("File not found: {}", path.display())));
                 } else {
                     let n = app.next_image_num;
                     app.pending_images.push(path.clone());
@@ -1127,7 +1214,8 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 let p = std::path::PathBuf::from(arg);
                 if p.is_dir() {
                     app.cwd = p;
-                    app.blocks.push(Block::System(format!("cwd → {}", app.cwd.display())));
+                    app.blocks
+                        .push(Block::System(format!("cwd → {}", app.cwd.display())));
                 } else {
                     app.blocks.push(Block::System("Invalid path.".into()));
                 }
@@ -1141,8 +1229,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
         }
         "normal" => {
             app.approval = ApprovalMode::OnRequest;
-            app.blocks
-                .push(Block::System("plan mode → off".into()));
+            app.blocks.push(Block::System("plan mode → off".into()));
         }
         "perms" | "approvals" => {
             let new_state = match arg {
@@ -1160,7 +1247,11 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             app.require_approval = new_state;
             app.blocks.push(Block::System(format!(
                 "approval modal → {}",
-                if new_state { "on" } else { "off (writes/shell auto-approved)" }
+                if new_state {
+                    "on"
+                } else {
+                    "off (writes/shell auto-approved)"
+                }
             )));
         }
         "undo" => {
@@ -1345,9 +1436,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                     app.blocks
                         .push(Block::System(format!("git diff failed:\n{stderr}")));
                 }
-                Err(e) => app
-                    .blocks
-                    .push(Block::System(format!("git diff: {e}"))),
+                Err(e) => app.blocks.push(Block::System(format!("git diff: {e}"))),
             }
         }
         "review" => {
@@ -1369,13 +1458,18 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 app.cwd.join(default_name)
             } else {
                 let p = std::path::PathBuf::from(arg);
-                if p.is_absolute() { p } else { app.cwd.join(p) }
+                if p.is_absolute() {
+                    p
+                } else {
+                    app.cwd.join(p)
+                }
             };
             let md = render_blocks_as_markdown(&app.blocks);
             match std::fs::write(&path, md) {
-                Ok(_) => app
-                    .blocks
-                    .push(Block::System(format!("Exported conversation → {}", path.display()))),
+                Ok(_) => app.blocks.push(Block::System(format!(
+                    "Exported conversation → {}",
+                    path.display()
+                ))),
                 Err(e) => app
                     .blocks
                     .push(Block::System(format!("export failed: {e}"))),
@@ -1437,13 +1531,17 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 env!("CARGO_PKG_VERSION"),
                 app.config.model,
                 app.config.reasoning_effort,
-                if cfg!(debug_assertions) { "debug" } else { "release" },
+                if cfg!(debug_assertions) {
+                    "debug"
+                } else {
+                    "release"
+                },
             )));
         }
         "quit" | "exit" => app.should_exit = true,
-        other => app
-            .blocks
-            .push(Block::System(format!("Unknown command /{other}. Try /help."))),
+        other => app.blocks.push(Block::System(format!(
+            "Unknown command /{other}. Try /help."
+        ))),
     }
 }
 
@@ -1475,7 +1573,12 @@ fn render_blocks_as_markdown(blocks: &[Block]) -> String {
                 out.push_str(text);
                 out.push_str("\n\n");
             }
-            Block::Assistant { text, reasoning, thought_for_secs, .. } => {
+            Block::Assistant {
+                text,
+                reasoning,
+                thought_for_secs,
+                ..
+            } => {
                 out.push_str("## 🤖 assistant\n\n");
                 if let Some(secs) = thought_for_secs {
                     out.push_str(&format!("_thought for {secs}s_\n\n"));
@@ -1490,7 +1593,13 @@ fn render_blocks_as_markdown(blocks: &[Block]) -> String {
                     out.push_str("\n\n");
                 }
             }
-            Block::Tool { name, args, output, error, .. } => {
+            Block::Tool {
+                name,
+                args,
+                output,
+                error,
+                ..
+            } => {
                 let marker = if *error { "❌" } else { "🔧" };
                 out.push_str(&format!("### {marker} tool: `{name}`\n\n"));
                 if !args.is_empty() {
@@ -1514,7 +1623,6 @@ fn render_blocks_as_markdown(blocks: &[Block]) -> String {
     out
 }
 
-
 async fn launch_turn(
     app: &mut App,
     agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
@@ -1524,8 +1632,7 @@ async fn launch_turn(
     let credential = match opencli_core::auth::resolve_credential().await {
         Ok(c) => c,
         Err(e) => {
-            app.blocks
-                .push(Block::System(format!("Auth error: {e}")));
+            app.blocks.push(Block::System(format!("Auth error: {e}")));
             return;
         }
     };
@@ -1713,9 +1820,16 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 *args = arguments;
             }
         }
-        AgentEvent::ToolResult { call_id, output, error } => {
-            if let Some(Block::Tool { output: o, error: e, .. }) =
-                find_tool_mut(&mut app.blocks, &call_id)
+        AgentEvent::ToolResult {
+            call_id,
+            output,
+            error,
+        } => {
+            if let Some(Block::Tool {
+                output: o,
+                error: e,
+                ..
+            }) = find_tool_mut(&mut app.blocks, &call_id)
             {
                 *o = Some(output);
                 *e = error;
@@ -1733,8 +1847,13 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
         AgentEvent::TurnComplete => {
             collapse_reasoning_into_thought(app);
             app.is_thinking = false;
-            if let Some(Block::Assistant { done, text, reasoning, thought_for_secs, .. }) =
-                last_assistant_mut_open(&mut app.blocks)
+            if let Some(Block::Assistant {
+                done,
+                text,
+                reasoning,
+                thought_for_secs,
+                ..
+            }) = last_assistant_mut_open(&mut app.blocks)
             {
                 *done = true;
                 // Drop trailing assistant blocks that produced neither text nor reasoning.
@@ -1754,7 +1873,11 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 app.status_line = "(flushing queued messages…)".into();
             }
         }
-        AgentEvent::Usage { input_tokens, output_tokens, total_tokens } => {
+        AgentEvent::Usage {
+            input_tokens,
+            output_tokens,
+            total_tokens,
+        } => {
             app.tokens_used = app.tokens_used.saturating_add(total_tokens);
             app.input_tokens_total = app.input_tokens_total.saturating_add(input_tokens);
             app.output_tokens_total = app.output_tokens_total.saturating_add(output_tokens);
@@ -1771,9 +1894,16 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
         }
         AgentEvent::ContextWarning { used, limit } => {
             let pct = (used as f64 / limit.max(1) as f64 * 100.0) as u64;
-            app.blocks.push(Block::System(format!("context {used}/{limit} tokens ({pct}%) - consider /compact")));
+            app.blocks.push(Block::System(format!(
+                "context {used}/{limit} tokens ({pct}%) - consider /compact"
+            )));
         }
-        AgentEvent::ApprovalRequest { call_id, tool_name, args_json, diff_preview } => {
+        AgentEvent::ApprovalRequest {
+            call_id,
+            tool_name,
+            args_json,
+            diff_preview,
+        } => {
             app.pending_approval = Some(PendingApproval {
                 call_id,
                 tool_name,
@@ -1782,12 +1912,20 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             });
         }
         AgentEvent::ApprovalGranted { call_id } => {
-            if app.pending_approval.as_ref().is_some_and(|p| p.call_id == call_id) {
+            if app
+                .pending_approval
+                .as_ref()
+                .is_some_and(|p| p.call_id == call_id)
+            {
                 app.pending_approval = None;
             }
         }
         AgentEvent::ApprovalDenied { call_id } => {
-            if app.pending_approval.as_ref().is_some_and(|p| p.call_id == call_id) {
+            if app
+                .pending_approval
+                .as_ref()
+                .is_some_and(|p| p.call_id == call_id)
+            {
                 app.pending_approval = None;
             }
         }
@@ -1813,11 +1951,17 @@ fn collapse_reasoning_into_thought(app: &mut App) {
 }
 
 fn last_assistant_mut_open(blocks: &mut [Block]) -> Option<&mut Block> {
-    blocks.iter_mut().rev().find(|b| matches!(b, Block::Assistant { done: false, .. }))
+    blocks
+        .iter_mut()
+        .rev()
+        .find(|b| matches!(b, Block::Assistant { done: false, .. }))
 }
 
 fn find_tool_mut<'a>(blocks: &'a mut [Block], call_id: &str) -> Option<&'a mut Block> {
-    blocks.iter_mut().rev().find(|b| matches!(b, Block::Tool { call_id: c, .. } if c == call_id))
+    blocks
+        .iter_mut()
+        .rev()
+        .find(|b| matches!(b, Block::Tool { call_id: c, .. } if c == call_id))
 }
 
 /// Maintain the invariant "at most one open assistant block" by closing any
@@ -1827,7 +1971,14 @@ fn find_tool_mut<'a>(blocks: &'a mut [Block], call_id: &str) -> Option<&'a mut B
 fn rotate_assistant_block(blocks: &mut Vec<Block>) {
     let mut i = 0;
     while i < blocks.len() {
-        if let Block::Assistant { done, text, reasoning, thought_for_secs, .. } = &mut blocks[i] {
+        if let Block::Assistant {
+            done,
+            text,
+            reasoning,
+            thought_for_secs,
+            ..
+        } = &mut blocks[i]
+        {
             if !*done && text.is_empty() && reasoning.is_empty() && thought_for_secs.is_none() {
                 blocks.remove(i);
                 continue;

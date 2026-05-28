@@ -13,7 +13,10 @@ pub fn generate_pkce() -> Pkce {
     let code_verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
     let digest = Sha256::digest(code_verifier.as_bytes());
     let code_challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
-    Pkce { code_verifier, code_challenge }
+    Pkce {
+        code_verifier,
+        code_challenge,
+    }
 }
 
 pub fn random_state() -> String {

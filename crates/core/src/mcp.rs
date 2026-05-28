@@ -104,7 +104,12 @@ impl McpClient {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| anyhow!("failed to spawn MCP server `{name}` ({}): {e}", config.command))?;
+            .map_err(|e| {
+                anyhow!(
+                    "failed to spawn MCP server `{name}` ({}): {e}",
+                    config.command
+                )
+            })?;
         let stdin = child
             .stdin
             .take()
@@ -152,7 +157,10 @@ impl McpClient {
         let resp = state.request("tools/call", params).await?;
         drop(state);
 
-        let is_error = resp.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_error = resp
+            .get("isError")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let mut buf = String::new();
         if let Some(arr) = resp.get("content").and_then(|v| v.as_array()) {
             for item in arr {
@@ -222,9 +230,16 @@ impl McpState {
         loop {
             let next = tokio::time::timeout(REQUEST_TIMEOUT, self.lines.next_line())
                 .await
-                .map_err(|_| anyhow!("MCP `{method}` timed out after {}s", REQUEST_TIMEOUT.as_secs()))??;
+                .map_err(|_| {
+                    anyhow!(
+                        "MCP `{method}` timed out after {}s",
+                        REQUEST_TIMEOUT.as_secs()
+                    )
+                })??;
             let Some(line) = next else {
-                return Err(anyhow!("MCP server closed stdout while awaiting `{method}`"));
+                return Err(anyhow!(
+                    "MCP server closed stdout while awaiting `{method}`"
+                ));
             };
             let Ok(v): std::result::Result<Value, _> = serde_json::from_str(&line) else {
                 tracing::debug!(line = %line, "non-JSON line on MCP stdout");

@@ -77,14 +77,28 @@ fn init_tracing() {
     use tracing_subscriber::util::SubscriberInitExt;
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,opencli=info"));
-    let log_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("opencli").join("logs");
+    let log_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("opencli")
+        .join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
-    let log_path = log_dir.join(format!("opencli-{}.log", chrono::Utc::now().format("%Y-%m-%d")));
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).ok();
+    let log_path = log_dir.join(format!(
+        "opencli-{}.log",
+        chrono::Utc::now().format("%Y-%m-%d")
+    ));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .ok();
     let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
-    let registry = tracing_subscriber::registry().with(env_filter).with(stderr_layer);
+    let registry = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer);
     if let Some(f) = file {
-        let file_layer = tracing_subscriber::fmt::layer().with_writer(std::sync::Mutex::new(f)).with_ansi(false);
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::sync::Mutex::new(f))
+            .with_ansi(false);
         let _ = registry.with(file_layer).try_init();
     } else {
         let _ = registry.try_init();
@@ -99,16 +113,24 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None => tui::run().await,
-        Some(Command::Login { api_key, no_browser }) => commands::login::run(api_key, !no_browser).await,
+        Some(Command::Login {
+            api_key,
+            no_browser,
+        }) => commands::login::run(api_key, !no_browser).await,
         Some(Command::Status) => commands::login::status().await,
         Some(Command::Logout) => commands::login::logout().await,
-        Some(Command::Chat { prompt, model, reasoning, output_format }) => {
-            commands::chat::run(prompt.join(" "), model, reasoning, output_format).await
-        }
+        Some(Command::Chat {
+            prompt,
+            model,
+            reasoning,
+            output_format,
+        }) => commands::chat::run(prompt.join(" "), model, reasoning, output_format).await,
         Some(Command::Resume) => tui::run_resume().await,
         Some(Command::Web { no_open }) => commands::ui::run(cli.port, !no_open).await,
-        Some(Command::Config { show, set_model, set_reasoning }) => {
-            commands::config_cmd::run(show, set_model, set_reasoning).await
-        }
+        Some(Command::Config {
+            show,
+            set_model,
+            set_reasoning,
+        }) => commands::config_cmd::run(show, set_model, set_reasoning).await,
     }
 }

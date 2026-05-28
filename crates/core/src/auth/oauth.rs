@@ -138,14 +138,20 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
         Ok(record)
     });
 
-    Ok(PendingLogin { auth_url: url, completion })
+    Ok(PendingLogin {
+        auth_url: url,
+        completion,
+    })
 }
 
 /// Convenience: synchronous-style wrapper used by the non-TUI `opencli login` CLI.
 /// Prints the URL to stdout, waits for completion.
 pub async fn login_with_browser(open_browser: bool) -> Result<AuthRecord> {
     let pending = start_browser_login(open_browser).await?;
-    println!("\n  Open the following URL to sign in:\n     {}\n", pending.auth_url);
+    println!(
+        "\n  Open the following URL to sign in:\n     {}\n",
+        pending.auth_url
+    );
     let record = pending
         .completion
         .await
@@ -212,7 +218,9 @@ async fn spawn_callback_server(
 
     let (port, listener) = match try_bind(DEFAULT_PORT).await {
         Ok(v) => v,
-        Err(_) => try_bind(FALLBACK_PORT).await.context("Failed to bind callback port")?,
+        Err(_) => try_bind(FALLBACK_PORT)
+            .await
+            .context("Failed to bind callback port")?,
     };
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -269,8 +277,8 @@ pub async fn exchange_code_for_tokens(
         // Don't propagate the raw text — it leaks credentials into logs.
         return Err(anyhow!("token exchange failed {status}"));
     }
-    let tokens: TokenSet = serde_json::from_str(&text)
-        .map_err(|e| anyhow!("failed to parse token response: {e}"))?;
+    let tokens: TokenSet =
+        serde_json::from_str(&text).map_err(|e| anyhow!("failed to parse token response: {e}"))?;
     Ok(tokens)
 }
 
@@ -361,11 +369,13 @@ fn friendly_oauth_error(code: &str, desc: &str) -> String {
     if code == "access_denied" && d.contains("no_valid_organizations") {
         return "Your ChatGPT account has no valid organizations for this app. \
                 Make sure you are signed into a ChatGPT Plus/Pro/Team/Enterprise \
-                account that has Codex access, or use an OpenAI API key instead.".into();
+                account that has Codex access, or use an OpenAI API key instead."
+            .into();
     }
     if code == "access_denied" && d.contains("missing_codex_entitlement") {
         return "Your ChatGPT plan doesn't include Codex access. \
-                Upgrade your plan or use an OpenAI API key instead.".into();
+                Upgrade your plan or use an OpenAI API key instead."
+            .into();
     }
     if !desc.is_empty() {
         format!("OAuth error ({code}): {desc}")

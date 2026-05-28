@@ -104,7 +104,8 @@ impl TextInput {
         let col = display_width(&before[prev_nl + 1..]);
         let prev_line_end = prev_nl;
         let prev_line_start = before[..prev_nl].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        self.cursor = col_to_byte(&self.buffer[prev_line_start..prev_line_end], col) + prev_line_start;
+        self.cursor =
+            col_to_byte(&self.buffer[prev_line_start..prev_line_end], col) + prev_line_start;
     }
 
     pub fn move_down(&mut self) {

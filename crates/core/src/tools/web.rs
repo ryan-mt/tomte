@@ -63,10 +63,7 @@ Parameters:\n\
         // ranges so the model can't be coaxed into hitting cloud metadata
         // (169.254.169.254) or internal admin endpoints (127.0.0.1, 10.x).
         validate_ssrf_safe(&a.url).await?;
-        let cap = a
-            .max_bytes
-            .unwrap_or(DEFAULT_MAX_BYTES)
-            .min(HARD_CAP_BYTES) as usize;
+        let cap = a.max_bytes.unwrap_or(DEFAULT_MAX_BYTES).min(HARD_CAP_BYTES) as usize;
         let client = reqwest::Client::builder()
             .user_agent(concat!("opencli/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
@@ -176,8 +173,7 @@ fn is_transient(e: &reqwest::Error) -> bool {
 /// different address); rebinding would require a determined attacker
 /// controlling DNS, which is outside the local-tool threat model.
 async fn validate_ssrf_safe(url_str: &str) -> Result<()> {
-    let parsed = url::Url::parse(url_str)
-        .with_context(|| format!("parse URL: {url_str}"))?;
+    let parsed = url::Url::parse(url_str).with_context(|| format!("parse URL: {url_str}"))?;
     let host = parsed
         .host_str()
         .ok_or_else(|| anyhow!("URL has no host: {url_str}"))?;

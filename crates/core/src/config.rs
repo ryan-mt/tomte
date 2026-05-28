@@ -44,7 +44,6 @@ pub fn migrate_legacy_model_name(name: &str) -> String {
     }
 }
 
-
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -128,7 +127,14 @@ mod tests {
 
     #[test]
     fn migrate_legacy_model_name_passes_through_new_names() {
-        for name in ["gpt-5", "gpt-5-pro", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano", "o3"] {
+        for name in [
+            "gpt-5",
+            "gpt-5-pro",
+            "gpt-5-codex",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "o3",
+        ] {
             assert_eq!(migrate_legacy_model_name(name), name);
         }
     }

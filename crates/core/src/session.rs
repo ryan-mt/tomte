@@ -104,10 +104,7 @@ pub fn derive_preview(history: &[InputItem]) -> String {
                     continue;
                 }
                 if trimmed.chars().count() > 80 {
-                    return format!(
-                        "{}…",
-                        trimmed.chars().take(79).collect::<String>()
-                    );
+                    return format!("{}…", trimmed.chars().take(79).collect::<String>());
                 }
                 return trimmed.to_string();
             }
@@ -130,8 +127,7 @@ pub fn save(record: &SessionRecord) -> std::io::Result<()> {
 pub fn load(cwd: &Path, id: &str) -> std::io::Result<SessionRecord> {
     let path = sessions_dir_for(cwd).join(format!("{id}.json"));
     let text = std::fs::read_to_string(&path)?;
-    serde_json::from_str(&text)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    serde_json::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// List sessions for a given cwd, newest-first. Corrupt files are skipped.
@@ -146,7 +142,9 @@ pub fn list(cwd: &Path) -> Vec<SessionMeta> {
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         if let Ok(rec) = serde_json::from_str::<SessionRecord>(&text) {
             out.push(rec.meta);
         }

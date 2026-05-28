@@ -13,11 +13,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(5),                        // chat
-            Constraint::Length(spinner_h),             // spinner (only while busy)
-            Constraint::Length(queue_h),               // queued messages
-            Constraint::Length(input_height(app)),     // input
-            Constraint::Length(1),                     // status line
+            Constraint::Min(5),                    // chat
+            Constraint::Length(spinner_h),         // spinner (only while busy)
+            Constraint::Length(queue_h),           // queued messages
+            Constraint::Length(input_height(app)), // input
+            Constraint::Length(1),                 // status line
         ])
         .split(f.area());
 
@@ -60,7 +60,13 @@ fn render_queue(f: &mut Frame, area: Rect, app: &App) {
     for msg in show {
         let one_line = msg.replace('\n', " ");
         let truncated: String = if width > 0 && one_line.chars().count() > width {
-            format!("{}…", one_line.chars().take(width.saturating_sub(1)).collect::<String>())
+            format!(
+                "{}…",
+                one_line
+                    .chars()
+                    .take(width.saturating_sub(1))
+                    .collect::<String>()
+            )
         } else {
             one_line
         };
@@ -159,7 +165,9 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 render_welcome(&mut lines, app);
             }
             Block::User(text) => {
-                let chevron_style = Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD);
+                let chevron_style = Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD);
                 let body_style = Style::default().fg(Color::White);
                 let mut first = true;
                 for raw in text.split('\n') {
@@ -174,16 +182,18 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 }
                 lines.push(Line::raw(""));
             }
-            Block::Assistant { text, reasoning, thought_for_secs, .. } => {
+            Block::Assistant {
+                text,
+                reasoning,
+                thought_for_secs,
+                ..
+            } => {
                 // Compact "Thought for Xs" line once reasoning has completed for this
                 // assistant block. While reasoning is still streaming, we suppress it —
                 // the spinner row already communicates that the model is thinking.
                 if let Some(secs) = thought_for_secs {
                     lines.push(Line::from(vec![
-                        Span::styled(
-                            "● ",
-                            Style::default().fg(Color::Rgb(200, 120, 220)),
-                        ),
+                        Span::styled("● ", Style::default().fg(Color::Rgb(200, 120, 220))),
                         Span::styled(
                             format!("Thought for {secs}s"),
                             Style::default()
@@ -214,7 +224,15 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 error,
                 ..
             } => {
-                render_tool(&mut lines, name, args, output.as_deref(), *error, inner_width, expanded);
+                render_tool(
+                    &mut lines,
+                    name,
+                    args,
+                    output.as_deref(),
+                    *error,
+                    inner_width,
+                    expanded,
+                );
             }
             Block::System(text) => {
                 for l in wrap(text, inner_width.saturating_sub(2)) {
@@ -250,7 +268,13 @@ fn block_fingerprint(block: &Block) -> usize {
     match block {
         Block::Welcome => 0,
         Block::User(s) | Block::System(s) => s.len(),
-        Block::Assistant { text, reasoning, thought_for_secs, done, .. } => {
+        Block::Assistant {
+            text,
+            reasoning,
+            thought_for_secs,
+            done,
+            ..
+        } => {
             // Multiply each field by a distinct prime so e.g. a block that
             // moves bytes from `reasoning` into `text` still produces a
             // different fingerprint instead of an accidental cache hit.
@@ -260,12 +284,22 @@ fn block_fingerprint(block: &Block) -> usize {
                 .wrapping_add(thought_for_secs.unwrap_or(0) as usize)
                 .wrapping_add(if *done { 1 } else { 0 })
         }
-        Block::Tool { args, output, error, .. } => {
-            args.len()
-                .wrapping_mul(31)
-                .wrapping_add(output.as_deref().map(|s| s.len()).unwrap_or(0).wrapping_mul(17))
-                .wrapping_add(if *error { 1 } else { 0 })
-        }
+        Block::Tool {
+            args,
+            output,
+            error,
+            ..
+        } => args
+            .len()
+            .wrapping_mul(31)
+            .wrapping_add(
+                output
+                    .as_deref()
+                    .map(|s| s.len())
+                    .unwrap_or(0)
+                    .wrapping_mul(17),
+            )
+            .wrapping_add(if *error { 1 } else { 0 }),
     }
 }
 
@@ -298,10 +332,16 @@ fn finalize_chat_render(f: &mut Frame, area: Rect, app: &mut App, lines: Vec<Lin
 }
 
 fn render_input(f: &mut Frame, area: Rect, app: &App) {
-    let prompt_color = if app.busy { Color::Rgb(160, 160, 160) } else { Color::Magenta };
+    let prompt_color = if app.busy {
+        Color::Rgb(160, 160, 160)
+    } else {
+        Color::Magenta
+    };
     let prompt = Span::styled(
         "> ",
-        Style::default().fg(prompt_color).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(prompt_color)
+            .add_modifier(Modifier::BOLD),
     );
 
     let lines: Vec<Line> = if app.input.is_empty() {
@@ -375,14 +415,22 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
             format!(" · {}", app.config.reasoning_effort),
             Style::default().fg(Color::Rgb(160, 160, 160)),
         ),
-        Span::styled(format!("  {cwd} "), Style::default().fg(Color::Rgb(160, 160, 160))),
+        Span::styled(
+            format!("  {cwd} "),
+            Style::default().fg(Color::Rgb(160, 160, 160)),
+        ),
     ];
     let right_text: String = right_spans.iter().map(|s| s.content.as_ref()).collect();
     let right_width = unicode_width::UnicodeWidthStr::width(right_text.as_str()) as u16;
     let total = area.width;
     let left_width = total.saturating_sub(right_width).saturating_sub(1);
 
-    let left_rect = Rect { x: area.x, y: area.y, width: left_width, height: 1 };
+    let left_rect = Rect {
+        x: area.x,
+        y: area.y,
+        width: left_width,
+        height: 1,
+    };
     let right_rect = Rect {
         x: area.x + left_width,
         y: area.y,
@@ -394,13 +442,19 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App) {
-    use ratatui::widgets::{Block as RBlock, Borders, BorderType, Clear};
-    let Some(p) = app.pending_approval.as_ref() else { return };
+    use ratatui::widgets::{Block as RBlock, BorderType, Borders, Clear};
+    let Some(p) = app.pending_approval.as_ref() else {
+        return;
+    };
 
     let dim = Style::default().fg(Color::Rgb(170, 170, 170));
     let bg = Style::default().bg(Color::Rgb(20, 20, 22));
-    let accent = Style::default().fg(Color::Rgb(25, 195, 154)).add_modifier(Modifier::BOLD);
-    let warn = Style::default().fg(Color::Rgb(255, 182, 73)).add_modifier(Modifier::BOLD);
+    let accent = Style::default()
+        .fg(Color::Rgb(25, 195, 154))
+        .add_modifier(Modifier::BOLD);
+    let warn = Style::default()
+        .fg(Color::Rgb(255, 182, 73))
+        .add_modifier(Modifier::BOLD);
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(vec![
@@ -409,12 +463,18 @@ fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App)
     ]));
     let args_preview = condense_args(&p.args_json);
     if !args_preview.is_empty() {
-        lines.push(Line::from(Span::styled(format!("  args: {args_preview}"), dim)));
+        lines.push(Line::from(Span::styled(
+            format!("  args: {args_preview}"),
+            dim,
+        )));
     }
     if let Some(d) = p.diff_preview.as_ref() {
         lines.push(Line::from(Span::styled("  ─ preview ─", dim)));
         for raw in d.lines().take(8) {
-            lines.push(Line::from(Span::styled(format!("  {raw}"), Style::default().fg(Color::Rgb(220, 220, 220)))));
+            lines.push(Line::from(Span::styled(
+                format!("  {raw}"),
+                Style::default().fg(Color::Rgb(220, 220, 220)),
+            )));
         }
         if d.lines().count() > 8 {
             lines.push(Line::from(Span::styled("  …", dim)));
@@ -435,7 +495,12 @@ fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App)
     let x = anchor_area.x + 1;
     let bottom = anchor_area.y;
     let y = bottom.saturating_sub(height);
-    let popup = ratatui::layout::Rect { x, y, width, height };
+    let popup = ratatui::layout::Rect {
+        x,
+        y,
+        width,
+        height,
+    };
     f.render_widget(Clear, popup);
     let block = RBlock::default()
         .borders(Borders::ALL)
@@ -445,7 +510,10 @@ fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App)
         .style(bg);
     let inner = block.inner(popup);
     f.render_widget(block, popup);
-    f.render_widget(Paragraph::new(lines).style(bg).wrap(Wrap { trim: false }), inner);
+    f.render_widget(
+        Paragraph::new(lines).style(bg).wrap(Wrap { trim: false }),
+        inner,
+    );
 }
 
 fn condense_args(json: &str) -> String {
@@ -612,7 +680,10 @@ fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
     );
 
     let help_text = "/help for commands · /clear to reset · Ctrl+C to exit";
-    let help_row = (vec![Span::styled(help_text, dim)], help_text.chars().count());
+    let help_row = (
+        vec![Span::styled(help_text, dim)],
+        help_text.chars().count(),
+    );
 
     let paste_text = "Ctrl+V to paste text or an image from your clipboard";
     let paste_row = (
@@ -688,7 +759,13 @@ fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block], expanded:
 
     let mut entries: Vec<(String, usize, bool, bool)> = Vec::new();
     for b in blocks {
-        if let Block::Tool { args, output, error, .. } = b {
+        if let Block::Tool {
+            args,
+            output,
+            error,
+            ..
+        } = b
+        {
             let parsed: Value = if args.is_empty() {
                 Value::Null
             } else {
@@ -699,10 +776,7 @@ fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block], expanded:
                 .and_then(|v| v.as_str())
                 .unwrap_or("?")
                 .to_string();
-            let line_count = output
-                .as_deref()
-                .map(|o| o.lines().count())
-                .unwrap_or(0);
+            let line_count = output.as_deref().map(|o| o.lines().count()).unwrap_or(0);
             entries.push((path, line_count, *error, output.is_some()));
         }
     }
@@ -733,7 +807,9 @@ fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block], expanded:
             Span::styled("● ", Style::default().fg(bullet_color)),
             Span::styled(
                 "Read".to_string(),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("({})", pretty_path(path)), gray),
         ]));
@@ -748,7 +824,9 @@ fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block], expanded:
             Span::styled("● ", Style::default().fg(bullet_color)),
             Span::styled(
                 format!("Read {} files", count),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!(" · {} lines total", total_lines), gray),
         ]));
@@ -805,7 +883,9 @@ fn render_tool(
         Span::styled("● ", Style::default().fg(bullet_color)),
         Span::styled(
             display_name,
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
     ];
     if !summary.is_empty() {
@@ -858,7 +938,10 @@ fn friendly_header(name: &str, args: &serde_json::Value) -> (String, String) {
             if path.is_empty() {
                 ("Grep".into(), format!("\"{pat}\""))
             } else {
-                ("Grep".into(), format!("\"{pat}\" in {}", pretty_path(&path)))
+                (
+                    "Grep".into(),
+                    format!("\"{pat}\" in {}", pretty_path(&path)),
+                )
             }
         }
         "glob" => ("Glob".into(), s("pattern")),
@@ -955,8 +1038,16 @@ fn friendly_body<'a>(
                 .get("new_string")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let added = if new_.is_empty() { 0 } else { new_.lines().count() };
-            let removed = if old.is_empty() { 0 } else { old.lines().count() };
+            let added = if new_.is_empty() {
+                0
+            } else {
+                new_.lines().count()
+            };
+            let removed = if old.is_empty() {
+                0
+            } else {
+                old.lines().count()
+            };
             let summary_text = match (added, removed) {
                 (a, 0) => format!("Added {a} line{}", plural(a)),
                 (0, r) => format!("Removed {r} line{}", plural(r)),
@@ -968,22 +1059,34 @@ fn friendly_body<'a>(
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
             let start_line = locate_line_number(path, old).unwrap_or(1);
 
-            let removed_bg = Style::default().bg(Color::Rgb(60, 0, 0)).fg(Color::Rgb(255, 120, 120));
-            let added_bg = Style::default().bg(Color::Rgb(0, 50, 0)).fg(Color::Rgb(160, 255, 160));
-            let lineno_removed = Style::default().bg(Color::Rgb(60, 0, 0)).fg(Color::Rgb(200, 80, 80));
-            let lineno_added = Style::default().bg(Color::Rgb(0, 50, 0)).fg(Color::Rgb(120, 200, 120));
+            let removed_bg = Style::default()
+                .bg(Color::Rgb(60, 0, 0))
+                .fg(Color::Rgb(255, 120, 120));
+            let added_bg = Style::default()
+                .bg(Color::Rgb(0, 50, 0))
+                .fg(Color::Rgb(160, 255, 160));
+            let lineno_removed = Style::default()
+                .bg(Color::Rgb(60, 0, 0))
+                .fg(Color::Rgb(200, 80, 80));
+            let lineno_added = Style::default()
+                .bg(Color::Rgb(0, 50, 0))
+                .fg(Color::Rgb(120, 200, 120));
 
             let mut shown = 0usize;
             let max_diff = limits.edit_diff;
 
             for (i, line) in old.lines().enumerate() {
-                if shown >= max_diff { break; }
+                if shown >= max_diff {
+                    break;
+                }
                 let n = start_line + i;
                 out.push(diff_line(n, "-", line, lineno_removed, removed_bg, avail));
                 shown += 1;
             }
             for (i, line) in new_.lines().enumerate() {
-                if shown >= max_diff { break; }
+                if shown >= max_diff {
+                    break;
+                }
                 let n = start_line + i;
                 out.push(diff_line(n, "+", line, lineno_added, added_bg, avail));
                 shown += 1;
@@ -1046,7 +1149,11 @@ fn friendly_body<'a>(
                     }
                     if total_err > max_err {
                         out.push(Line::from(Span::styled(
-                            format!("… +{} stderr line{}", total_err - max_err, plural(total_err - max_err)),
+                            format!(
+                                "… +{} stderr line{}",
+                                total_err - max_err,
+                                plural(total_err - max_err)
+                            ),
                             style_meta,
                         )));
                     }
@@ -1055,7 +1162,10 @@ fn friendly_body<'a>(
                     // hint keeps things clean without losing the signal.
                     let n = stderr.lines().filter(|l| !l.trim().is_empty()).count();
                     out.push(Line::from(Span::styled(
-                        format!("(+ {n} stderr line{} suppressed — Ctrl+O to view)", plural(n)),
+                        format!(
+                            "(+ {n} stderr line{} suppressed — Ctrl+O to view)",
+                            plural(n)
+                        ),
                         style_meta,
                     )));
                 }
@@ -1066,10 +1176,7 @@ fn friendly_body<'a>(
                 } else {
                     Style::default().fg(Color::Red)
                 };
-                out.push(Line::from(Span::styled(
-                    format!("exit {code}"),
-                    code_style,
-                )));
+                out.push(Line::from(Span::styled(format!("exit {code}"), code_style)));
             }
         }
         "grep" => {
@@ -1153,7 +1260,9 @@ fn friendly_body<'a>(
                 style_summary,
             )));
             for raw in text.lines().take(limits.list_preview) {
-                if raw.is_empty() { continue; }
+                if raw.is_empty() {
+                    continue;
+                }
                 for w in wrap(raw, avail) {
                     out.push(Line::from(Span::styled(w, style_code)));
                 }
@@ -1174,7 +1283,10 @@ fn friendly_body<'a>(
             }
             if total > limits.default_preview {
                 out.push(Line::from(Span::styled(
-                    format!("… +{} lines (Ctrl+O for more)", total - limits.default_preview),
+                    format!(
+                        "… +{} lines (Ctrl+O for more)",
+                        total - limits.default_preview
+                    ),
                     style_meta,
                 )));
             }
@@ -1220,7 +1332,11 @@ impl BodyLimits {
 }
 
 fn plural(n: usize) -> &'static str {
-    if n == 1 { "" } else { "s" }
+    if n == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 fn diff_line<'a>(
@@ -1233,7 +1349,12 @@ fn diff_line<'a>(
 ) -> Line<'a> {
     let body_width = width.saturating_sub(7);
     let truncated: String = if body_width > 0 && text.chars().count() > body_width {
-        format!("{}…", text.chars().take(body_width.saturating_sub(1)).collect::<String>())
+        format!(
+            "{}…",
+            text.chars()
+                .take(body_width.saturating_sub(1))
+                .collect::<String>()
+        )
     } else {
         text.to_string()
     };
@@ -1361,7 +1482,11 @@ fn compact_args(s: &str) -> String {
                     let pretty = match val {
                         serde_json::Value::String(s) => {
                             let trimmed: String = s.chars().take(50).collect();
-                            format!("\"{}{}\"", trimmed, if s.chars().count() > 50 { "…" } else { "" })
+                            format!(
+                                "\"{}{}\"",
+                                trimmed,
+                                if s.chars().count() > 50 { "…" } else { "" }
+                            )
                         }
                         _ => val.to_string(),
                     };

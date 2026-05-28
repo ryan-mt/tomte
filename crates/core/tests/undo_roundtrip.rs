@@ -27,10 +27,7 @@ async fn undo_restores_overwritten_content() {
         .unwrap();
 
     WriteFile
-        .execute(
-            json!({"path": "a.txt", "content": "overwritten\n"}),
-            &ctx,
-        )
+        .execute(json!({"path": "a.txt", "content": "overwritten\n"}), &ctx)
         .await
         .unwrap();
     assert_eq!(
@@ -52,10 +49,7 @@ async fn undo_removes_newly_created_file() {
     let ctx = ctx(tmp.path().to_path_buf());
 
     WriteFile
-        .execute(
-            json!({"path": "new.txt", "content": "fresh\n"}),
-            &ctx,
-        )
+        .execute(json!({"path": "new.txt", "content": "fresh\n"}), &ctx)
         .await
         .unwrap();
     assert!(tmp.path().join("new.txt").exists());
@@ -70,8 +64,12 @@ async fn undo_unwinds_in_lifo_order() {
     let tmp = tempfile::tempdir().unwrap();
     let ctx = ctx(tmp.path().to_path_buf());
 
-    tokio::fs::write(tmp.path().join("a.txt"), b"a0").await.unwrap();
-    tokio::fs::write(tmp.path().join("b.txt"), b"b0").await.unwrap();
+    tokio::fs::write(tmp.path().join("a.txt"), b"a0")
+        .await
+        .unwrap();
+    tokio::fs::write(tmp.path().join("b.txt"), b"b0")
+        .await
+        .unwrap();
 
     WriteFile
         .execute(json!({"path": "a.txt", "content": "a1"}), &ctx)
@@ -83,11 +81,20 @@ async fn undo_unwinds_in_lifo_order() {
         .unwrap();
 
     UndoLastEdit.execute(json!({}), &ctx).await.unwrap();
-    assert_eq!(std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(), "b0");
-    assert_eq!(std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(), "a1");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(),
+        "b0"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+        "a1"
+    );
 
     UndoLastEdit.execute(json!({}), &ctx).await.unwrap();
-    assert_eq!(std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(), "a0");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+        "a0"
+    );
 }
 
 #[tokio::test]

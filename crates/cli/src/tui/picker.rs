@@ -47,8 +47,7 @@ impl Picker {
             .iter()
             .enumerate()
             .filter(|(_, it)| {
-                it.title.to_lowercase().contains(&q)
-                    || it.key.to_lowercase().contains(&q)
+                it.title.to_lowercase().contains(&q) || it.key.to_lowercase().contains(&q)
             })
             .map(|(i, _)| i)
             .collect()
@@ -144,10 +143,7 @@ pub fn render(f: &mut Frame, anchor_area: Rect, picker: &Picker) {
 
     let mut lines: Vec<Line> = Vec::new();
     if visible.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  (no matches)",
-            dim,
-        )));
+        lines.push(Line::from(Span::styled("  (no matches)", dim)));
     } else {
         for &idx in visible.iter().take(10) {
             let it = &picker.items[idx];
@@ -204,9 +200,17 @@ pub fn slash_commands() -> Vec<PickerItem> {
         item("init", "/init", "create CLAUDE.md for this project"),
         item("memory", "/memory", "show CLAUDE.md"),
         item("diff", "/diff", "show `git diff` for the working tree"),
-        item("review", "/review", "ask the agent to review uncommitted changes"),
+        item(
+            "review",
+            "/review",
+            "ask the agent to review uncommitted changes",
+        ),
         item("export", "/export", "save conversation as markdown"),
-        item("compact", "/compact", "ask the agent to compact the conversation"),
+        item(
+            "compact",
+            "/compact",
+            "ask the agent to compact the conversation",
+        ),
         item("todos", "/todos", "show the session todo list"),
         item("about", "/about", "show opencli version + build info"),
         item("login", "/login", "sign in with ChatGPT"),
@@ -219,7 +223,11 @@ pub fn slash_commands() -> Vec<PickerItem> {
         item("resume", "/resume", "pick a previous session to continue"),
         item("plan", "/plan", "enter plan mode (read-only tools)"),
         item("normal", "/normal", "leave plan mode"),
-        item("perms", "/perms", "toggle the approval modal for writes/shell"),
+        item(
+            "perms",
+            "/perms",
+            "toggle the approval modal for writes/shell",
+        ),
         item("undo", "/undo", "revert the most recent file edit"),
         item("quit", "/quit", "exit opencli"),
     ]
