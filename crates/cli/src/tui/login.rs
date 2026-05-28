@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use opencli_core::auth::{self, AuthMode, AuthRecord};
+use opencli_core::auth::{self, AuthMode};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -122,15 +122,13 @@ impl LoginScreen {
                     *self.error.lock().await = Some("API key cannot be empty".into());
                     return Ok(false);
                 }
-                let record = AuthRecord {
-                    mode: AuthMode::ApiKey,
-                    api_key: Some(key_str),
-                    tokens: None,
-                    last_refresh: None,
-                };
+                let mut record = auth::load_auth().unwrap_or_default();
+                record.mode = AuthMode::OpenaiApiKey;
+                record.api_key = Some(key_str);
+                record.tokens = None;
                 match auth::save_auth(&record) {
                     Ok(_) => {
-                        *self.stage.lock().await = Stage::Success(AuthMode::ApiKey);
+                        *self.stage.lock().await = Stage::Success(AuthMode::OpenaiApiKey);
                         return Ok(true);
                     }
                     Err(e) => {
@@ -165,7 +163,7 @@ impl LoginScreen {
                 tokio::spawn(async move {
                     match pending.completion.await {
                         Ok(Ok(_)) => {
-                            *stage2.lock().await = Stage::Success(AuthMode::ChatGPT);
+                            *stage2.lock().await = Stage::Success(AuthMode::OpenaiOauth);
                         }
                         Ok(Err(e)) => {
                             *err2.lock().await = Some(e.to_string());

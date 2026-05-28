@@ -17,10 +17,9 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// outer cap is generous enough to clear it (default 120s) plus margin.
 const TOOL_HARD_TIMEOUT: Duration = Duration::from_secs(180);
 
+use crate::client::LlmClient;
 use crate::config::Config;
-use crate::openai::{
-    InputItem, MessageContent, OpenAiClient, ResponseStreamEvent, ResponsesRequest,
-};
+use crate::openai::{InputItem, MessageContent, ResponseStreamEvent, ResponsesRequest};
 use crate::tools::{ApprovalMode, Registry, SessionState, TodoItem, ToolContext};
 
 /// Streaming event surfaced to the UI/CLI layer.
@@ -107,6 +106,9 @@ const EDIT_TOOLS: &[&str] = &["write_file", "edit_file", "multi_edit", "undo_las
 
 pub fn model_context_limit(model: &str) -> u64 {
     let m = model.to_ascii_lowercase();
+    if m.starts_with("claude") {
+        return 200_000;
+    }
     if m.contains("nano") {
         200_000
     } else if m.contains("mini") {
@@ -117,7 +119,7 @@ pub fn model_context_limit(model: &str) -> u64 {
 }
 
 pub struct Agent {
-    pub client: OpenAiClient,
+    pub client: LlmClient,
     pub registry: Registry,
     pub config: Config,
     pub cwd: std::path::PathBuf,
@@ -146,7 +148,7 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(client: OpenAiClient, config: Config) -> Self {
+    pub fn new(client: LlmClient, config: Config) -> Self {
         Self {
             client,
             registry: Registry::standard(),

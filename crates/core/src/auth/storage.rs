@@ -5,20 +5,27 @@ use serde::{Deserialize, Serialize};
 use crate::config;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum AuthMode {
     #[default]
     None,
-    ChatGPT,
-    ApiKey,
+    #[serde(alias = "chatgpt")]
+    OpenaiOauth,
+    #[serde(alias = "apikey", alias = "api_key")]
+    OpenaiApiKey,
+    AnthropicOauth,
+    AnthropicApiKey,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StoredTokens {
     pub access_token: String,
     pub refresh_token: String,
+    #[serde(default)]
     pub id_token: Option<String>,
+    #[serde(default)]
     pub account_id: Option<String>,
+    #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
 }
 
@@ -30,6 +37,10 @@ pub struct AuthRecord {
     pub api_key: Option<String>,
     #[serde(default)]
     pub tokens: Option<StoredTokens>,
+    #[serde(default)]
+    pub anthropic_api_key: Option<String>,
+    #[serde(default)]
+    pub anthropic_tokens: Option<StoredTokens>,
     #[serde(default)]
     pub last_refresh: Option<DateTime<Utc>>,
 }
@@ -56,11 +67,6 @@ pub fn save_auth(record: &AuthRecord) -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let path = auth_file();
     let text = serde_json::to_string_pretty(record)?;
-    // Write to a sibling tempfile created with restrictive mode FIRST, then
-    // atomic-rename into place. Previously the code did `std::fs::write` then
-    // chmod, which (a) left a window where the file was world-readable under
-    // a 022 umask and (b) silently swallowed chmod failure with `let _ =`,
-    // potentially leaving tokens at 0644 forever.
     let tmp = path.with_extension("tmp");
     #[cfg(unix)]
     {

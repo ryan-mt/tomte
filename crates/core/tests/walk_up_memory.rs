@@ -2,8 +2,9 @@
 //! and orders ancestor-first cwd-last.
 use opencli_core::agent::Agent;
 use opencli_core::auth::Credential;
+use opencli_core::client::LlmClient;
 use opencli_core::config::Config;
-use opencli_core::openai::OpenAiClient;
+use opencli_core::provider::Provider;
 
 #[test]
 fn walk_up_picks_ancestor_then_project_with_correct_ordering() {
@@ -16,7 +17,11 @@ fn walk_up_picks_ancestor_then_project_with_correct_ordering() {
     std::fs::write(root.join("packages").join("AGENTS.md"), "PACKAGES_RULES").unwrap();
     std::fs::write(pkg.join("CLAUDE.md"), "FRONTEND_RULES").unwrap();
 
-    let client = OpenAiClient::new(Credential::ApiKey("sk-dummy".into())).unwrap();
+    let client = LlmClient::new(Credential::ApiKey {
+        provider: Provider::OpenAi,
+        key: "sk-dummy".into(),
+    })
+    .unwrap();
     let mut agent = Agent::new(client, Config::default());
     agent.cwd = pkg.clone();
 

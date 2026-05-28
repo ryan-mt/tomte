@@ -18,8 +18,9 @@ use tokio::sync::mpsc;
 use super::{BuiltinTool, Registry, ToolContext};
 use crate::agent::{Agent, AgentEvent};
 use crate::auth::resolve_credential;
+use crate::client::LlmClient;
 use crate::config;
-use crate::openai::OpenAiClient;
+use crate::provider::Provider;
 use crate::subagent::{load_all, load_by_name};
 
 pub struct DispatchAgent;
@@ -106,12 +107,13 @@ Behaviour:\n\
             }
         })?;
 
-        let credential = resolve_credential().await?;
-        let client = OpenAiClient::new(credential)?;
         let mut cfg = config::load();
         if let Some(ref m) = def.model {
             cfg.model = m.clone();
         }
+        let provider = Provider::from_model(&cfg.model);
+        let credential = resolve_credential(provider).await?;
+        let client = LlmClient::new(credential)?;
         let mut agent = Agent::new(client, cfg);
         agent.cwd = ctx.cwd.clone();
         agent.registry = Registry::filtered(&def.tools);

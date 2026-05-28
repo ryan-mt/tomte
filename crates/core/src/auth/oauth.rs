@@ -122,18 +122,17 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
             .expires_in
             .map(|sec| Utc::now() + chrono::Duration::seconds(sec));
 
-        let record = AuthRecord {
-            mode: AuthMode::ChatGPT,
-            api_key: None,
-            tokens: Some(StoredTokens {
-                access_token: tokens.access_token,
-                refresh_token: tokens.refresh_token,
-                id_token: tokens.id_token,
-                account_id,
-                expires_at,
-            }),
-            last_refresh: Some(Utc::now()),
-        };
+        let mut record = load_auth().unwrap_or_default();
+        record.mode = AuthMode::OpenaiOauth;
+        record.api_key = None;
+        record.tokens = Some(StoredTokens {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            id_token: tokens.id_token,
+            account_id,
+            expires_at,
+        });
+        record.last_refresh = Some(Utc::now());
         save_auth(&record)?;
         Ok(record)
     });

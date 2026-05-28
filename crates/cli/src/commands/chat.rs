@@ -3,8 +3,9 @@ use std::io::{Read, Write};
 use anyhow::Result;
 use opencli_core::agent::{Agent, AgentEvent};
 use opencli_core::auth::resolve_credential;
+use opencli_core::client::LlmClient;
 use opencli_core::config;
-use opencli_core::openai::OpenAiClient;
+use opencli_core::provider::Provider;
 use tokio::sync::mpsc;
 
 pub async fn run(
@@ -31,8 +32,9 @@ pub async fn run(
         cfg.reasoning_effort = r;
     }
 
-    let credential = resolve_credential().await?;
-    let client = OpenAiClient::new(credential)?;
+    let provider = Provider::from_model(&cfg.model);
+    let credential = resolve_credential(provider).await?;
+    let client = LlmClient::new(credential)?;
     let mut agent = Agent::new(client, cfg);
     // Best-effort: spawn MCP servers configured in settings.json. A
     // misconfigured server logs a warning but does not abort the turn.

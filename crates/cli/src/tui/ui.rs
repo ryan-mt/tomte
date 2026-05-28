@@ -405,8 +405,10 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
     }
     let auth_dot = match app.auth_mode {
         AuthMode::None => Span::styled("● ", Style::default().fg(Color::Red)),
-        AuthMode::ApiKey => Span::styled("● ", Style::default().fg(Color::Cyan)),
-        AuthMode::ChatGPT => Span::styled("● ", Style::default().fg(Color::Green)),
+        AuthMode::OpenaiApiKey => Span::styled("● ", Style::default().fg(Color::Cyan)),
+        AuthMode::OpenaiOauth => Span::styled("● ", Style::default().fg(Color::Green)),
+        AuthMode::AnthropicApiKey => Span::styled("● ", Style::default().fg(Color::Magenta)),
+        AuthMode::AnthropicOauth => Span::styled("● ", Style::default().fg(Color::Yellow)),
     };
     let right_spans = vec![
         auth_dot,
@@ -657,8 +659,10 @@ fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
     }
 
     let auth_label = match app.auth_mode {
-        opencli_core::auth::AuthMode::ChatGPT => "ChatGPT account",
-        opencli_core::auth::AuthMode::ApiKey => "API key",
+        opencli_core::auth::AuthMode::OpenaiOauth => "ChatGPT account",
+        opencli_core::auth::AuthMode::OpenaiApiKey => "OpenAI API key",
+        opencli_core::auth::AuthMode::AnthropicOauth => "Claude OAuth",
+        opencli_core::auth::AuthMode::AnthropicApiKey => "Anthropic API key",
         opencli_core::auth::AuthMode::None => "offline",
     };
 

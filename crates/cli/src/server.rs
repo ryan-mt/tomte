@@ -12,8 +12,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use opencli_core::agent::{Agent, AgentEvent};
 use opencli_core::auth::resolve_credential;
+use opencli_core::client::LlmClient;
 use opencli_core::config;
-use opencli_core::openai::OpenAiClient;
+use opencli_core::provider::Provider;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex};
 use tower_http::cors::CorsLayer;
@@ -241,11 +242,13 @@ async fn api_status() -> Json<StatusResp> {
     let auth = opencli_core::auth::load_auth().unwrap_or_default();
     let cfg = config::load();
     let (mode, account_id) = match auth.mode {
-        opencli_core::auth::AuthMode::ChatGPT => (
+        opencli_core::auth::AuthMode::OpenaiOauth => (
             "chatgpt".to_string(),
             auth.tokens.and_then(|t| t.account_id),
         ),
-        opencli_core::auth::AuthMode::ApiKey => ("api_key".to_string(), None),
+        opencli_core::auth::AuthMode::OpenaiApiKey => ("api_key".to_string(), None),
+        opencli_core::auth::AuthMode::AnthropicOauth => ("claude_oauth".to_string(), None),
+        opencli_core::auth::AuthMode::AnthropicApiKey => ("anthropic_api_key".to_string(), None),
         opencli_core::auth::AuthMode::None => ("none".to_string(), None),
     };
     Json(StatusResp {
@@ -263,12 +266,11 @@ struct LoginBody {
 
 async fn api_login(Json(body): Json<LoginBody>) -> Result<Json<serde_json::Value>, ApiError> {
     if let Some(k) = body.api_key {
-        let record = opencli_core::auth::AuthRecord {
-            mode: opencli_core::auth::AuthMode::ApiKey,
-            api_key: Some(k),
-            tokens: None,
-            last_refresh: None,
-        };
+        let mut record = opencli_core::auth::load_auth().unwrap_or_default();
+        record.mode = opencli_core::auth::AuthMode::OpenaiApiKey;
+        record.api_key = Some(k);
+        record.tokens = None;
+        record.last_refresh = None;
         opencli_core::auth::save_auth(&record).map_err(ApiError::from)?;
         return Ok(Json(serde_json::json!({"ok": true})));
     }
@@ -357,21 +359,23 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         if let Some(a) = sessions.get(&session_id) {
             a.clone()
         } else {
-            let credential = match resolve_credential().await {
+            let cfg_initial = config::load();
+            let provider = Provider::from_model(&cfg_initial.model);
+            let credential = match resolve_credential(provider).await {
                 Ok(c) => c,
                 Err(e) => {
                     let _ = socket.send(Message::Text(json_err(e.to_string()))).await;
                     return;
                 }
             };
-            let client = match OpenAiClient::new(credential) {
+            let client = match LlmClient::new(credential) {
                 Ok(c) => c,
                 Err(e) => {
                     let _ = socket.send(Message::Text(json_err(e.to_string()))).await;
                     return;
                 }
             };
-            let mut cfg = config::load();
+            let mut cfg = cfg_initial;
             if let Some(m) = start.model {
                 cfg.model = m;
             }

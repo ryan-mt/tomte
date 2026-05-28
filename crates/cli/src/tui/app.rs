@@ -14,7 +14,8 @@ use futures_util::StreamExt;
 use opencli_core::agent::{Agent, AgentEvent};
 use opencli_core::auth::{self, AuthMode};
 use opencli_core::config::{self, Config};
-use opencli_core::openai::OpenAiClient;
+use opencli_core::client::LlmClient;
+use opencli_core::provider::Provider;
 use opencli_core::tools::{ApprovalMode, TodoItem, TodoStatus};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -959,7 +960,8 @@ async fn apply_resume(
             // Lazily construct an Agent so we can stash the restored state
             // on it. The client will be created on the next turn via
             // launch_turn, which rebuilds it from the active credential.
-            let credential = match opencli_core::auth::resolve_credential().await {
+            let provider = Provider::from_model(&app.config.model);
+            let credential = match opencli_core::auth::resolve_credential(provider).await {
                 Ok(c) => c,
                 Err(e) => {
                     app.blocks
@@ -967,7 +969,7 @@ async fn apply_resume(
                     return;
                 }
             };
-            let client = match OpenAiClient::new(credential) {
+            let client = match LlmClient::new(credential) {
                 Ok(c) => c,
                 Err(e) => {
                     app.blocks
@@ -1116,16 +1118,22 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 app.blocks
                     .push(Block::System("Usage: /apikey sk-…".to_string()));
             } else {
-                let record = auth::AuthRecord {
-                    mode: AuthMode::ApiKey,
-                    api_key: Some(arg.to_string()),
-                    tokens: None,
-                    last_refresh: None,
-                };
+                let mut record = auth::load_auth().unwrap_or_default();
+                record.mode = AuthMode::OpenaiApiKey;
+                record.api_key = Some(arg.to_string());
+                record.tokens = None;
                 match auth::save_auth(&record) {
                     Ok(_) => {
-                        app.auth_mode = AuthMode::ApiKey;
+                        app.auth_mode = AuthMode::OpenaiApiKey;
                         app.blocks.push(Block::System("✅ API key saved.".into()));
+                        let models = Provider::OpenAi
+                            .available_models()
+                            .iter()
+                            .map(|m| format!("  · {m}"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        app.blocks
+                            .push(Block::System(format!("Available models:\n{models}")));
                     }
                     Err(e) => app.blocks.push(Block::System(format!("Error: {e}"))),
                 }
@@ -1140,8 +1148,8 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             let record = auth::load_auth().unwrap_or_default();
             let msg = match record.mode {
                 AuthMode::None => "Not signed in.".to_string(),
-                AuthMode::ApiKey => "Signed in with API key.".to_string(),
-                AuthMode::ChatGPT => {
+                AuthMode::OpenaiApiKey => "Signed in with OpenAI API key.".to_string(),
+                AuthMode::OpenaiOauth => {
                     let acc = record
                         .tokens
                         .as_ref()
@@ -1149,8 +1157,21 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                         .unwrap_or_default();
                     format!("Signed in with ChatGPT. account_id={acc}")
                 }
+                AuthMode::AnthropicApiKey => "Signed in with Anthropic API key.".to_string(),
+                AuthMode::AnthropicOauth => "Signed in with Claude Pro/Max OAuth.".to_string(),
             };
             app.blocks.push(Block::System(msg));
+            let providers = auth::signed_in_providers();
+            if !providers.is_empty() {
+                let mut text = String::from("Available models:");
+                for p in providers {
+                    text.push_str(&format!("\n  {} ({}):", p.display_name(), p));
+                    for m in p.available_models() {
+                        text.push_str(&format!("\n    · {m}"));
+                    }
+                }
+                app.blocks.push(Block::System(text));
+            }
         }
         "model" => {
             if arg.is_empty() {
@@ -1295,8 +1316,10 @@ async fn handle_slash(app: &mut App, cmd: &str) {
         "config" => {
             let auth = match app.auth_mode {
                 AuthMode::None => "none",
-                AuthMode::ApiKey => "api_key",
-                AuthMode::ChatGPT => "chatgpt",
+                AuthMode::OpenaiApiKey => "api_key",
+                AuthMode::OpenaiOauth => "chatgpt",
+                AuthMode::AnthropicApiKey => "anthropic_api_key",
+                AuthMode::AnthropicOauth => "claude_oauth",
             };
             let mcp_count = opencli_core::mcp::load_servers_config().len();
             let hooks = opencli_core::hooks::load();
@@ -1734,14 +1757,15 @@ async fn launch_turn(
     tx: &mpsc::Sender<AgentEvent>,
     text: String,
 ) {
-    let credential = match opencli_core::auth::resolve_credential().await {
+    let provider = Provider::from_model(&app.config.model);
+    let credential = match opencli_core::auth::resolve_credential(provider).await {
         Ok(c) => c,
         Err(e) => {
             app.blocks.push(Block::System(format!("Auth error: {e}")));
             return;
         }
     };
-    let client = match OpenAiClient::new(credential) {
+    let client = match LlmClient::new(credential) {
         Ok(c) => c,
         Err(e) => {
             app.blocks.push(Block::System(format!("Client error: {e}")));

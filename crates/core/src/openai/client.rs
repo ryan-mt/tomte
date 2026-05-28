@@ -87,7 +87,9 @@ impl OpenAiClient {
             ..
         } = &self.credential
         {
-            h.insert("ChatGPT-Account-ID", HeaderValue::from_str(id)?);
+            if !id.is_empty() {
+                h.insert("ChatGPT-Account-ID", HeaderValue::from_str(id)?);
+            }
         }
         if self.credential.is_chatgpt_subscription() {
             h.insert("OpenAI-Beta", HeaderValue::from_static("responses=v1"));
@@ -175,7 +177,9 @@ pub async fn raw_post<B: Serialize>(
         ..
     } = credential
     {
-        req = req.header("ChatGPT-Account-ID", id.clone());
+        if !id.is_empty() {
+            req = req.header("ChatGPT-Account-ID", id.clone());
+        }
     }
     let resp = req.send().await?;
     let status = resp.status();

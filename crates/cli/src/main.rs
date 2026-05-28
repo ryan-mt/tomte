@@ -22,7 +22,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Sign in (defaults to OAuth via ChatGPT in the browser)
+    /// Sign in. With no flags, opens an interactive picker.
     Login {
         /// Use an API key instead of OAuth
         #[arg(long)]
@@ -30,6 +30,9 @@ enum Command {
         /// Do not open the browser automatically
         #[arg(long)]
         no_browser: bool,
+        /// Skip the picker: `openai` | `anthropic`. Pair with --api-key.
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Show authentication status
     Status,
@@ -116,7 +119,8 @@ async fn main() -> Result<()> {
         Some(Command::Login {
             api_key,
             no_browser,
-        }) => commands::login::run(api_key, !no_browser).await,
+            provider,
+        }) => commands::login::run(api_key, !no_browser, provider).await,
         Some(Command::Status) => commands::login::status().await,
         Some(Command::Logout) => commands::login::logout().await,
         Some(Command::Chat {

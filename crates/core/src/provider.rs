@@ -37,6 +37,29 @@ impl Provider {
             Self::Anthropic => "Anthropic",
         }
     }
+
+    /// Catalogue of model ids known to be available for this provider, in
+    /// the recommended display order (best general default first). The CLI
+    /// surfaces this list after sign-in so the user knows what to pick.
+    pub fn available_models(&self) -> &'static [&'static str] {
+        match self {
+            Self::OpenAi => &[
+                "gpt-5",
+                "gpt-5-pro",
+                "gpt-5-codex",
+                "gpt-5-mini",
+                "gpt-5-nano",
+            ],
+            Self::Anthropic => &[
+                "claude-opus-4-7",
+                "claude-opus-4-6",
+                "claude-opus-4-5",
+                "claude-sonnet-4-6",
+                "claude-sonnet-4-5",
+                "claude-haiku-4-5",
+            ],
+        }
+    }
 }
 
 impl std::fmt::Display for Provider {
@@ -62,5 +85,18 @@ mod tests {
         assert_eq!(Provider::from_model("gpt-5-codex"), Provider::OpenAi);
         assert_eq!(Provider::from_model("o3"), Provider::OpenAi);
         assert_eq!(Provider::from_model(""), Provider::OpenAi);
+    }
+
+    #[test]
+    fn available_models_are_non_empty() {
+        assert!(!Provider::OpenAi.available_models().is_empty());
+        assert!(!Provider::Anthropic.available_models().is_empty());
+    }
+
+    #[test]
+    fn anthropic_models_start_with_claude() {
+        for m in Provider::Anthropic.available_models() {
+            assert!(m.starts_with("claude"), "{m} should start with claude");
+        }
     }
 }
