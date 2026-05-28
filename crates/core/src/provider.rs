@@ -77,8 +77,14 @@ mod tests {
     #[test]
     fn detects_anthropic_from_claude_prefix() {
         assert_eq!(Provider::from_model("claude-opus-4-5"), Provider::Anthropic);
-        assert_eq!(Provider::from_model("claude-sonnet-4-5"), Provider::Anthropic);
-        assert_eq!(Provider::from_model("Claude-Haiku-4-5"), Provider::Anthropic);
+        assert_eq!(
+            Provider::from_model("claude-sonnet-4-5"),
+            Provider::Anthropic
+        );
+        assert_eq!(
+            Provider::from_model("Claude-Haiku-4-5"),
+            Provider::Anthropic
+        );
     }
 
     #[test]

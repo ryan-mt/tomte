@@ -28,8 +28,7 @@ const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
 /// Required first line of the system prompt when authenticating with an
 /// OAuth subscription token (except for Haiku models). Anthropic validates
 /// this server-side; missing it produces a generic 400.
-const OAUTH_IDENTITY_PROMPT: &str =
-    "You are Claude Code, Anthropic's official CLI for Claude.";
+const OAUTH_IDENTITY_PROMPT: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 pub struct AnthropicClient {
     http: reqwest::Client,

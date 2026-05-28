@@ -85,10 +85,9 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 }
                             }
                             "content_block_start" => {
-                                let index = parsed
-                                    .get("index")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0) as u32;
+                                let index =
+                                    parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0)
+                                        as u32;
                                 let block = parsed.get("content_block");
                                 let btype = block
                                     .and_then(|b| b.get("type"))
@@ -137,10 +136,9 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 }
                             }
                             "content_block_delta" => {
-                                let index = parsed
-                                    .get("index")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0) as u32;
+                                let index =
+                                    parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0)
+                                        as u32;
                                 let delta = parsed.get("delta");
                                 let dtype = delta
                                     .and_then(|d| d.get("type"))
@@ -155,9 +153,8 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                             .unwrap_or("")
                                             .to_string();
                                         if !text.is_empty() {
-                                            let item_id = blocks
-                                                .get(&index)
-                                                .map(|b| b.item_id.clone());
+                                            let item_id =
+                                                blocks.get(&index).map(|b| b.item_id.clone());
                                             let _ = tx
                                                 .send(Ok(ResponseStreamEvent::OutputTextDelta {
                                                     delta: text,
@@ -204,10 +201,9 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 }
                             }
                             "content_block_stop" => {
-                                let index = parsed
-                                    .get("index")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0) as u32;
+                                let index =
+                                    parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0)
+                                        as u32;
                                 if let Some(b) = blocks.remove(&index) {
                                     if b.kind == "tool_use" {
                                         let _ = tx
@@ -256,9 +252,7 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                     .await;
                             }
                             _ => {
-                                let _ = tx
-                                    .send(Ok(ResponseStreamEvent::Other { kind }))
-                                    .await;
+                                let _ = tx.send(Ok(ResponseStreamEvent::Other { kind })).await;
                             }
                         }
                     }

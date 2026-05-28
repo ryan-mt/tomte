@@ -13,8 +13,8 @@ use crossterm::terminal::{
 use futures_util::StreamExt;
 use opencli_core::agent::{Agent, AgentEvent};
 use opencli_core::auth::{self, AuthMode};
-use opencli_core::config::{self, Config};
 use opencli_core::client::LlmClient;
+use opencli_core::config::{self, Config};
 use opencli_core::provider::Provider;
 use opencli_core::tools::{ApprovalMode, TodoItem, TodoStatus};
 use ratatui::backend::CrosstermBackend;
@@ -1195,9 +1195,9 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             } else {
                 app.config.model = arg.to_string();
                 if let Err(e) = config::save(&app.config) {
-                app.blocks
-                    .push(Block::System(format!("config save failed: {e}")));
-            }
+                    app.blocks
+                        .push(Block::System(format!("config save failed: {e}")));
+                }
                 app.blocks.push(Block::System(format!("model → {arg}")));
             }
         }
@@ -1207,9 +1207,9 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             } else {
                 app.config.reasoning_effort = arg.to_string();
                 if let Err(e) = config::save(&app.config) {
-                app.blocks
-                    .push(Block::System(format!("config save failed: {e}")));
-            }
+                    app.blocks
+                        .push(Block::System(format!("config save failed: {e}")));
+                }
                 app.blocks.push(Block::System(format!("effort → {arg}")));
             }
         }
@@ -1219,9 +1219,9 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             } else {
                 app.config.verbosity = arg.to_string();
                 if let Err(e) = config::save(&app.config) {
-                app.blocks
-                    .push(Block::System(format!("config save failed: {e}")));
-            }
+                    app.blocks
+                        .push(Block::System(format!("config save failed: {e}")));
+                }
                 app.blocks.push(Block::System(format!("verbosity → {arg}")));
             }
         }

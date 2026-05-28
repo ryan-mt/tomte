@@ -402,8 +402,8 @@ mod tests {
 
     #[test]
     fn lifts_instructions_into_system_block() {
-        let req = ResponsesRequest::new("claude-opus-4-5", vec![])
-            .with_instructions("you are claude");
+        let req =
+            ResponsesRequest::new("claude-opus-4-5", vec![]).with_instructions("you are claude");
         let out = to_messages_request(&req);
         assert!(out.system.is_some());
         let s = out.system.unwrap();

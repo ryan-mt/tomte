@@ -3,11 +3,7 @@ use opencli_core::auth::{self, anthropic as anth_oauth, AuthMode};
 use opencli_core::provider::Provider;
 use std::io::{BufRead, IsTerminal, Write};
 
-pub async fn run(
-    api_key: bool,
-    open_browser: bool,
-    provider: Option<String>,
-) -> Result<()> {
+pub async fn run(api_key: bool, open_browser: bool, provider: Option<String>) -> Result<()> {
     if let Some(p) = provider.as_deref() {
         let result = match (api_key, p) {
             (true, "openai") => login_openai_api_key().await,
@@ -151,14 +147,10 @@ pub async fn status() -> Result<()> {
             println!("Anthropic: signed in with Claude Pro/Max OAuth.");
         }
     }
-    if record.anthropic_tokens.is_some()
-        && !matches!(record.mode, AuthMode::AnthropicOauth)
-    {
+    if record.anthropic_tokens.is_some() && !matches!(record.mode, AuthMode::AnthropicOauth) {
         println!("  (Anthropic OAuth token is also stored)");
     }
-    if record.anthropic_api_key.is_some()
-        && !matches!(record.mode, AuthMode::AnthropicApiKey)
-    {
+    if record.anthropic_api_key.is_some() && !matches!(record.mode, AuthMode::AnthropicApiKey) {
         println!("  (Anthropic API key is also stored)");
     }
     print_available_models();
