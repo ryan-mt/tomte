@@ -35,6 +35,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if let Some((_, picker)) = &app.overlay {
         super::picker::render(f, layout[3], picker);
     }
+    if app.pending_approval.is_some() {
+        render_approval(f, layout[3], app);
+    }
 }
 
 fn queued_height(app: &App) -> u16 {
@@ -325,6 +328,87 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
     };
     f.render_widget(left_para, left_rect);
     f.render_widget(Paragraph::new(Line::from(right_spans)), right_rect);
+}
+
+fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App) {
+    use ratatui::widgets::{Block as RBlock, Borders, BorderType, Clear};
+    let Some(p) = app.pending_approval.as_ref() else { return };
+
+    let dim = Style::default().fg(Color::Rgb(170, 170, 170));
+    let bg = Style::default().bg(Color::Rgb(20, 20, 22));
+    let accent = Style::default().fg(Color::Rgb(25, 195, 154)).add_modifier(Modifier::BOLD);
+    let warn = Style::default().fg(Color::Rgb(255, 182, 73)).add_modifier(Modifier::BOLD);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("  Tool: ", dim),
+        Span::styled(p.tool_name.clone(), accent),
+    ]));
+    let args_preview = condense_args(&p.args_json);
+    if !args_preview.is_empty() {
+        lines.push(Line::from(Span::styled(format!("  args: {args_preview}"), dim)));
+    }
+    if let Some(d) = p.diff_preview.as_ref() {
+        lines.push(Line::from(Span::styled("  ─ preview ─", dim)));
+        for raw in d.lines().take(8) {
+            lines.push(Line::from(Span::styled(format!("  {raw}"), Style::default().fg(Color::Rgb(220, 220, 220)))));
+        }
+        if d.lines().count() > 8 {
+            lines.push(Line::from(Span::styled("  …", dim)));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  [Y] ", warn),
+        Span::styled("approve   ", Style::default().fg(Color::Rgb(235, 235, 235))),
+        Span::styled("[N] ", warn),
+        Span::styled("deny   ", Style::default().fg(Color::Rgb(235, 235, 235))),
+        Span::styled("[Esc] ", warn),
+        Span::styled("cancel", Style::default().fg(Color::Rgb(235, 235, 235))),
+    ]));
+
+    let height = (lines.len() as u16).min(14) + 2;
+    let width = 72u16.min(anchor_area.width.saturating_sub(4));
+    let x = anchor_area.x + 1;
+    let bottom = anchor_area.y;
+    let y = bottom.saturating_sub(height);
+    let popup = ratatui::layout::Rect { x, y, width, height };
+    f.render_widget(Clear, popup);
+    let block = RBlock::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(255, 182, 73)))
+        .title(Span::styled(" Approve tool call? ", warn))
+        .style(bg);
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    f.render_widget(Paragraph::new(lines).style(bg).wrap(Wrap { trim: false }), inner);
+}
+
+fn condense_args(json: &str) -> String {
+    let trimmed = json.trim();
+    if trimmed.is_empty() || trimmed == "{}" {
+        return String::new();
+    }
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(trimmed);
+    let one_line = match parsed {
+        Ok(serde_json::Value::Object(m)) => m
+            .into_iter()
+            .map(|(k, v)| {
+                let vs = serde_json::to_string(&v).unwrap_or_default();
+                let vs = if vs.len() > 60 { format!("{}…", &vs[..60]) } else { vs };
+                format!("{k}={vs}")
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => trimmed.replace('\n', " "),
+    };
+    if one_line.chars().count() > 220 {
+        let cut: String = one_line.chars().take(219).collect();
+        format!("{cut}…")
+    } else {
+        one_line
+    }
 }
 
 fn format_elapsed(d: std::time::Duration) -> String {
