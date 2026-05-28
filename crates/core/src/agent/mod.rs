@@ -234,7 +234,7 @@ impl Agent {
     pub fn apply_project_memory(&mut self) {
         let cfg_dir = crate::config::config_dir();
         let globals = [cfg_dir.join("CLAUDE.md"), cfg_dir.join("AGENTS.md")];
-        let projects = [self.cwd.join("CLAUDE.md"), self.cwd.join("AGENTS.md")];
+
         let read_first = |paths: &[std::path::PathBuf]| -> Option<(std::path::PathBuf, String)> {
             for p in paths {
                 if let Ok(text) = std::fs::read_to_string(p) {
@@ -246,28 +246,34 @@ impl Agent {
             }
             None
         };
+
+        // Walk up from cwd to filesystem root collecting every CLAUDE.md / AGENTS.md.
+        // Bottom-up collection, then reverse so the broadest ancestor comes first
+        // and the most-specific (closest to cwd) is appended LAST in the prompt.
+        let mut found: Vec<(std::path::PathBuf, String)> = Vec::new();
+        let mut cur = self.cwd.clone();
+        loop {
+            let here = [cur.join("CLAUDE.md"), cur.join("AGENTS.md")];
+            if let Some(hit) = read_first(&here) {
+                if !globals.iter().any(|g| g == &hit.0) {
+                    found.push(hit);
+                }
+            }
+            match cur.parent() {
+                Some(parent) if parent != cur => cur = parent.to_path_buf(),
+                _ => break,
+            }
+        }
+        found.reverse();
+
         let mut additions = String::new();
         if let Some((path, text)) = read_first(&globals) {
-            additions.push_str(&format!(
-                "
-
-# Global memory ({})
-
-",
-                path.display()
-            ));
+            additions.push_str(&format!("\n\n# Global memory ({})\n\n", path.display()));
             additions.push_str(&text);
         }
-        if let Some((path, text)) = read_first(&projects) {
-            additions.push_str(&format!(
-                "
-
-# Project memory ({})
-
-",
-                path.display()
-            ));
-            additions.push_str(&text);
+        for (path, text) in &found {
+            additions.push_str(&format!("\n\n# Project memory ({})\n\n", path.display()));
+            additions.push_str(text);
         }
         if !additions.is_empty() {
             self.system_prompt.push_str(&additions);
