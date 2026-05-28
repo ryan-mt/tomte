@@ -75,6 +75,13 @@ pub enum AgentEvent {
         used: u64,
         limit: u64,
     },
+    /// Stronger than `ContextWarning`: input has crossed 85% of the model's
+    /// context window. The UI should suggest /compact (or trigger it
+    /// automatically in a future opt-in build).
+    AutoCompactSuggested {
+        used: u64,
+        limit: u64,
+    },
     ApprovalRequest {
         call_id: String,
         tool_name: String,
