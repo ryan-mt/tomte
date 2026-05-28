@@ -728,8 +728,14 @@ async fn handle_key(
     if matches!(key.code, KeyCode::BackTab) {
         let next = app.permission_mode().next();
         app.set_permission_mode(next);
-        app.blocks
-            .push(Block::System(format!("mode → {}", next.label())));
+        // Don't insert the mode block between assistant deltas while a turn
+        // is streaming — it pushes the open Assistant block up and reads as
+        // "reply disappeared". The footer label reflects the new mode either
+        // way, so visual feedback is preserved.
+        if !app.busy {
+            app.blocks
+                .push(Block::System(format!("mode → {}", next.label())));
+        }
         return Ok(false);
     }
     match key.code {
