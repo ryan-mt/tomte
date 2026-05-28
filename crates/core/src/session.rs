@@ -5,6 +5,7 @@
 //! `opencli resume` and `/resume` can rehydrate prior conversations.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -64,19 +65,15 @@ fn slug_for(cwd: &Path) -> String {
     }
 }
 
+static SEQ: AtomicU64 = AtomicU64::new(0);
+
 pub fn new_session_id() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    let rand: u32 = {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        now.hash(&mut h);
-        std::process::id().hash(&mut h);
-        h.finish() as u32
-    };
-    format!("{now:x}-{rand:x}")
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{now:x}-{seq:x}")
 }
 
 pub fn now_ms() -> u64 {

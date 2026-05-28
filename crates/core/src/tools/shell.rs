@@ -114,7 +114,18 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
         }
     }
     if (lower.contains("curl ") || lower.contains("wget "))
-        && (lower.contains("| sh") || lower.contains("| bash") || lower.contains("|sh"))
+        && (lower.contains("| sh")
+            || lower.contains("| bash")
+            || lower.contains("|sh")
+            || lower.contains("|bash")
+            || lower.contains("| zsh")
+            || lower.contains("|zsh")
+            || lower.contains("| dash")
+            || lower.contains("|dash")
+            || lower.contains("| python")
+            || lower.contains("|python")
+            || lower.contains("| perl")
+            || lower.contains("|perl"))
     {
         return Some("piping curl/wget output into a shell");
     }
@@ -755,8 +766,23 @@ mod tests {
     }
     #[tokio::test]
     async fn run_shell_allows_dangerous_command_with_override() {
-        let ctx = ctx();
-        let out = RunShell.execute(json!({"command": "git reset --hard HEAD", "timeout_ms": 5000, "run_in_background": false, "dangerous_override": true}), &ctx).await.unwrap();
+        // Run in an isolated temp dir so the dangerous command can never touch
+        // the real working tree. Previously this used cwd = repo root, so
+        // `cargo test` executed `git reset --hard HEAD` against this repo and
+        // wiped any uncommitted work.
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext {
+            cwd: tmp.path().to_path_buf(),
+            approval: ApprovalMode::Auto,
+            session: Arc::new(Mutex::new(SessionState::default())),
+        };
+        let out = RunShell
+            .execute(
+                json!({"command": "git reset --hard HEAD", "timeout_ms": 5000, "run_in_background": false, "dangerous_override": true}),
+                &ctx,
+            )
+            .await
+            .unwrap();
         assert!(out.contains("exit_code:"));
     }
 }

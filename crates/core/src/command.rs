@@ -137,11 +137,18 @@ pub fn expand(body: &str, command_name: &str, args_string: &str) -> String {
         if c == '$' {
             // Try $ARGUMENTS literal
             if chars.clone().take(9).collect::<String>() == "ARGUMENTS" {
-                for _ in 0..9 {
-                    chars.next();
+                let next_is_word = chars
+                    .clone()
+                    .nth(9)
+                    .map(|c| c.is_alphanumeric() || c == '_')
+                    .unwrap_or(false);
+                if !next_is_word {
+                    for _ in 0..9 {
+                        chars.next();
+                    }
+                    out.push_str(args_string);
+                    continue;
                 }
-                out.push_str(args_string);
-                continue;
             }
             // Try $0..$9
             if let Some(&d) = chars.peek() {

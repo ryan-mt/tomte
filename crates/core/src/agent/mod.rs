@@ -437,6 +437,20 @@ impl Agent {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
+                        // A duplicate non-empty call_id would later collapse in
+                        // the results HashMap, silently dropping one tool output
+                        // and leaving an unanswered call in history. Skip the
+                        // second item and log the server-side anomaly instead.
+                        if !call_id.is_empty()
+                            && pending_calls.iter().any(|p| p.call_id == call_id)
+                        {
+                            tracing::warn!(
+                                call_id = %call_id,
+                                name = %name,
+                                "duplicate call_id from server; ignoring second function_call item"
+                            );
+                            continue;
+                        }
                         pending_calls.push(PendingCall {
                             call_id: call_id.clone(),
                             item_id,
@@ -599,7 +613,8 @@ impl Agent {
                         // on the next turn: which tool, which byte offset, what
                         // the parser actually saw at the failure point.
                         let preview = if pc.args_buf.len() > 200 {
-                            format!("{}…", &pc.args_buf[..200])
+                            let truncated: String = pc.args_buf.chars().take(200).collect();
+                            format!("{truncated}…")
                         } else {
                             pc.args_buf.clone()
                         };
@@ -870,16 +885,17 @@ async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, model: &str
             })
             .await;
         let limit = model_context_limit(model);
-        if i * 10 >= limit * 8 {
-            let _ = tx.send(AgentEvent::ContextWarning { used: i, limit }).await;
-        }
         // 85% threshold escalates to a stronger AutoCompactSuggested so the
         // TUI can show a sticky banner urging /compact before a hard 1xx
-        // context-window failure on the next turn.
+        // context-window failure on the next turn. Checked first (narrower
+        // condition) so the stronger event replaces — not supplements — the
+        // 80% ContextWarning.
         if i * 100 >= limit * 85 {
             let _ = tx
                 .send(AgentEvent::AutoCompactSuggested { used: i, limit })
                 .await;
+        } else if i * 10 >= limit * 8 {
+            let _ = tx.send(AgentEvent::ContextWarning { used: i, limit }).await;
         }
     }
 }

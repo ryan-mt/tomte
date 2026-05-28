@@ -123,14 +123,28 @@ Parameters:\n\
             .get(reqwest::header::LOCATION)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        let bytes = resp
-            .bytes()
-            .await
-            .with_context(|| format!("read body from {}", a.url))?;
-        let total = bytes.len();
-        let truncated = total > cap;
-        let slice = &bytes[..total.min(cap)];
-        let body = String::from_utf8_lossy(slice);
+        // Enforce the byte cap *during* streaming so a fast/unbounded server
+        // can't force us to buffer hundreds of MiB before we truncate.
+        use futures_util::StreamExt as _;
+        let mut stream = resp.bytes_stream();
+        let mut buf: Vec<u8> = Vec::with_capacity(cap.min(65_536));
+        let mut truncated = false;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.with_context(|| format!("read body from {}", a.url))?;
+            let remaining = cap.saturating_sub(buf.len());
+            if remaining == 0 {
+                truncated = true;
+                break;
+            }
+            let take = chunk.len().min(remaining);
+            buf.extend_from_slice(&chunk[..take]);
+            if take < chunk.len() {
+                truncated = true;
+                break;
+            }
+        }
+        let total = buf.len();
+        let body = String::from_utf8_lossy(&buf);
         let location_line = match (&location, status.is_redirection()) {
             (Some(loc), true) => format!("Location: {loc}\n"),
             _ => String::new(),

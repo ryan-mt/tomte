@@ -113,7 +113,7 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
             .expires_in
             .map(|sec| Utc::now() + chrono::Duration::seconds(sec));
 
-        let mut record = load_auth().unwrap_or_default();
+        let mut record = load_auth()?;
         record.mode = AuthMode::AnthropicOauth;
         record.anthropic_tokens = Some(StoredTokens {
             access_token: tokens.access_token,
@@ -306,7 +306,7 @@ pub async fn ensure_fresh(record: &AuthRecord) -> Result<String> {
     }
 
     let _guard = REFRESH_LOCK.lock().await;
-    if let Ok(fresh_record) = load_auth() {
+    let refresh_token = if let Ok(fresh_record) = load_auth() {
         if let Some(fresh_tokens) = fresh_record.anthropic_tokens.as_ref() {
             let still_valid = match fresh_tokens.expires_at {
                 Some(t) => t > Utc::now() + chrono::Duration::minutes(2),
@@ -315,10 +315,16 @@ pub async fn ensure_fresh(record: &AuthRecord) -> Result<String> {
             if still_valid {
                 return Ok(fresh_tokens.access_token.clone());
             }
+            // Prefer the on-disk refresh token; it may have been rotated by a prior refresh cycle.
+            fresh_tokens.refresh_token.clone()
+        } else {
+            tokens.refresh_token.clone()
         }
-    }
+    } else {
+        tokens.refresh_token.clone()
+    };
 
-    let refreshed = refresh_access_token(&tokens.refresh_token).await?;
+    let refreshed = refresh_access_token(&refresh_token).await?;
     let expires_at = refreshed
         .expires_in
         .map(|sec| Utc::now() + chrono::Duration::seconds(sec));

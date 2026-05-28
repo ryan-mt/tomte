@@ -90,6 +90,7 @@ impl StreamHandle {
                                     let _ = tx
                                         .send(Err(anyhow::anyhow!("parse SSE: {e}: {}", ev.data)))
                                         .await;
+                                    return;
                                 }
                             }
                         }
@@ -165,9 +166,16 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
             }
         }
         "response.function_call_arguments.done" | "response.tool_call.done" => {
+            let arguments = value
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("missing or non-string 'arguments' in {} event", kind)
+                })?
+                .to_string();
             ResponseStreamEvent::FunctionCallArgsDone {
                 item_id: s("item_id"),
-                arguments: s("arguments"),
+                arguments,
             }
         }
         // Reasoning summary — multiple shapes.

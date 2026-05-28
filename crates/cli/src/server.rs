@@ -283,7 +283,9 @@ async fn api_login(Json(body): Json<LoginBody>) -> Result<Json<serde_json::Value
             tracing::warn!(error = %e, "browser login failed");
         }
     });
-    Ok(Json(serde_json::json!({"ok": true, "browser": true})))
+    Ok(Json(
+        serde_json::json!({"ok": true, "browser": true, "poll": "/api/status"}),
+    ))
 }
 
 async fn api_logout() -> Json<serde_json::Value> {
@@ -357,7 +359,26 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let agent_arc = {
         let mut sessions = state.sessions.lock().await;
         if let Some(a) = sessions.get(&session_id) {
-            a.clone()
+            let arc = a.clone();
+            // Apply per-connection overrides to the existing session so that a
+            // reconnect with a different model or reasoning_effort takes effect
+            // instead of silently reusing the model from the first connection.
+            //
+            // NOTE: credential rotation is NOT handled here — the cached agent
+            // keeps the LlmClient (and thus the credential) it was built with
+            // on first connect. Picking up a rotated credential would require
+            // rebuilding the LlmClient and swapping it onto the agent, which is
+            // a larger reconnect-path change deferred for now.
+            if start.model.is_some() || start.reasoning.is_some() {
+                let mut agent = arc.lock().await;
+                if let Some(m) = start.model.clone() {
+                    agent.config.model = m;
+                }
+                if let Some(r) = start.reasoning.clone() {
+                    agent.config.reasoning_effort = r;
+                }
+            }
+            arc
         } else {
             let cfg_initial = config::load();
             let provider = Provider::from_model(&cfg_initial.model);

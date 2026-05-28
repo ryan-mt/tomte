@@ -130,7 +130,9 @@ Behaviour:\n\
         let mut tool_errors: Vec<String> = Vec::new();
         while let Some(ev) = rx.recv().await {
             match ev {
-                AgentEvent::AssistantTextDone { text } => final_text = text,
+                AgentEvent::AssistantTextDone { text } if !text.trim().is_empty() => {
+                    final_text = text;
+                }
                 AgentEvent::Error { message } => error_msgs.push(message),
                 AgentEvent::ToolResult {
                     output,

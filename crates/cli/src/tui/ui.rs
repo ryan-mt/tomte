@@ -373,8 +373,8 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
 
     // cursor
     let (line_idx, col) = app.input.cursor_pos();
-    let cx = area.x + 2 + col as u16; // +2 for "> "
-    let cy = area.y + line_idx as u16;
+    let cx = area.x.saturating_add(2).saturating_add(col.min(u16::MAX as usize) as u16); // +2 for "> "
+    let cy = area.y.saturating_add(line_idx.min(u16::MAX as usize) as u16);
     if cx < area.x + area.width && cy < area.y + area.height {
         f.set_cursor_position((cx, cy));
     }

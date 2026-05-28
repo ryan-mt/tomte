@@ -110,9 +110,7 @@ pub fn matches(matcher: &str, key: &str, path_hint: Option<&str>) -> bool {
         return true;
     }
     if let Some(rx) = matcher.strip_prefix("re:") {
-        // Naive substring fallback if regex compilation fails (no regex
-        // dependency yet). We treat the pattern as a literal substring.
-        return key.contains(rx);
+        return regex::Regex::new(rx).is_ok_and(|re| re.is_match(key));
     }
     if let Some(pat) = matcher.strip_prefix("file:") {
         let Some(p) = path_hint else { return false };
@@ -323,11 +321,12 @@ mod tests {
     }
 
     #[test]
-    fn matches_substring_via_re_prefix() {
-        // Without a regex engine we fall back to substring on `re:`.
-        assert!(matches("re:edit_", "edit_file", None));
-        assert!(matches("re:edit_", "multi_edit_file", None));
-        assert!(!matches("re:edit_", "read_file", None));
+    fn matches_regex_via_re_prefix() {
+        assert!(matches("re:^edit_", "edit_file", None));
+        assert!(!matches("re:^edit_", "multi_edit_file", None)); // anchored start
+        assert!(!matches("re:^edit_", "read_file", None));
+        assert!(matches("re:^run_shell$", "run_shell", None)); // anchored exact
+        assert!(!matches("re:^run_shell$", "run_shell_extra", None));
     }
 
     #[test]

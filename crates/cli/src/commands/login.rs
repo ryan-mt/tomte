@@ -17,7 +17,12 @@ pub async fn run(api_key: bool, open_browser: bool, provider: Option<String>) ->
         return Ok(());
     }
     if api_key {
-        login_openai_api_key().await?;
+        // No provider specified — ask which one.
+        let chosen = prompt_api_key_provider()?;
+        match chosen.as_str() {
+            "anthropic" => login_anthropic_api_key().await?,
+            _ => login_openai_api_key().await?,
+        }
         print_available_models();
         return Ok(());
     }
@@ -98,6 +103,26 @@ async fn login_anthropic_oauth(open_browser: bool) -> Result<()> {
     }
     anth_oauth::login_with_browser(open_browser).await?;
     Ok(())
+}
+
+fn prompt_api_key_provider() -> Result<String> {
+    if !std::io::stdin().is_terminal() {
+        // Non-interactive: default to openai for backward compat.
+        return Ok("openai".to_string());
+    }
+    println!();
+    println!("  Which provider is this API key for?");
+    println!("    [1] OpenAI  (sk-…)");
+    println!("    [2] Anthropic  (sk-ant-…)");
+    println!();
+    print!("  Choose [1/2]: ");
+    std::io::stdout().flush().ok();
+    let mut buf = String::new();
+    std::io::stdin().lock().read_line(&mut buf)?;
+    match buf.trim() {
+        "2" => Ok("anthropic".to_string()),
+        _ => Ok("openai".to_string()),
+    }
 }
 
 fn prompt_secret(prompt: &str) -> Result<String> {

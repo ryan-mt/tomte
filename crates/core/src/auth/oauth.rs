@@ -122,7 +122,7 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
             .expires_in
             .map(|sec| Utc::now() + chrono::Duration::seconds(sec));
 
-        let mut record = load_auth().unwrap_or_default();
+        let mut record = load_auth()?;
         record.mode = AuthMode::OpenaiOauth;
         record.api_key = None;
         record.tokens = Some(StoredTokens {
@@ -170,6 +170,7 @@ async fn spawn_callback_server(
     #[derive(Clone)]
     struct AppState {
         tx: Arc<tokio::sync::Mutex<Option<oneshot::Sender<Result<String>>>>>,
+        shutdown_tx: Arc<tokio::sync::Mutex<Option<oneshot::Sender<()>>>>,
         expected_state: String,
     }
 
@@ -203,12 +204,19 @@ async fn spawn_callback_server(
         } else {
             include_str!("../assets/error.html")
         };
+        // Signal shutdown *after* we have the response body ready.
+        // axum will finish sending this response before the server stops.
+        if let Some(stx) = st.shutdown_tx.lock().await.take() {
+            let _ = stx.send(());
+        }
         Html(body.to_string())
     }
 
     let (tx, rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let state = AppState {
         tx: Arc::new(tokio::sync::Mutex::new(Some(tx))),
+        shutdown_tx: Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),
         expected_state: expected_state.to_string(),
     };
     let app = Router::new()
@@ -222,7 +230,14 @@ async fn spawn_callback_server(
             .context("Failed to bind callback port")?,
     };
     tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                // Also honour the login timeout: a closed shutdown channel
+                // (sender dropped on timeout) is treated as a shutdown signal
+                // so the port is released even if no callback ever arrived.
+                let _ = shutdown_rx.await;
+            })
+            .await;
     });
 
     let redirect_uri = format!("http://localhost:{port}/auth/callback");
@@ -332,24 +347,34 @@ pub async fn ensure_fresh(record: &AuthRecord) -> Result<String> {
 
     // After acquiring the lock, re-load from disk in case a sibling caller
     // already refreshed while we were waiting. If their swap is still good,
-    // we just return that access_token and skip the network round-trip.
-    if let Ok(fresh_record) = load_auth() {
-        if let Some(fresh_tokens) = fresh_record.tokens.as_ref() {
-            let still_valid = match fresh_tokens.expires_at {
-                Some(t) => t > Utc::now() + chrono::Duration::minutes(2),
-                None => false,
-            };
-            if still_valid {
-                return Ok(fresh_tokens.access_token.clone());
+    // return that access_token directly. Otherwise, still prefer their
+    // (newer, unconsumed) refresh_token and base the save on their record.
+    let (base_record, refresh_token_to_use) = match load_auth() {
+        Ok(fresh_record) => {
+            if let Some(fresh_tokens) = fresh_record.tokens.as_ref() {
+                let still_valid = match fresh_tokens.expires_at {
+                    Some(t) => t > Utc::now() + chrono::Duration::minutes(2),
+                    None => false,
+                };
+                if still_valid {
+                    return Ok(fresh_tokens.access_token.clone());
+                }
+                // Disk has a newer (but expired) record — use its refresh_token
+                // so we don't replay a token already consumed by the sibling.
+                let rt = fresh_tokens.refresh_token.clone();
+                (fresh_record, rt)
+            } else {
+                (record.clone(), tokens.refresh_token.clone())
             }
         }
-    }
+        Err(_) => (record.clone(), tokens.refresh_token.clone()),
+    };
 
-    let refreshed = refresh_access_token(&tokens.refresh_token).await?;
+    let refreshed = refresh_access_token(&refresh_token_to_use).await?;
     let expires_at = refreshed
         .expires_in
         .map(|sec| Utc::now() + chrono::Duration::seconds(sec));
-    let mut updated = record.clone();
+    let mut updated = base_record;
     if let Some(st) = updated.tokens.as_mut() {
         st.access_token = refreshed.access_token.clone();
         st.refresh_token = refreshed.refresh_token;

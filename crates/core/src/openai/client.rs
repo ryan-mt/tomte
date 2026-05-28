@@ -149,7 +149,7 @@ impl OpenAiClient {
                 Ok(t) => t,
                 Err(e) => format!("(failed to read error body: {e})"),
             };
-            return Err(anyhow!("OpenAI {} {}", status, text));
+            return Err(anyhow!("OpenAI {} {}", status, redact_auth_in(&text)));
         }
         Ok(StreamHandle::from_response(resp))
     }
@@ -185,7 +185,7 @@ pub async fn raw_post<B: Serialize>(
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
-        return Err(anyhow!("OpenAI {} {}", status, text));
+        return Err(anyhow!("OpenAI {} {}", status, redact_auth_in(&text)));
     }
     serde_json::from_str(&text).with_context(|| format!("parse: {text}"))
 }

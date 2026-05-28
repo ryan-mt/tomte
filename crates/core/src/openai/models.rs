@@ -109,8 +109,8 @@ pub struct ResponsesRequest {
     pub text: Option<TextConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
-    #[serde(default)]
-    pub parallel_tool_calls: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
@@ -138,7 +138,7 @@ impl ResponsesRequest {
             reasoning: None,
             text: None,
             previous_response_id: None,
-            parallel_tool_calls: true,
+            parallel_tool_calls: None,
             stream: true,
             store: None,
         }
@@ -149,6 +149,7 @@ impl ResponsesRequest {
         self
     }
     pub fn with_tools(mut self, tools: Vec<Tool>) -> Self {
+        self.parallel_tool_calls = Some(true);
         self.tools = tools;
         self
     }

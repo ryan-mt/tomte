@@ -29,6 +29,7 @@ once_cell.workspace = true
 webbrowser.workspace = true
 axum.workspace = true
 tower-http.workspace = true
+regex = "1"
 
 [dev-dependencies]
 tempfile.workspace = true

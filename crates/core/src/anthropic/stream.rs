@@ -29,6 +29,8 @@ use crate::openai::stream::{ResponseStreamEvent, StreamHandle};
 struct PendingBlock {
     kind: String,
     item_id: String,
+    args_buf: String,
+    text_buf: String,
 }
 
 /// Bridge an Anthropic SSE response onto a `StreamHandle` carrying
@@ -110,6 +112,8 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                         PendingBlock {
                                             kind: "tool_use".into(),
                                             item_id: id.clone(),
+                                            args_buf: String::new(),
+                                            text_buf: String::new(),
                                         },
                                     );
                                     let item = json!({
@@ -131,6 +135,8 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                         PendingBlock {
                                             kind: "text".into(),
                                             item_id: format!("text_{index}"),
+                                            args_buf: String::new(),
+                                            text_buf: String::new(),
                                         },
                                     );
                                 }
@@ -153,6 +159,9 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                             .unwrap_or("")
                                             .to_string();
                                         if !text.is_empty() {
+                                            if let Some(b) = blocks.get_mut(&index) {
+                                                b.text_buf.push_str(&text);
+                                            }
                                             let item_id =
                                                 blocks.get(&index).map(|b| b.item_id.clone());
                                             let _ = tx
@@ -169,8 +178,9 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("")
                                             .to_string();
-                                        if let Some(b) = blocks.get(&index) {
+                                        if let Some(b) = blocks.get_mut(&index) {
                                             if b.kind == "tool_use" && !partial.is_empty() {
+                                                b.args_buf.push_str(&partial);
                                                 let _ = tx
                                                     .send(Ok(
                                                         ResponseStreamEvent::FunctionCallArgsDelta {
@@ -209,7 +219,16 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                         let _ = tx
                                             .send(Ok(ResponseStreamEvent::FunctionCallArgsDone {
                                                 item_id: b.item_id,
-                                                arguments: String::new(),
+                                                arguments: b.args_buf,
+                                            }))
+                                            .await;
+                                    } else {
+                                        // Emit OutputTextDone so the agent layer can
+                                        // finalize final_text and emit AssistantTextDone.
+                                        let _ = tx
+                                            .send(Ok(ResponseStreamEvent::OutputTextDone {
+                                                text: b.text_buf,
+                                                item_id: Some(b.item_id),
                                             }))
                                             .await;
                                     }
@@ -237,6 +256,9 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 let _ = tx
                                     .send(Ok(ResponseStreamEvent::Completed { response }))
                                     .await;
+                                // Exit via break so the post-loop fallback does not
+                                // send a second Completed event.
+                                break;
                             }
                             "ping" => {}
                             "error" => {

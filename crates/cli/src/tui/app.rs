@@ -569,18 +569,29 @@ async fn main_loop(
         }
         // Flush the message queue after a turn completes.
         if !app.busy && !app.message_queue.is_empty() && app.screen == Screen::Chat {
-            let combined: String = std::mem::take(&mut app.message_queue).join("\n\n");
+            let queued = std::mem::take(&mut app.message_queue);
             app.status_line.clear();
-            // Strip a leading slash so queued slash commands don't bypass intent.
-            if let Some(rest) = combined.strip_prefix('/') {
-                if !rest.contains('\n') {
+            // Process items individually: dispatch slash commands in order and
+            // accumulate normal messages for a single launch_turn. Flushing
+            // pending normal messages before each slash command preserves order
+            // and avoids sending a raw `/command` string to the model.
+            let mut normal: Vec<String> = Vec::new();
+            for item in queued {
+                if let Some(rest) = item.strip_prefix('/') {
+                    if !normal.is_empty() {
+                        let combined = normal.join("\n\n");
+                        app.blocks.push(Block::User(combined.clone()));
+                        app.auto_scroll = true;
+                        launch_turn(&mut app, &agent, &agent_tx, combined).await;
+                        normal.clear();
+                    }
                     handle_slash(&mut app, rest.trim()).await;
                 } else {
-                    app.blocks.push(Block::User(combined.clone()));
-                    app.auto_scroll = true;
-                    launch_turn(&mut app, &agent, &agent_tx, combined).await;
+                    normal.push(item);
                 }
-            } else {
+            }
+            if !normal.is_empty() {
+                let combined = normal.join("\n\n");
                 app.blocks.push(Block::User(combined.clone()));
                 app.auto_scroll = true;
                 launch_turn(&mut app, &agent, &agent_tx, combined).await;
@@ -588,36 +599,35 @@ async fn main_loop(
         }
 
         // Poll login completion (the spawned OAuth flow writes auth.json).
+        // Snapshot stage + error exactly once per frame so the transition
+        // check and render see a consistent view (the OAuth task can mutate
+        // the shared mutex between two reads otherwise).
+        let mut login_render: Option<(LoginStage, Option<String>)> = None;
         if app.screen == Screen::Login {
             let stage = app.login.stage().await;
-            match stage {
+            let login_err = app.login.error_text().await;
+            match &stage {
                 LoginStage::Success(mode) => {
-                    app.auth_mode = mode;
+                    app.auth_mode = *mode;
                     app.screen = Screen::Chat;
                     app.login = LoginScreen::new();
                 }
                 LoginStage::Cancelled => break,
                 _ => {}
             }
+            // Only render login if still on login screen (transition may have
+            // just fired) — avoids passing a Success snapshot to render.
+            if app.screen == Screen::Login {
+                login_render = Some((stage, login_err));
+            }
         }
-
-        let login_stage = if app.screen == Screen::Login {
-            Some(app.login.stage().await)
-        } else {
-            None
-        };
-        let login_err = if app.screen == Screen::Login {
-            app.login.error_text().await
-        } else {
-            None
-        };
 
         terminal.draw(|f| {
             app.last_width = f.area().width;
             app.last_height = f.area().height;
             match app.screen {
                 Screen::Login => {
-                    if let Some(stage) = login_stage.as_ref() {
+                    if let Some((stage, login_err)) = login_render.as_ref() {
                         login::render(f, f.area(), &app.login, stage, login_err.as_deref());
                     }
                 }

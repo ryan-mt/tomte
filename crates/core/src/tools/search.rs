@@ -151,7 +151,8 @@ Parameters:\n\
         }
         cmd.arg(&a.pattern);
         if let Some(p) = &a.path {
-            cmd.arg(p);
+            let resolved = super::fs::resolve(&ctx.cwd, p)?;
+            cmd.arg(&resolved);
         } else {
             cmd.arg(".");
         }
@@ -178,7 +179,10 @@ Parameters:\n\
         // `--` separates flags from positional args so a pattern starting
         // with `-` isn't misinterpreted as a flag.
         grep.arg("--").arg(&a.pattern);
-        grep.arg(a.path.as_deref().unwrap_or("."));
+        match a.path.as_deref() {
+            Some(p) => grep.arg(super::fs::resolve(&ctx.cwd, p)?),
+            None => grep.arg("."),
+        };
         grep.current_dir(&ctx.cwd);
         let out = grep.output().await?;
         Ok(apply_limits(
@@ -257,11 +261,10 @@ Parameters:\n\
                 "sort must be 'name' or 'mtime' (got '{sort}')"
             ));
         }
-        let cwd = a
-            .path
-            .as_deref()
-            .map(|p| ctx.cwd.join(p))
-            .unwrap_or_else(|| ctx.cwd.clone());
+        let cwd = match a.path.as_deref() {
+            Some(p) => super::fs::resolve(&ctx.cwd, p)?,
+            None => ctx.cwd.clone(),
+        };
 
         // Collect raw file list via ripgrep when available.
         let raw: Option<Vec<String>> = match Command::new("rg")

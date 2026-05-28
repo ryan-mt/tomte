@@ -201,7 +201,9 @@ Parameters:\n\
         let path = resolve(&ctx.cwd, &a.path)?;
         let original = tokio::fs::read_to_string(&path).await.ok();
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("create parent dirs for {}", parent.display()))?;
         }
         tokio::fs::write(&path, a.content.as_bytes())
             .await
@@ -594,7 +596,7 @@ fn snapshot_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
 /// paths and any relative path that escapes `cwd` after lexically normalising
 /// `..` components. Without this guard the LLM could read `/etc/shadow`,
 /// write to `~/.ssh/authorized_keys`, or otherwise escape the working tree.
-fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathBuf> {
+pub(crate) fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathBuf> {
     let path = std::path::Path::new(p);
     if path.is_absolute() {
         return Err(anyhow!(
