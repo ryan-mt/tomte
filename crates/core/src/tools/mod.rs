@@ -1,4 +1,5 @@
 pub mod ask;
+pub mod dispatch;
 pub mod fs;
 pub mod search;
 pub mod shell;
@@ -209,6 +210,7 @@ impl Registry {
                 Box::new(todo::TodoWrite),
                 Box::new(web::WebFetch),
                 Box::new(ask::AskUserQuestion),
+                Box::new(dispatch::DispatchAgent),
             ],
         }
     }
@@ -222,6 +224,57 @@ impl Registry {
             .iter()
             .find(|t| t.name() == name)
             .map(|b| b.as_ref())
+    }
+
+
+    /// Build a registry that contains only the named built-in tools.
+    ///
+    /// - An empty list, or one containing `"*"`, returns `Self::standard()`
+    ///   minus `dispatch_agent` (subagents must not recurse into themselves).
+    /// - Unknown names are silently skipped — the caller (typically the
+    ///   `dispatch_agent` tool) is expected to surface a useful error if the
+    ///   subagent file references a non-existent tool.
+    /// - `dispatch_agent` is always stripped so a sub-agent can never spawn
+    ///   another sub-agent (avoids unbounded fan-out and recursive cost).
+    pub fn filtered(allowed: &[String]) -> Self {
+        let wildcard = allowed.is_empty() || allowed.iter().any(|t| t == "*");
+        if wildcard {
+            let mut s = Self::standard();
+            s.tools
+                .retain(|t| t.name() != "dispatch_agent");
+            return s;
+        }
+        let mut tools: Vec<Box<dyn BuiltinTool>> = Vec::new();
+        for name in allowed {
+            let n = name.as_str();
+            if n == "dispatch_agent" {
+                continue;
+            }
+            let tool: Option<Box<dyn BuiltinTool>> = match n {
+                "read_file" => Some(Box::new(fs::ReadFile)),
+                "write_file" => Some(Box::new(fs::WriteFile)),
+                "edit_file" => Some(Box::new(fs::EditFile)),
+                "multi_edit" => Some(Box::new(fs::MultiEdit)),
+                "undo_last_edit" => Some(Box::new(fs::UndoLastEdit)),
+                "list_dir" => Some(Box::new(fs::ListDir)),
+                "grep" => Some(Box::new(search::Grep)),
+                "glob" => Some(Box::new(search::Glob)),
+                "run_shell" => Some(Box::new(shell::RunShell)),
+                "bash_output" => Some(Box::new(shell::BashOutput)),
+                "kill_shell" => Some(Box::new(shell::KillShell)),
+                "todo_write" => Some(Box::new(todo::TodoWrite)),
+                "web_fetch" => Some(Box::new(web::WebFetch)),
+                "ask_user_question" => Some(Box::new(ask::AskUserQuestion)),
+                _ => {
+                    tracing::warn!(tool = %n, "subagent referenced unknown tool; skipping");
+                    None
+                }
+            };
+            if let Some(t) = tool {
+                tools.push(t);
+            }
+        }
+        Self { tools }
     }
 
     /// Append a tool to the registry. Used by `Agent::load_mcp` to register

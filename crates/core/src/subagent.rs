@@ -1,0 +1,264 @@
+//! Sub-agent (a.k.a. "Task") definitions and loader.
+//!
+//! A subagent is a named bundle of (system prompt, tool whitelist, optional
+//! model override) stored as a markdown file under
+//! `~/.config/opencli/agents/<name>.md`. The host can spawn a child agent
+//! that runs a single turn with this configuration and returns the final
+//! assistant text to the parent.
+//!
+//! File format — Claude Code-compatible:
+//!
+//! ```markdown
+//! ---
+//! name: code-explorer
+//! description: Search the codebase to answer questions about it.
+//! tools: read_file, grep, glob, list_dir
+//! model: gpt-5-mini
+//! ---
+//! You are a focused code explorer. Use the tools …
+//! ```
+//!
+//! Frontmatter is a minimal YAML-ish subset: one `key: value` per line, with
+//! `tools` parsed as a comma-separated list. `model` is optional and falls
+//! back to the parent agent's configured model. Unrecognised keys are
+//! ignored. The body after the closing `---` becomes the system prompt.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
+
+/// A loaded sub-agent definition ready to drive a child `Agent` turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentDefinition {
+    pub name: String,
+    pub description: String,
+    /// Whitelist of built-in tool names the sub-agent is allowed to call.
+    /// Empty or `["*"]` means "all built-ins". Unknown names are dropped on
+    /// load with a warning.
+    pub tools: Vec<String>,
+    /// Optional model override (e.g. `gpt-5-mini`). When None, the parent
+    /// agent's model is inherited.
+    pub model: Option<String>,
+    pub system_prompt: String,
+}
+
+pub fn subagents_dir() -> PathBuf {
+    crate::config::config_dir().join("agents")
+}
+
+/// Load every `*.md` file under the subagents dir, sorted by name. Files
+/// that fail to parse are logged and skipped — never abort the host process.
+pub fn load_all() -> Vec<SubagentDefinition> {
+    let dir = subagents_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match parse(&text, &path) {
+                Ok(def) => out.push(def),
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "subagent parse failed; skipping");
+                }
+            },
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "subagent read failed; skipping");
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// Load a single subagent definition by name. Returns NotFound if no file
+/// exists at `<dir>/<name>.md`.
+pub fn load_by_name(name: &str) -> Result<SubagentDefinition> {
+    if name.is_empty() || name.contains(['/', '\\', '.']) {
+        return Err(anyhow!(
+            "invalid subagent name `{name}`; must be a bare identifier"
+        ));
+    }
+    let path = subagents_dir().join(format!("{name}.md"));
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        anyhow!(
+            "subagent `{name}` not found at {}: {e}",
+            path.display()
+        )
+    })?;
+    parse(&text, &path)
+}
+
+/// Parse a subagent markdown with YAML-ish frontmatter delimited by `---`.
+///
+/// Tolerant of:
+/// - Leading whitespace / BOM
+/// - CRLF line endings
+/// - Trailing whitespace in values
+/// - Quoted string values (single or double)
+pub fn parse(text: &str, path: &Path) -> Result<SubagentDefinition> {
+    let trimmed = text.trim_start_matches('\u{feff}').trim_start();
+    let rest = trimmed.strip_prefix("---").ok_or_else(|| {
+        anyhow!(
+            "subagent at {} missing `---` frontmatter opener",
+            path.display()
+        )
+    })?;
+    let rest = rest.strip_prefix('\n').unwrap_or(rest);
+    let end_idx = rest
+        .find("\n---")
+        .ok_or_else(|| anyhow!(
+            "subagent at {} missing closing `---` frontmatter line",
+            path.display()
+        ))?;
+    let frontmatter = &rest[..end_idx];
+    let mut body = &rest[end_idx + "\n---".len()..];
+    body = body.strip_prefix('\r').unwrap_or(body);
+    body = body.strip_prefix('\n').unwrap_or(body);
+
+    let mut name = String::new();
+    let mut description = String::new();
+    let mut tools: Vec<String> = Vec::new();
+    let mut model: Option<String> = None;
+
+    for raw_line in frontmatter.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        let key = k.trim().to_ascii_lowercase();
+        let value = strip_quotes(v.trim());
+        match key.as_str() {
+            "name" => name = value.to_string(),
+            "description" => description = value.to_string(),
+            "tools" => {
+                tools = value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            "model" => {
+                if !value.is_empty() {
+                    model = Some(value.to_string());
+                }
+            }
+            _ => {
+                // Unrecognised keys are ignored, allowing forward-compat
+                // additions in user files without breaking older opencli.
+            }
+        }
+    }
+
+    if name.is_empty() {
+        return Err(anyhow!(
+            "subagent at {} missing required `name` field",
+            path.display()
+        ));
+    }
+
+    Ok(SubagentDefinition {
+        name,
+        description,
+        tools,
+        model,
+        system_prompt: body.to_string(),
+    })
+}
+
+fn strip_quotes(s: &str) -> &str {
+    if (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
+        || (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
+    {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fake(name: &str) -> PathBuf {
+        PathBuf::from(format!("/tmp/{name}.md"))
+    }
+
+    #[test]
+    fn parse_minimal_definition() {
+        let text = "---\nname: explorer\ndescription: walks the tree\n---\nbody here\n";
+        let def = parse(text, &fake("explorer")).unwrap();
+        assert_eq!(def.name, "explorer");
+        assert_eq!(def.description, "walks the tree");
+        assert!(def.tools.is_empty());
+        assert!(def.model.is_none());
+        assert_eq!(def.system_prompt, "body here\n");
+    }
+
+    #[test]
+    fn parse_with_tools_and_model() {
+        let text = "---\nname: x\ndescription: y\ntools: read_file, grep, glob\nmodel: gpt-5-mini\n---\nsys\n";
+        let def = parse(text, &fake("x")).unwrap();
+        assert_eq!(def.tools, vec!["read_file", "grep", "glob"]);
+        assert_eq!(def.model.as_deref(), Some("gpt-5-mini"));
+    }
+
+    #[test]
+    fn parse_tolerates_bom_and_crlf() {
+        let text = "\u{feff}---\r\nname: bom\r\ndescription: ok\r\n---\r\nbody\r\n";
+        let def = parse(text, &fake("bom")).unwrap();
+        assert_eq!(def.name, "bom");
+        assert_eq!(def.system_prompt, "body\r\n");
+    }
+
+    #[test]
+    fn parse_strips_quoted_values() {
+        let text = "---\nname: \"quoted-name\"\ndescription: 'single quoted'\n---\nx\n";
+        let def = parse(text, &fake("q")).unwrap();
+        assert_eq!(def.name, "quoted-name");
+        assert_eq!(def.description, "single quoted");
+    }
+
+    #[test]
+    fn parse_rejects_missing_frontmatter() {
+        let err = parse("no front matter here\n", &fake("bad")).unwrap_err();
+        assert!(err.to_string().contains("missing `---` frontmatter opener"));
+    }
+
+    #[test]
+    fn parse_rejects_unterminated_frontmatter() {
+        let err = parse("---\nname: x\n", &fake("bad")).unwrap_err();
+        assert!(err.to_string().contains("missing closing `---`"));
+    }
+
+    #[test]
+    fn parse_rejects_missing_name() {
+        let err = parse("---\ndescription: only desc\n---\nbody\n", &fake("bad"))
+            .unwrap_err();
+        assert!(err.to_string().contains("missing required `name`"));
+    }
+
+    #[test]
+    fn load_by_name_rejects_path_traversal() {
+        for bad in ["../etc/passwd", "agents/sub", "a.b", ""] {
+            let err = load_by_name(bad).unwrap_err();
+            assert!(err.to_string().contains("invalid") || err.to_string().contains("not found"));
+        }
+    }
+
+    #[test]
+    fn ignores_unknown_keys_for_forward_compat() {
+        let text = "---\nname: fwd\ndescription: d\nfuture_field: foo\nmax_turns: 5\n---\nbody\n";
+        let def = parse(text, &fake("fwd")).unwrap();
+        assert_eq!(def.name, "fwd");
+    }
+}
