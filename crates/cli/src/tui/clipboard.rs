@@ -25,12 +25,9 @@ pub fn try_paste() -> Result<PasteResult> {
         Clipboard::new().map_err(|e| anyhow!("cannot access clipboard: {e}"))?;
 
     // Try image first.
-    match clip.get_image() {
-        Ok(img) => {
-            let path = save_image(img).context("encoding clipboard image")?;
-            return Ok(PasteResult::Image(path));
-        }
-        Err(_) => {}
+    if let Ok(img) = clip.get_image() {
+        let path = save_image(img).context("encoding clipboard image")?;
+        return Ok(PasteResult::Image(path));
     }
 
     // Fall back to text.
