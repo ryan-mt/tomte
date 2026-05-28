@@ -240,39 +240,91 @@ pub fn slash_commands() -> Vec<PickerItem> {
     ]
 }
 
+/// Build the model picker dynamically from the providers the user is
+/// currently signed in to. When only OpenAI creds exist the user sees the
+/// GPT catalogue; after `opencli login --provider anthropic` the Claude
+/// models appear alongside (or instead of) the GPT ones. After `logout`
+/// nothing is signed in and the picker shows a single offline placeholder.
 pub fn models() -> Vec<PickerItem> {
-    vec![
-        PickerItem {
-            key: "gpt-5.5".into(),
-            title: "gpt-5.5".into(),
-            description: "frontier · 1M context · default".into(),
-        },
-        PickerItem {
-            key: "gpt-5.5-pro".into(),
-            title: "gpt-5.5-pro".into(),
-            description: "more compute for hard problems".into(),
-        },
-        PickerItem {
-            key: "gpt-5.4".into(),
-            title: "gpt-5.4".into(),
-            description: "frontier · tool search".into(),
-        },
-        PickerItem {
-            key: "gpt-5.4-pro".into(),
-            title: "gpt-5.4-pro".into(),
-            description: "5.4 with more compute".into(),
-        },
-        PickerItem {
-            key: "gpt-5.4-mini".into(),
-            title: "gpt-5.4-mini".into(),
-            description: "fast · cheaper".into(),
-        },
-        PickerItem {
-            key: "gpt-5.4-nano".into(),
-            title: "gpt-5.4-nano".into(),
-            description: "latency-sensitive".into(),
-        },
-    ]
+    use opencli_core::auth::signed_in_providers;
+    use opencli_core::provider::Provider;
+
+    let mut items = Vec::new();
+    for p in signed_in_providers() {
+        match p {
+            Provider::OpenAi => {
+                items.extend([
+                    PickerItem {
+                        key: "gpt-5".into(),
+                        title: "gpt-5".into(),
+                        description: "frontier · 1M context · default".into(),
+                    },
+                    PickerItem {
+                        key: "gpt-5-pro".into(),
+                        title: "gpt-5-pro".into(),
+                        description: "more compute for hard problems".into(),
+                    },
+                    PickerItem {
+                        key: "gpt-5-codex".into(),
+                        title: "gpt-5-codex".into(),
+                        description: "code-specialised · used via ChatGPT Codex".into(),
+                    },
+                    PickerItem {
+                        key: "gpt-5-mini".into(),
+                        title: "gpt-5-mini".into(),
+                        description: "fast · cheaper".into(),
+                    },
+                    PickerItem {
+                        key: "gpt-5-nano".into(),
+                        title: "gpt-5-nano".into(),
+                        description: "latency-sensitive".into(),
+                    },
+                ]);
+            }
+            Provider::Anthropic => {
+                items.extend([
+                    PickerItem {
+                        key: "claude-opus-4-7".into(),
+                        title: "claude-opus-4-7".into(),
+                        description: "frontier · long-running agents".into(),
+                    },
+                    PickerItem {
+                        key: "claude-opus-4-6".into(),
+                        title: "claude-opus-4-6".into(),
+                        description: "frontier · previous opus".into(),
+                    },
+                    PickerItem {
+                        key: "claude-opus-4-5".into(),
+                        title: "claude-opus-4-5".into(),
+                        description: "max intelligence · practical".into(),
+                    },
+                    PickerItem {
+                        key: "claude-sonnet-4-6".into(),
+                        title: "claude-sonnet-4-6".into(),
+                        description: "best speed/intelligence balance".into(),
+                    },
+                    PickerItem {
+                        key: "claude-sonnet-4-5".into(),
+                        title: "claude-sonnet-4-5".into(),
+                        description: "high-perf agents · coding".into(),
+                    },
+                    PickerItem {
+                        key: "claude-haiku-4-5".into(),
+                        title: "claude-haiku-4-5".into(),
+                        description: "fastest · near-frontier".into(),
+                    },
+                ]);
+            }
+        }
+    }
+    if items.is_empty() {
+        items.push(PickerItem {
+            key: "gpt-5".into(),
+            title: "(not signed in)".into(),
+            description: "run `/login` to choose a provider".into(),
+        });
+    }
+    items
 }
 
 pub fn efforts() -> Vec<PickerItem> {
