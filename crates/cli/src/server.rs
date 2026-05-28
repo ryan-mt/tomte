@@ -260,6 +260,13 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         agent.push_user_message(prompt);
     }
 
+    // Snapshot of the agent's approval-channel Arc, captured BEFORE the
+    // long-lived turn lock so WS approval_decision frames don't deadlock
+    // waiting for run_turn to release the outer mutex.
+    let approvals_handle = {
+        let a = agent_arc.lock().await;
+        a.pending_approvals.clone()
+    };
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(256);
     let agent_arc_clone = agent_arc.clone();
     let run_task = tokio::spawn(async move {
@@ -285,8 +292,13 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                                 let call_id = v.get("call_id").and_then(|c| c.as_str()).unwrap_or("").to_string();
                                 let granted = v.get("granted").and_then(|g| g.as_bool()).unwrap_or(false);
                                 if !call_id.is_empty() {
-                                    let a = agent_arc.lock().await;
-                                    a.respond_approval(&call_id, granted).await;
+                                    let sender = {
+                                        let mut map = approvals_handle.lock().await;
+                                        map.remove(&call_id)
+                                    };
+                                    if let Some(s) = sender {
+                                        let _ = s.send(granted);
+                                    }
                                 }
                             }
                         }

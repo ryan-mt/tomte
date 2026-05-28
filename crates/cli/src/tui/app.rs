@@ -176,6 +176,17 @@ pub struct App {
     /// tool batch via `AgentEvent::TodosSnapshot`. Read by `/todos`.
     pub session_todos: Vec<TodoItem>,
     pub pending_approval: Option<PendingApproval>,
+    /// Clone of the Agent's `pending_approvals` Arc, captured BEFORE the
+    /// long-lived turn lock so Y/N keystrokes can deliver a decision without
+    /// blocking on the outer agent mutex (run_turn holds it for the whole
+    /// turn and is itself waiting on this approval).
+    pub approval_handle: Option<
+        std::sync::Arc<
+            tokio::sync::Mutex<
+                std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>,
+            >,
+        >,
+    >,
 }
 
 #[derive(Debug, Clone)]
@@ -279,6 +290,7 @@ impl App {
             start_with_resume_picker: false,
             session_todos: Vec::new(),
             pending_approval: None,
+            approval_handle: None,
         }
     }
 
@@ -502,13 +514,21 @@ async fn handle_key(
             app.pending_approval = None;
             let label = if granted { "approved" } else { "denied" };
             app.blocks.push(Block::System(format!("{label}: {}", p.tool_name)));
-            let agent = agent.clone();
-            let call_id = p.call_id.clone();
-            tokio::spawn(async move {
-                if let Some(a) = agent.lock().await.as_ref() {
-                    a.respond_approval(&call_id, granted).await;
-                }
-            });
+            // CRITICAL: do NOT lock the outer agent mutex here — run_turn
+            // holds it for the entire turn and is itself awaiting this
+            // approval. Use the handle Arc captured at turn start instead.
+            if let Some(handle) = app.approval_handle.clone() {
+                let call_id = p.call_id.clone();
+                tokio::spawn(async move {
+                    let sender = {
+                        let mut map = handle.lock().await;
+                        map.remove(&call_id)
+                    };
+                    if let Some(s) = sender {
+                        let _ = s.send(granted);
+                    }
+                });
+            }
             return Ok(false);
         }
         return Ok(false);
@@ -1440,6 +1460,14 @@ async fn launch_turn(
                 let imgs = std::mem::take(&mut app.pending_images);
                 a.push_user_message_with_images(text, &imgs);
             }
+        }
+    }
+    {
+        // Snapshot the agent's pending_approvals Arc so Y/N keystrokes don't
+        // need to grab the outer mutex (which run_turn holds for the duration).
+        let guard = agent.lock().await;
+        if let Some(a) = guard.as_ref() {
+            app.approval_handle = Some(a.pending_approvals.clone());
         }
     }
     app.busy = true;

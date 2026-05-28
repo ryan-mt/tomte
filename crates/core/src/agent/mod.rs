@@ -50,6 +50,10 @@ pub enum AgentEvent {
 
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Tools that touch only session-local state (no FS, no shell). Safe to run
+/// without per-call approval even when `require_approval` is on.
+const ALWAYS_AUTO_TOOLS: &[&str] = &["todo_write"];
+
 pub fn model_context_limit(model: &str) -> u64 {
     let m = model.to_ascii_lowercase();
     if m.contains("nano") { 200_000 }
@@ -515,7 +519,8 @@ impl Agent {
                                     crate::hooks::HookDecision::Allow => {
                                         let needs_gate = self.require_approval
                                             && matches!(self.approval, ApprovalMode::OnRequest | ApprovalMode::Manual)
-                                            && !t.is_read_only();
+                                            && !t.is_read_only()
+                                            && !ALWAYS_AUTO_TOOLS.contains(&pc.name.as_str());
                                         if needs_gate {
                                             let diff_preview = t.compute_preview(&args, &ctx).await;
                                             let (resp_tx, resp_rx) = tokio::sync::oneshot::channel::<bool>();
