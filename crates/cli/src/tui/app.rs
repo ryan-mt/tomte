@@ -2003,6 +2003,16 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 "context {used}/{limit} tokens ({pct}%) - consider /compact"
             )));
         }
+        AgentEvent::AutoCompactSuggested { used, limit } => {
+            let pct = (used as f64 / limit.max(1) as f64 * 100.0) as u64;
+            // Stronger signal than ContextWarning — at 85% we are one or two
+            // turns away from a hard 1xx context-window failure on the next
+            // request. Block::System makes the message persistent in the
+            // scrollback so the user can't miss it while scrolling.
+            app.blocks.push(Block::System(format!(
+                "⚠ context {used}/{limit} tokens ({pct}%) — run /compact now to avoid a context overflow on the next turn"
+            )));
+        }
         AgentEvent::ApprovalRequest {
             call_id,
             tool_name,
