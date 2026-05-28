@@ -142,7 +142,10 @@ impl OpenAiClient {
             .await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = match resp.text().await {
+                Ok(t) => t,
+                Err(e) => format!("(failed to read error body: {e})"),
+            };
             return Err(anyhow!("OpenAI {} {}", status, text));
         }
         Ok(StreamHandle::from_response(resp))

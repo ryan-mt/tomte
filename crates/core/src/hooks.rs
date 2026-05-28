@@ -93,15 +93,27 @@ impl HookSet {
                 "tool": tool,
                 "args": args,
             });
-            if let Ok((code, stdout)) = run_hook(&hook.command, &payload).await {
-                if code == 2 {
-                    let reason = stdout.trim().to_string();
-                    let reason = if reason.is_empty() {
-                        format!("blocked by PreToolUse hook (matcher={})", hook.matcher)
-                    } else {
-                        reason
-                    };
-                    return HookDecision::Block(reason);
+            // Fail-closed: if a matched hook errors (spawn failure, timeout,
+            // misconfigured command), treat as Block. A hook is an enforcement
+            // mechanism; silently allowing on hook error would defeat the
+            // user's intent to gate the tool call.
+            match run_hook(&hook.command, &payload).await {
+                Ok((code, stdout)) => {
+                    if code == 2 {
+                        let reason = stdout.trim().to_string();
+                        let reason = if reason.is_empty() {
+                            format!("blocked by PreToolUse hook (matcher={})", hook.matcher)
+                        } else {
+                            reason
+                        };
+                        return HookDecision::Block(reason);
+                    }
+                }
+                Err(e) => {
+                    return HookDecision::Block(format!(
+                        "PreToolUse hook error (matcher={}): {}",
+                        hook.matcher, e
+                    ));
                 }
             }
         }

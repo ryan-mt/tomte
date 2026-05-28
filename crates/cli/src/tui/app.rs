@@ -1603,6 +1603,11 @@ fn cancel_current_turn(app: &mut App) {
     app.is_thinking = false;
     app.turn_started_at = None;
     app.status_line.clear();
+    // Drop any in-flight approval modal: leaving pending_approval=Some after
+    // a cancel makes handle_key intercept every keystroke, locking the user
+    // out of the input box with no way to recover short of restarting.
+    app.pending_approval = None;
+    app.approval_handle = None;
     // Close the open assistant block, then surface a small note so the user
     // can see the cancel happened.
     if let Some(Block::Assistant { done, .. }) = last_assistant_mut_open(&mut app.blocks) {

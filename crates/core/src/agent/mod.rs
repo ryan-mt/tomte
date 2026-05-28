@@ -232,14 +232,24 @@ impl Agent {
     ) {
         let mut content = vec![MessageContent::text(text)];
         for path in image_paths {
-            if let Ok(bytes) = std::fs::read(path) {
-                use base64::Engine;
-                let mime = guess_mime(path);
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                content.push(MessageContent::InputImage {
-                    image_url: format!("data:{};base64,{}", mime, b64),
-                    detail: None,
-                });
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    use base64::Engine;
+                    let mime = guess_mime(path);
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    content.push(MessageContent::InputImage {
+                        image_url: format!("data:{};base64,{}", mime, b64),
+                        detail: None,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(?path, error = %e, "failed to read image attachment");
+                    content.push(MessageContent::text(format!(
+                        "[image attachment {} could not be read: {}]",
+                        path.display(),
+                        e
+                    )));
+                }
             }
         }
         self.history.push(InputItem::Message {

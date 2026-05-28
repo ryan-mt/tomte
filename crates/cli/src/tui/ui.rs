@@ -396,7 +396,13 @@ fn condense_args(json: &str) -> String {
             .into_iter()
             .map(|(k, v)| {
                 let vs = serde_json::to_string(&v).unwrap_or_default();
-                let vs = if vs.len() > 60 { format!("{}…", &vs[..60]) } else { vs };
+                // Truncate by char count — byte index would panic mid-codepoint.
+                let vs = if vs.chars().count() > 60 {
+                    let cut: String = vs.chars().take(60).collect();
+                    format!("{cut}…")
+                } else {
+                    vs
+                };
                 format!("{k}={vs}")
             })
             .collect::<Vec<_>>()
