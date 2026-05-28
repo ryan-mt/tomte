@@ -81,21 +81,35 @@ pub struct MessagesRequest {
     pub top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingConfig>,
+    /// `effort` lives at the top level under `output_config`, NOT inside
+    /// `thinking`. Putting it inside `thinking` is rejected as an unknown
+    /// field on Opus 4.7.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<OutputConfig>,
 }
 
-/// Anthropic adaptive-thinking config. Newer Claude 4 models (Opus 4.6+,
-/// Sonnet 4.6+, Opus 4.7) accept `{"type":"adaptive","effort":"<level>"}`
-/// instead of the legacy `{"type":"enabled","budget_tokens":N}` form, which
-/// is deprecated on those models. Haiku does not support thinking at all.
-///
-/// Effort levels per docs:
-///   - low / medium / high → supported on all adaptive-capable Claude 4 models
-///   - xhigh → Opus 4.7 only (sits between high and max)
-///   - max  → Opus 4.6+, Sonnet 4.6+, Opus 4.7
+/// Anthropic thinking config. Newer Claude 4 models (Opus 4.6+, Sonnet 4.6+,
+/// Opus 4.7) accept `{"type":"adaptive"}`; the effort level is sent
+/// separately via `output_config.effort`. The legacy
+/// `{"type":"enabled","budget_tokens":N}` form is deprecated on Opus 4.6 /
+/// Sonnet 4.6 and rejected on Opus 4.7. Haiku does not support thinking.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ThinkingConfig {
-    Adaptive { effort: String },
+    Adaptive,
+    Enabled { budget_tokens: u32 },
+}
+
+/// Top-level guidance for response generation. Today we only carry `effort`,
+/// which steers adaptive thinking depth.
+///
+/// Effort values per docs:
+///   - low / medium / high → all adaptive-capable Claude 4 models
+///   - xhigh → Opus 4.7 only (between high and max)
+///   - max  → Opus 4.6+, Sonnet 4.6+, Opus 4.7
+#[derive(Debug, Clone, Serialize)]
+pub struct OutputConfig {
+    pub effort: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

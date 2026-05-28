@@ -11,8 +11,8 @@ use serde_json::Value;
 use crate::openai::models::{InputItem, MessageContent, ResponsesRequest, Tool};
 
 use super::models::{
-    AnthropicMessage, ContentBlock, ImageSource, MessagesRequest, SystemBlock, ThinkingConfig,
-    ToolDef,
+    AnthropicMessage, ContentBlock, ImageSource, MessagesRequest, OutputConfig, SystemBlock,
+    ThinkingConfig, ToolDef,
 };
 
 /// Default cap when no extended thinking is requested. Anthropic requires
@@ -22,24 +22,47 @@ const DEFAULT_MAX_TOKENS: u32 = 32_000;
 /// still needs room to emit a final answer.
 const MAX_EFFORT_MAX_TOKENS: u32 = 64_000;
 
-/// Map a reasoning-effort label onto Anthropic adaptive-thinking shape.
-/// Newer Claude 4 models accept `{"type":"adaptive","effort":"<level>"}`
-/// (manual `budget_tokens` is deprecated). Haiku doesn't support thinking.
+struct EffortPlan {
+    thinking: Option<ThinkingConfig>,
+    output_config: Option<OutputConfig>,
+    max_tokens: u32,
+}
+
+impl EffortPlan {
+    fn no_thinking() -> Self {
+        Self {
+            thinking: None,
+            output_config: None,
+            max_tokens: DEFAULT_MAX_TOKENS,
+        }
+    }
+}
+
+/// Map a reasoning-effort label onto the Anthropic request shape.
 ///
-/// Effort values per docs:
-///   - low/medium/high  → all adaptive-capable Claude 4 models
-///   - xhigh            → Opus 4.7 only (between high and max)
-///   - max              → Opus 4.6+, Sonnet 4.6+, Opus 4.7
-fn map_effort(model: &str, effort: Option<&str>) -> (Option<ThinkingConfig>, u32) {
+/// Anthropic separates the thinking *mode* from the effort *level*: thinking
+/// is `{"type":"adaptive"}` and the level lives in `output_config.effort`.
+/// Sending `effort` inside `thinking` is rejected as an unknown field on
+/// Opus 4.7. Haiku and pre-4.6 models don't support adaptive thinking; we
+/// drop the `thinking` field entirely for them rather than fall back to the
+/// deprecated `{"type":"enabled","budget_tokens":N}` shape.
+fn map_effort(model: &str, effort: Option<&str>) -> EffortPlan {
     let model_lc = model.to_ascii_lowercase();
     if model_lc.contains("haiku") {
-        return (None, DEFAULT_MAX_TOKENS);
+        return EffortPlan::no_thinking();
     }
+    let is_adaptive_capable = model_lc.contains("opus-4-7")
+        || model_lc.contains("opus-4-6")
+        || model_lc.contains("sonnet-4-6")
+        || model_lc.contains("mythos");
+    if !is_adaptive_capable {
+        return EffortPlan::no_thinking();
+    }
+
     let Some(raw) = effort else {
-        return (None, DEFAULT_MAX_TOKENS);
+        return EffortPlan::no_thinking();
     };
-    // Normalise: OpenAI "none"/"minimal" disable thinking for Anthropic too.
-    let normalised: Option<&str> = match raw {
+    let level: Option<&str> = match raw {
         "none" | "minimal" | "disabled" => None,
         "low" | "medium" | "high" | "max" => Some(raw),
         "xhigh" => {
@@ -51,21 +74,19 @@ fn map_effort(model: &str, effort: Option<&str>) -> (Option<ThinkingConfig>, u32
         }
         _ => Some("high"),
     };
-    match normalised {
-        None => (None, DEFAULT_MAX_TOKENS),
-        Some(level) => {
-            let max_tokens = if level == "max" {
+    match level {
+        None => EffortPlan::no_thinking(),
+        Some(eff) => EffortPlan {
+            thinking: Some(ThinkingConfig::Adaptive),
+            output_config: Some(OutputConfig {
+                effort: eff.to_string(),
+            }),
+            max_tokens: if eff == "max" {
                 MAX_EFFORT_MAX_TOKENS
             } else {
                 DEFAULT_MAX_TOKENS
-            };
-            (
-                Some(ThinkingConfig::Adaptive {
-                    effort: level.to_string(),
-                }),
-                max_tokens,
-            )
-        }
+            },
+        },
     }
 }
 
@@ -148,18 +169,19 @@ pub fn to_messages_request(req: &ResponsesRequest) -> MessagesRequest {
     let tools = req.tools.iter().filter_map(tool_to_anthropic).collect();
 
     let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
-    let (thinking, max_tokens) = map_effort(&req.model, effort);
+    let plan = map_effort(&req.model, effort);
 
     MessagesRequest {
         model: req.model.clone(),
-        max_tokens,
+        max_tokens: plan.max_tokens,
         messages,
         system,
         tools,
         stream: req.stream,
         temperature: None,
         top_p: None,
-        thinking,
+        thinking: plan.thinking,
+        output_config: plan.output_config,
     }
 }
 
@@ -312,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn high_effort_emits_adaptive_thinking() {
+    fn high_effort_emits_adaptive_thinking_and_output_config() {
         let req = ResponsesRequest::new(
             "claude-opus-4-7",
             vec![InputItem::Message {
@@ -322,45 +344,60 @@ mod tests {
         )
         .with_reasoning("high");
         let out = to_messages_request(&req);
-        let ThinkingConfig::Adaptive { effort } =
-            out.thinking.expect("high must enable adaptive thinking");
-        assert_eq!(effort, "high");
+        assert!(matches!(out.thinking, Some(ThinkingConfig::Adaptive)));
+        assert_eq!(out.output_config.as_ref().unwrap().effort, "high");
+    }
+
+    #[test]
+    fn adaptive_thinking_serializes_without_effort_field() {
+        let req = ResponsesRequest::new("claude-opus-4-7", vec![]).with_reasoning("high");
+        let out = to_messages_request(&req);
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json["thinking"], serde_json::json!({"type": "adaptive"}));
+        assert_eq!(json["output_config"]["effort"], "high");
     }
 
     #[test]
     fn max_effort_lifts_max_tokens() {
         let req = ResponsesRequest::new("claude-opus-4-7", vec![]).with_reasoning("max");
         let out = to_messages_request(&req);
-        let ThinkingConfig::Adaptive { effort } = out.thinking.unwrap();
-        assert_eq!(effort, "max");
-        assert!(out.max_tokens > 32_000, "max effort needs lifted ceiling");
+        assert_eq!(out.output_config.as_ref().unwrap().effort, "max");
+        assert!(out.max_tokens > 32_000);
     }
 
     #[test]
     fn xhigh_passes_through_only_for_opus_4_7() {
         let req = ResponsesRequest::new("claude-opus-4-7", vec![]).with_reasoning("xhigh");
         let out = to_messages_request(&req);
-        let ThinkingConfig::Adaptive { effort } = out.thinking.unwrap();
-        assert_eq!(effort, "xhigh", "Opus 4.7 must accept xhigh");
+        assert_eq!(out.output_config.as_ref().unwrap().effort, "xhigh");
 
         let req = ResponsesRequest::new("claude-sonnet-4-6", vec![]).with_reasoning("xhigh");
         let out = to_messages_request(&req);
-        let ThinkingConfig::Adaptive { effort } = out.thinking.unwrap();
-        assert_eq!(effort, "high", "non-Opus-4.7 must downgrade xhigh to high");
+        assert_eq!(out.output_config.as_ref().unwrap().effort, "high");
     }
 
     #[test]
     fn minimal_disables_thinking() {
         let req = ResponsesRequest::new("claude-opus-4-7", vec![]).with_reasoning("minimal");
         let out = to_messages_request(&req);
-        assert!(out.thinking.is_none(), "minimal must skip thinking");
+        assert!(out.thinking.is_none());
+        assert!(out.output_config.is_none());
     }
 
     #[test]
     fn haiku_never_gets_thinking() {
         let req = ResponsesRequest::new("claude-haiku-4-5", vec![]).with_reasoning("max");
         let out = to_messages_request(&req);
-        assert!(out.thinking.is_none(), "haiku does not support thinking");
+        assert!(out.thinking.is_none());
+        assert!(out.output_config.is_none());
+    }
+
+    #[test]
+    fn pre_4_6_models_skip_adaptive() {
+        let req = ResponsesRequest::new("claude-sonnet-4-5", vec![]).with_reasoning("high");
+        let out = to_messages_request(&req);
+        assert!(out.thinking.is_none());
+        assert!(out.output_config.is_none());
     }
 
     #[test]

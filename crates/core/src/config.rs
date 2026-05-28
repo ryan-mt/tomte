@@ -102,13 +102,28 @@ pub fn load() -> Config {
 pub fn save(cfg: &Config) -> std::io::Result<()> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir)?;
-    let text = serde_json::to_string_pretty(cfg).unwrap();
+    let persistable = persist_view(cfg);
+    let text = serde_json::to_string_pretty(&persistable).unwrap();
     // Atomic write: a SIGKILL between truncate and write previously left
     // config.json empty, silently resetting all settings on next launch.
     let path = config_file();
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, &path)
+}
+
+/// `max` is the heaviest adaptive-thinking tier on Anthropic and is
+/// deliberately session-only — relaunching the CLI should not silently
+/// re-engage the heaviest spend tier. Persist it as `xhigh` (next step
+/// down). OpenAI models are untouched.
+fn persist_view(cfg: &Config) -> Config {
+    let mut out = cfg.clone();
+    if out.reasoning_effort == "max"
+        && crate::provider::Provider::from_model(&out.model) == crate::provider::Provider::Anthropic
+    {
+        out.reasoning_effort = "xhigh".to_string();
+    }
+    out
 }
 
 #[cfg(test)]
@@ -123,6 +138,25 @@ mod tests {
         assert_eq!(migrate_legacy_model_name("gpt-5.4-pro"), "gpt-5-pro");
         assert_eq!(migrate_legacy_model_name("gpt-5.4-mini"), "gpt-5-mini");
         assert_eq!(migrate_legacy_model_name("gpt-5.4-nano"), "gpt-5-nano");
+    }
+
+    #[test]
+    fn persist_view_downgrades_max_to_xhigh_for_anthropic() {
+        let mut cfg = Config::default();
+        cfg.model = "claude-opus-4-7".into();
+        cfg.reasoning_effort = "max".into();
+        let p = super::persist_view(&cfg);
+        assert_eq!(p.reasoning_effort, "xhigh");
+        assert_eq!(cfg.reasoning_effort, "max");
+    }
+
+    #[test]
+    fn persist_view_leaves_openai_max_alone() {
+        let mut cfg = Config::default();
+        cfg.model = "gpt-5".into();
+        cfg.reasoning_effort = "max".into();
+        let p = super::persist_view(&cfg);
+        assert_eq!(p.reasoning_effort, "max");
     }
 
     #[test]
