@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{Query, State};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -15,33 +16,81 @@ use opencli_core::config;
 use opencli_core::openai::OpenAiClient;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Clone)]
 struct AppState {
     sessions: Arc<Mutex<std::collections::HashMap<String, Arc<Mutex<Agent>>>>>,
+    /// Per-process bearer token. Required on every /api request to defeat
+    /// drive-by browser CSRF from other localhost services or visited pages.
+    auth_token: Arc<String>,
+    /// Canonicalised cwd captured at startup. The WS `start` frame's `cwd`
+    /// field is restricted to this directory (or a subdirectory) so a
+    /// malicious WS client can't pivot the agent's working directory to
+    /// `/etc` or `~/.ssh`.
+    base_cwd: Arc<PathBuf>,
 }
 
 pub async fn serve(port: u16) -> Result<()> {
+    let auth_token = generate_token();
+    let base_cwd = std::env::current_dir()?
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // Persist token to a 0600 file under the config dir so the bundled UI
+    // (or a sibling tool) can read it without requiring the user to paste
+    // it manually. Same-machine processes already share the user account,
+    // so file ACLs are sufficient.
+    if let Err(e) = write_token_file(&auth_token) {
+        tracing::warn!(error = %e, "could not persist server token; UI may need it pasted manually");
+    }
+
     let state = AppState {
         sessions: Arc::new(Mutex::new(Default::default())),
+        auth_token: Arc::new(auth_token.clone()),
+        base_cwd: Arc::new(base_cwd),
     };
 
+    // Lock CORS down to same-origin loopback (prod) + Vite dev (5173).
+    // Wildcard `Any` previously let any visited page issue authenticated
+    // POSTs to the local server.
+    let port_for_cors = port;
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin([
+            format!("http://127.0.0.1:{port_for_cors}").parse::<HeaderValue>()?,
+            format!("http://localhost:{port_for_cors}").parse::<HeaderValue>()?,
+            "http://127.0.0.1:5173".parse::<HeaderValue>()?,
+            "http://localhost:5173".parse::<HeaderValue>()?,
+        ])
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            "x-opencli-token".parse()?,
+        ])
+        .allow_credentials(true);
 
     let ui_dir = locate_ui_dist();
 
-    let mut app = Router::new()
-        .route("/api/status", get(api_status))
+    // Routes that mutate or expose privileged data require the bearer token.
+    let auth_state = state.clone();
+    let protected = Router::new()
         .route("/api/login", post(api_login))
         .route("/api/logout", post(api_logout))
         .route("/api/config", get(api_get_config).post(api_set_config))
         .route("/api/chat", get(ws_chat))
-        .with_state(state)
+        .with_state(state.clone())
+        .route_layer(axum::middleware::from_fn_with_state(
+            auth_state,
+            require_token,
+        ));
+
+    // /api/status is left open so the UI can detect the server before it has
+    // a token to present. The response carries no credentials — just a mode
+    // string and model name — so leaving it unauthenticated is acceptable.
+    let mut app = Router::new()
+        .route("/api/status", get(api_status))
+        .merge(protected)
         .layer(cors);
 
     if let Some(dir) = ui_dir {
@@ -56,8 +105,93 @@ pub async fn serve(port: u16) -> Result<()> {
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("✅  Server running at http://{addr}");
+    println!("🔑  Auth token: {auth_token}");
+    println!("    UI: open http://{addr}?token={auth_token} (or paste header `X-OpenCLI-Token`)");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn generate_token() -> String {
+    use base64::Engine;
+    use rand::RngCore;
+    let mut b = [0u8; 24];
+    rand::thread_rng().fill_bytes(&mut b);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+}
+
+/// Write the bearer token to `<config_dir>/server-token` with mode 0600 on
+/// Unix so co-tenant tools on the same machine can pick it up without
+/// requiring the user to copy/paste.
+fn write_token_file(token: &str) -> std::io::Result<()> {
+    let dir = opencli_core::config::config_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("server-token");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)?;
+        f.write_all(token.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&path, token)?;
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct TokenQuery {
+    #[serde(default)]
+    token: Option<String>,
+}
+
+/// Axum middleware: require the per-process bearer token on every /api
+/// request. Accepts either an `X-OpenCLI-Token` header or a `?token=`
+/// query parameter (the WS upgrade has no other practical channel).
+async fn require_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<TokenQuery>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let header_tok = headers
+        .get("x-opencli-token")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let provided = header_tok.or(q.token);
+    let expected = state.auth_token.as_str();
+    let ok = provided
+        .as_deref()
+        .map(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()))
+        .unwrap_or(false);
+    if !ok {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "missing or invalid X-OpenCLI-Token"})),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
+/// Constant-time byte-string comparison — finishes in time proportional to
+/// the length without leaking the prefix match length via early exit.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn locate_ui_dist() -> Option<PathBuf> {
@@ -243,10 +377,25 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             }
             let mut agent = Agent::new(client, cfg);
             agent.require_approval = true;
+            // cwd containment: canonicalize and require the path to be the
+            // server's startup cwd or a subdirectory of it. Without this a
+            // malicious WS client could send `{"cwd":"/"}` and pivot the
+            // agent into reading /etc/passwd via the `read_file` tool.
             if let Some(cwd) = start.cwd {
-                let p = std::path::PathBuf::from(cwd);
-                if p.is_dir() {
-                    agent.cwd = p;
+                let p = std::path::PathBuf::from(&cwd);
+                match p.canonicalize() {
+                    Ok(canon) if canon.starts_with(state.base_cwd.as_path()) && canon.is_dir() => {
+                        agent.cwd = canon;
+                    }
+                    _ => {
+                        let _ = socket
+                            .send(Message::Text(json_err(format!(
+                                "cwd {cwd:?} is outside the server's base directory {} or does not exist",
+                                state.base_cwd.display()
+                            ))))
+                            .await;
+                        return;
+                    }
                 }
             }
             let arc = Arc::new(Mutex::new(agent));
