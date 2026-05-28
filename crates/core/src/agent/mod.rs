@@ -553,6 +553,8 @@ impl Agent {
                     });
                 }
                 let _ = tx.send(AgentEvent::TurnComplete).await;
+                // Best-effort end-of-turn Stop hook.
+                self.hooks.fire_stop().await;
                 return Ok(());
             }
 
@@ -765,6 +767,9 @@ impl Agent {
                             error: is_err,
                         })
                         .await;
+                    // Best-effort PostToolUse hook. We do not propagate
+                    // failures from here — the call already happened.
+                    hooks_for_post.fire_post(&tool_name, &post_args, &output, is_err).await;
                     (call_id, output, is_err)
                 }
             });
