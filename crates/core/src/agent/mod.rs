@@ -54,6 +54,9 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 /// without per-call approval even when `require_approval` is on.
 const ALWAYS_AUTO_TOOLS: &[&str] = &["todo_write"];
 
+/// File-mutation tools auto-approved in "accept edits" mode.
+const EDIT_TOOLS: &[&str] = &["write_file", "edit_file", "multi_edit", "undo_last_edit"];
+
 pub fn model_context_limit(model: &str) -> u64 {
     let m = model.to_ascii_lowercase();
     if m.contains("nano") { 200_000 }
@@ -84,6 +87,9 @@ pub struct Agent {
     pub hooks: Arc<crate::hooks::HookSet>,
     pub pending_approvals: Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
     pub require_approval: bool,
+    /// When true, file-edit tools auto-approve even though `require_approval`
+    /// is on. Powers "accept edits" mode in the TUI; shell still prompts.
+    pub auto_approve_edits: bool,
 }
 
 impl Agent {
@@ -102,6 +108,7 @@ impl Agent {
             session_created_ms: crate::session::now_ms(),
             pending_approvals: Arc::new(Mutex::new(std::collections::HashMap::new())),
             require_approval: false,
+            auto_approve_edits: false,
         }
     }
 
@@ -517,10 +524,14 @@ impl Agent {
                                         ));
                                     }
                                     crate::hooks::HookDecision::Allow => {
+                                        let auto_via_accept_edits =
+                                            self.auto_approve_edits
+                                                && EDIT_TOOLS.contains(&pc.name.as_str());
                                         let needs_gate = self.require_approval
                                             && matches!(self.approval, ApprovalMode::OnRequest | ApprovalMode::Manual)
                                             && !t.is_read_only()
-                                            && !ALWAYS_AUTO_TOOLS.contains(&pc.name.as_str());
+                                            && !ALWAYS_AUTO_TOOLS.contains(&pc.name.as_str())
+                                            && !auto_via_accept_edits;
                                         if needs_gate {
                                             let diff_preview = t.compute_preview(&args, &ctx).await;
                                             let (resp_tx, resp_rx) = tokio::sync::oneshot::channel::<bool>();

@@ -26,6 +26,33 @@ use super::picker::{self, Picker};
 use super::ui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionMode {
+    Plan,
+    Default,
+    AcceptEdits,
+    BypassPerms,
+}
+
+impl PermissionMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Plan => Self::Default,
+            Self::Default => Self::AcceptEdits,
+            Self::AcceptEdits => Self::BypassPerms,
+            Self::BypassPerms => Self::Plan,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Plan => "⏸ plan mode",
+            Self::Default => "▸ default (ask)",
+            Self::AcceptEdits => "⏵⏵ accept edits",
+            Self::BypassPerms => "⚠ bypass permissions",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayKind {
     SlashMenu,
     ModelPicker,
@@ -156,6 +183,9 @@ pub struct App {
     /// by `/perms`. Defaults to true so the modal stays on unless the user
     /// explicitly opts out.
     pub require_approval: bool,
+    /// Mirror of `Agent.auto_approve_edits`. Driven by Shift+Tab cycling
+    /// through the four `PermissionMode` states.
+    pub auto_approve_edits: bool,
     /// Set true by /quit and /exit so the main loop can break cleanly,
     /// letting `run()` call restore_terminal before returning. Previously
     /// these commands called std::process::exit(0) which skipped the
@@ -284,6 +314,7 @@ impl App {
             current_turn: None,
             approval: ApprovalMode::OnRequest,
             require_approval: true,
+            auto_approve_edits: false,
             should_exit: false,
             pending_resume_id: None,
             pending_undo: false,
@@ -291,6 +322,43 @@ impl App {
             session_todos: Vec::new(),
             pending_approval: None,
             approval_handle: None,
+        }
+    }
+
+    pub fn permission_mode(&self) -> PermissionMode {
+        if self.approval == ApprovalMode::Plan {
+            PermissionMode::Plan
+        } else if !self.require_approval {
+            PermissionMode::BypassPerms
+        } else if self.auto_approve_edits {
+            PermissionMode::AcceptEdits
+        } else {
+            PermissionMode::Default
+        }
+    }
+
+    pub fn set_permission_mode(&mut self, m: PermissionMode) {
+        match m {
+            PermissionMode::Plan => {
+                self.approval = ApprovalMode::Plan;
+                self.require_approval = true;
+                self.auto_approve_edits = false;
+            }
+            PermissionMode::Default => {
+                self.approval = ApprovalMode::OnRequest;
+                self.require_approval = true;
+                self.auto_approve_edits = false;
+            }
+            PermissionMode::AcceptEdits => {
+                self.approval = ApprovalMode::OnRequest;
+                self.require_approval = true;
+                self.auto_approve_edits = true;
+            }
+            PermissionMode::BypassPerms => {
+                self.approval = ApprovalMode::OnRequest;
+                self.require_approval = false;
+                self.auto_approve_edits = false;
+            }
         }
     }
 
@@ -538,6 +606,12 @@ async fn handle_key(
         return handle_overlay_key(app, key).await;
     }
 
+    if matches!(key.code, KeyCode::BackTab) {
+        let next = app.permission_mode().next();
+        app.set_permission_mode(next);
+        app.blocks.push(Block::System(format!("mode → {}", next.label())));
+        return Ok(false);
+    }
     match key.code {
         KeyCode::Char('c') if ctrl => return Ok(true),
         KeyCode::Char('d') if ctrl && app.input.is_empty() => return Ok(true),
@@ -790,6 +864,7 @@ async fn apply_resume(
             };
             let mut a = Agent::new(client, app.config.clone());
             a.require_approval = app.require_approval;
+            a.auto_approve_edits = app.auto_approve_edits;
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
             a.apply_project_memory();
@@ -1440,6 +1515,7 @@ async fn launch_turn(
         if guard.is_none() {
             let mut a = Agent::new(client, app.config.clone());
             a.require_approval = app.require_approval;
+            a.auto_approve_edits = app.auto_approve_edits;
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
             a.apply_project_memory();
@@ -1451,6 +1527,7 @@ async fn launch_turn(
                 a.cwd = app.cwd.clone();
                 a.approval = app.approval;
                 a.require_approval = app.require_approval;
+                a.auto_approve_edits = app.auto_approve_edits;
             }
         }
         if let Some(a) = guard.as_mut() {

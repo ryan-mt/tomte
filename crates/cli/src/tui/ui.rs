@@ -276,12 +276,13 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_status(f: &mut Frame, area: Rect, app: &App) {
     // Left side: just a small hint or the explicit status line.
+    let mode_label = app.permission_mode().label();
     let left_text = if !app.status_line.is_empty() {
-        app.status_line.clone()
+        format!("{mode_label}  ·  {}", app.status_line)
     } else if app.expanded_tools {
-        "⇲ tool view: expanded · Ctrl+O to collapse".to_string()
+        format!("{mode_label}  ·  ⇲ tool view: expanded · Ctrl+O to collapse")
     } else {
-        "? for shortcuts · Ctrl+O for full tool output".to_string()
+        format!("{mode_label}  ·  shift+tab cycles mode · ? for shortcuts")
     };
     let left_para = Paragraph::new(Line::from(Span::styled(
         left_text,
