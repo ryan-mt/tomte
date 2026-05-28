@@ -858,6 +858,14 @@ async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, model: &str
         if i * 10 >= limit * 8 {
             let _ = tx.send(AgentEvent::ContextWarning { used: i, limit }).await;
         }
+        // 85% threshold escalates to a stronger AutoCompactSuggested so the
+        // TUI can show a sticky banner urging /compact before a hard 1xx
+        // context-window failure on the next turn.
+        if i * 100 >= limit * 85 {
+            let _ = tx
+                .send(AgentEvent::AutoCompactSuggested { used: i, limit })
+                .await;
+        }
     }
 }
 
