@@ -904,7 +904,10 @@ async fn handle_overlay_select(app: &mut App, kind: OverlayKind, key_sel: &str) 
         }
         OverlayKind::ModelPicker => {
             app.config.model = key_sel.to_string();
-            let _ = config::save(&app.config);
+            if let Err(e) = config::save(&app.config) {
+                app.blocks
+                    .push(Block::System(format!("config save failed: {e}")));
+            }
             app.blocks.push(Block::System(format!("model → {key_sel}")));
             if app.chain_to_effort {
                 app.chain_to_effort = false;
@@ -913,13 +916,19 @@ async fn handle_overlay_select(app: &mut App, kind: OverlayKind, key_sel: &str) 
         }
         OverlayKind::EffortPicker => {
             app.config.reasoning_effort = key_sel.to_string();
-            let _ = config::save(&app.config);
+            if let Err(e) = config::save(&app.config) {
+                app.blocks
+                    .push(Block::System(format!("config save failed: {e}")));
+            }
             app.blocks
                 .push(Block::System(format!("effort → {key_sel}")));
         }
         OverlayKind::VerbosityPicker => {
             app.config.verbosity = key_sel.to_string();
-            let _ = config::save(&app.config);
+            if let Err(e) = config::save(&app.config) {
+                app.blocks
+                    .push(Block::System(format!("config save failed: {e}")));
+            }
             app.blocks
                 .push(Block::System(format!("verbosity → {key_sel}")));
         }
@@ -1179,7 +1188,10 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 app.open_overlay(OverlayKind::ModelPicker);
             } else {
                 app.config.model = arg.to_string();
-                let _ = config::save(&app.config);
+                if let Err(e) = config::save(&app.config) {
+                app.blocks
+                    .push(Block::System(format!("config save failed: {e}")));
+            }
                 app.blocks.push(Block::System(format!("model → {arg}")));
             }
         }
@@ -1188,7 +1200,10 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 app.open_overlay(OverlayKind::EffortPicker);
             } else {
                 app.config.reasoning_effort = arg.to_string();
-                let _ = config::save(&app.config);
+                if let Err(e) = config::save(&app.config) {
+                app.blocks
+                    .push(Block::System(format!("config save failed: {e}")));
+            }
                 app.blocks.push(Block::System(format!("effort → {arg}")));
             }
         }
@@ -1197,7 +1212,10 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 app.open_overlay(OverlayKind::VerbosityPicker);
             } else {
                 app.config.verbosity = arg.to_string();
-                let _ = config::save(&app.config);
+                if let Err(e) = config::save(&app.config) {
+                app.blocks
+                    .push(Block::System(format!("config save failed: {e}")));
+            }
                 app.blocks.push(Block::System(format!("verbosity → {arg}")));
             }
         }
