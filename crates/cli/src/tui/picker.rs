@@ -294,9 +294,14 @@ pub fn models() -> Vec<PickerItem> {
             Provider::Anthropic => {
                 items.extend([
                     PickerItem {
+                        key: "claude-opus-4-8".into(),
+                        title: "claude-opus-4-8".into(),
+                        description: "frontier · most capable".into(),
+                    },
+                    PickerItem {
                         key: "claude-opus-4-7".into(),
                         title: "claude-opus-4-7".into(),
-                        description: "frontier · long-running agents".into(),
+                        description: "previous frontier · long-running agents".into(),
                     },
                     PickerItem {
                         key: "claude-opus-4-6".into(),

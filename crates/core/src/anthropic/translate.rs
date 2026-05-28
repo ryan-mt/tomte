@@ -43,15 +43,17 @@ impl EffortPlan {
 /// Anthropic separates the thinking *mode* from the effort *level*: thinking
 /// is `{"type":"adaptive"}` and the level lives in `output_config.effort`.
 /// Sending `effort` inside `thinking` is rejected as an unknown field on
-/// Opus 4.7. Haiku and pre-4.6 models don't support adaptive thinking; we
+/// Opus 4.7/4.8. Haiku and pre-4.6 models don't support adaptive thinking; we
 /// drop the `thinking` field entirely for them rather than fall back to the
-/// deprecated `{"type":"enabled","budget_tokens":N}` shape.
+/// deprecated `{"type":"enabled","budget_tokens":N}` shape. `xhigh` is only
+/// honoured on Opus 4.7/4.8 and clamps down to `high` elsewhere.
 fn map_effort(model: &str, effort: Option<&str>) -> EffortPlan {
     let model_lc = model.to_ascii_lowercase();
     if model_lc.contains("haiku") {
         return EffortPlan::no_thinking();
     }
-    let is_adaptive_capable = model_lc.contains("opus-4-7")
+    let is_adaptive_capable = model_lc.contains("opus-4-8")
+        || model_lc.contains("opus-4-7")
         || model_lc.contains("opus-4-6")
         || model_lc.contains("sonnet-4-6")
         || model_lc.contains("mythos");
@@ -66,7 +68,7 @@ fn map_effort(model: &str, effort: Option<&str>) -> EffortPlan {
         "none" | "minimal" | "disabled" => None,
         "low" | "medium" | "high" | "max" => Some(raw),
         "xhigh" => {
-            if model_lc.contains("opus-4-7") {
+            if model_lc.contains("opus-4-8") || model_lc.contains("opus-4-7") {
                 Some("xhigh")
             } else {
                 Some("high")
@@ -374,6 +376,18 @@ mod tests {
         let req = ResponsesRequest::new("claude-sonnet-4-6", vec![]).with_reasoning("xhigh");
         let out = to_messages_request(&req);
         assert_eq!(out.output_config.as_ref().unwrap().effort, "high");
+    }
+
+    #[test]
+    fn opus_4_8_gets_adaptive_thinking_and_xhigh() {
+        let req = ResponsesRequest::new("claude-opus-4-8", vec![]).with_reasoning("high");
+        let out = to_messages_request(&req);
+        assert!(matches!(out.thinking, Some(ThinkingConfig::Adaptive)));
+        assert_eq!(out.output_config.as_ref().unwrap().effort, "high");
+
+        let req = ResponsesRequest::new("claude-opus-4-8", vec![]).with_reasoning("xhigh");
+        let out = to_messages_request(&req);
+        assert_eq!(out.output_config.as_ref().unwrap().effort, "xhigh");
     }
 
     #[test]

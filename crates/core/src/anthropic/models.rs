@@ -84,10 +84,10 @@ pub struct MessagesRequest {
 }
 
 /// Anthropic thinking config. Newer Claude 4 models (Opus 4.6+, Sonnet 4.6+,
-/// Opus 4.7) accept `{"type":"adaptive"}`; the effort level is sent
+/// Opus 4.7, Opus 4.8) accept `{"type":"adaptive"}`; the effort level is sent
 /// separately via `output_config.effort`. The legacy
 /// `{"type":"enabled","budget_tokens":N}` form is deprecated on Opus 4.6 /
-/// Sonnet 4.6 and rejected on Opus 4.7. Haiku does not support thinking.
+/// Sonnet 4.6 and rejected on Opus 4.7/4.8. Haiku does not support thinking.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ThinkingConfig {
@@ -100,8 +100,8 @@ pub enum ThinkingConfig {
 ///
 /// Effort values per docs:
 ///   - low / medium / high → all adaptive-capable Claude 4 models
-///   - xhigh → Opus 4.7 only (between high and max)
-///   - max  → Opus 4.6+, Sonnet 4.6+, Opus 4.7
+///   - xhigh → Opus 4.7 / Opus 4.8 only (between high and max)
+///   - max  → Opus 4.6+, Sonnet 4.6+, Opus 4.7, Opus 4.8
 #[derive(Debug, Clone, Serialize)]
 pub struct OutputConfig {
     pub effort: String,
