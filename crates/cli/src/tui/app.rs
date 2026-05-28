@@ -1635,7 +1635,12 @@ Type /<name> [args] to expand and send.",
             let cmds = opencli_core::command::load_all(&app.cwd);
             if let Some(cmd) = cmds.iter().find(|c| c.name == other) {
                 let expanded = opencli_core::command::expand(&cmd.body, &cmd.name, arg);
-                app.pending_user_text = Some(expanded);
+                app.input.buffer = expanded;
+                app.input.cursor = app.input.buffer.len();
+                app.blocks.push(Block::System(format!(
+                    "Expanded /{} into input — press Enter to send.",
+                    cmd.name
+                )));
             } else {
                 app.blocks.push(Block::System(format!(
                     "Unknown command /{other}. Try /help, /commands, /agents, or /skills."
