@@ -46,13 +46,17 @@ pub fn load_all(cwd: &Path) -> Vec<CustomCommand> {
     let mut by_name: std::collections::BTreeMap<String, CustomCommand> =
         std::collections::BTreeMap::new();
     for dir in [global_commands_dir(), project_commands_dir(cwd)] {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
             match parse(&text, &path) {
                 Ok(cmd) => {
                     by_name.insert(cmd.name.clone(), cmd);

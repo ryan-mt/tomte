@@ -61,7 +61,9 @@ pub fn load_all() -> Vec<Skill> {
         match std::fs::read_to_string(&skill_md) {
             Ok(text) => match parse(&text, &skill_md) {
                 Ok(skill) => out.push(skill),
-                Err(e) => tracing::warn!(path = %skill_md.display(), error = %e, "skill parse failed"),
+                Err(e) => {
+                    tracing::warn!(path = %skill_md.display(), error = %e, "skill parse failed")
+                }
             },
             Err(e) => tracing::warn!(path = %skill_md.display(), error = %e, "skill read failed"),
         }
@@ -134,7 +136,11 @@ pub fn parse(text: &str, path: &Path) -> Result<Skill> {
     if name.is_empty() {
         // Fall back to the parent directory name so a skill that forgets
         // `name:` still loads usefully.
-        if let Some(parent) = path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()) {
+        if let Some(parent) = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+        {
             name = parent.to_string();
         } else {
             return Err(anyhow!(
@@ -196,7 +202,7 @@ mod tests {
             body: "x".into(),
         };
         let all = vec![s.clone()];
-        assert!(!select_triggered(&all, "build the project").is_empty() == false);
+        assert!(select_triggered(&all, "build the project").is_empty());
         assert!(!select_triggered(&all, "let's COMMIT this").is_empty());
         assert!(!select_triggered(&all, "release notes").is_empty());
         assert!(select_triggered(&all, "unrelated").is_empty());
