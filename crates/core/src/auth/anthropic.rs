@@ -306,29 +306,37 @@ pub async fn ensure_fresh(record: &AuthRecord) -> Result<String> {
     }
 
     let _guard = REFRESH_LOCK.lock().await;
-    let refresh_token = if let Ok(fresh_record) = load_auth() {
-        if let Some(fresh_tokens) = fresh_record.anthropic_tokens.as_ref() {
-            let still_valid = match fresh_tokens.expires_at {
-                Some(t) => t > Utc::now() + chrono::Duration::minutes(2),
-                None => false,
-            };
-            if still_valid {
-                return Ok(fresh_tokens.access_token.clone());
+    // After acquiring the lock, re-load from disk in case a sibling caller
+    // already refreshed while we were waiting. If their swap is still good,
+    // return that access_token directly. Otherwise, still prefer their
+    // (newer, unconsumed) refresh_token and base the save on their record so
+    // we don't clobber fields the sibling already wrote with stale in-memory data.
+    let (base_record, refresh_token) = match load_auth() {
+        Ok(fresh_record) => {
+            if let Some(fresh_tokens) = fresh_record.anthropic_tokens.as_ref() {
+                let still_valid = match fresh_tokens.expires_at {
+                    Some(t) => t > Utc::now() + chrono::Duration::minutes(2),
+                    None => false,
+                };
+                if still_valid {
+                    return Ok(fresh_tokens.access_token.clone());
+                }
+                // Disk has a newer (but expired) record — use its refresh_token
+                // so we don't replay a token already consumed by the sibling.
+                let rt = fresh_tokens.refresh_token.clone();
+                (fresh_record, rt)
+            } else {
+                (record.clone(), tokens.refresh_token.clone())
             }
-            // Prefer the on-disk refresh token; it may have been rotated by a prior refresh cycle.
-            fresh_tokens.refresh_token.clone()
-        } else {
-            tokens.refresh_token.clone()
         }
-    } else {
-        tokens.refresh_token.clone()
+        Err(_) => (record.clone(), tokens.refresh_token.clone()),
     };
 
     let refreshed = refresh_access_token(&refresh_token).await?;
     let expires_at = refreshed
         .expires_in
         .map(|sec| Utc::now() + chrono::Duration::seconds(sec));
-    let mut updated = record.clone();
+    let mut updated = base_record;
     if let Some(st) = updated.anthropic_tokens.as_mut() {
         st.access_token = refreshed.access_token.clone();
         st.refresh_token = refreshed.refresh_token;

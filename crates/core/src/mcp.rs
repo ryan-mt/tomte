@@ -246,8 +246,7 @@ impl McpState {
                 continue;
             };
             if v.get("id").is_some_and(|i| {
-                i.as_u64() == Some(id)
-                    || i.as_str().and_then(|s| s.parse::<u64>().ok()) == Some(id)
+                i.as_u64() == Some(id) || i.as_str().and_then(|s| s.parse::<u64>().ok()) == Some(id)
             }) {
                 if let Some(err) = v.get("error") {
                     return Err(anyhow!("MCP `{method}` error: {err}"));

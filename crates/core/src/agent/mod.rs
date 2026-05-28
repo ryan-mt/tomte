@@ -441,8 +441,7 @@ impl Agent {
                         // the results HashMap, silently dropping one tool output
                         // and leaving an unanswered call in history. Skip the
                         // second item and log the server-side anomaly instead.
-                        if !call_id.is_empty()
-                            && pending_calls.iter().any(|p| p.call_id == call_id)
+                        if !call_id.is_empty() && pending_calls.iter().any(|p| p.call_id == call_id)
                         {
                             tracing::warn!(
                                 call_id = %call_id,

@@ -159,11 +159,10 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                             .unwrap_or("")
                                             .to_string();
                                         if !text.is_empty() {
-                                            if let Some(b) = blocks.get_mut(&index) {
+                                            let item_id = blocks.get_mut(&index).map(|b| {
                                                 b.text_buf.push_str(&text);
-                                            }
-                                            let item_id =
-                                                blocks.get(&index).map(|b| b.item_id.clone());
+                                                b.item_id.clone()
+                                            });
                                             let _ = tx
                                                 .send(Ok(ResponseStreamEvent::OutputTextDelta {
                                                     delta: text,

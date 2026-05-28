@@ -113,19 +113,11 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
             return Some("git clean removes untracked files");
         }
     }
+    const PIPE_INTERPRETERS: &[&str] = &["sh", "bash", "zsh", "dash", "python", "perl"];
     if (lower.contains("curl ") || lower.contains("wget "))
-        && (lower.contains("| sh")
-            || lower.contains("| bash")
-            || lower.contains("|sh")
-            || lower.contains("|bash")
-            || lower.contains("| zsh")
-            || lower.contains("|zsh")
-            || lower.contains("| dash")
-            || lower.contains("|dash")
-            || lower.contains("| python")
-            || lower.contains("|python")
-            || lower.contains("| perl")
-            || lower.contains("|perl"))
+        && PIPE_INTERPRETERS
+            .iter()
+            .any(|s| lower.contains(&format!("| {s}")) || lower.contains(&format!("|{s}")))
     {
         return Some("piping curl/wget output into a shell");
     }

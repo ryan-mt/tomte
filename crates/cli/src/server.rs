@@ -372,7 +372,20 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             if start.model.is_some() || start.reasoning.is_some() {
                 let mut agent = arc.lock().await;
                 if let Some(m) = start.model.clone() {
-                    agent.config.model = m;
+                    // The cached agent's LlmClient is bound to one provider. Only
+                    // apply a model override that stays on that provider; a
+                    // cross-provider switch would POST the new model to the wrong
+                    // endpoint and fail. Rebuilding the client on reconnect (the
+                    // credential-rotation case noted above) is deferred.
+                    if Provider::from_model(&m) == agent.client.provider() {
+                        agent.config.model = m;
+                    } else {
+                        tracing::warn!(
+                            model = %m,
+                            current = ?agent.client.provider(),
+                            "ignoring reconnect model override: would switch provider on a bound client"
+                        );
+                    }
                 }
                 if let Some(r) = start.reasoning.clone() {
                     agent.config.reasoning_effort = r;
