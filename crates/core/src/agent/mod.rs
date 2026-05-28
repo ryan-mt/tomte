@@ -723,6 +723,8 @@ impl Agent {
                 let ctx = ctx.clone();
                 let tx = tx.clone();
                 let tool_name = tool.name().to_string();
+                let hooks_for_post = self.hooks.clone();
+                let post_args = args.clone();
                 async move {
                     let started = std::time::Instant::now();
                     tracing::info!(
