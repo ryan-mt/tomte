@@ -2,22 +2,72 @@
 //!
 //! The agent loop is written against OpenAI's `ResponsesRequest` / `InputItem`
 //! types. To support Claude without rewriting the agent, the Anthropic client
-//! accepts the OpenAI shape and converts it here. The translation is lossy
-//! in one direction (Anthropic has no `reasoning_effort` / `verbosity`), so
-//! those fields are simply dropped.
+//! accepts the OpenAI shape and converts it here. `reasoning_effort` is
+//! mapped onto Anthropic's adaptive-thinking `effort`; `verbosity` is
+//! dropped (no Anthropic equivalent).
 
 use serde_json::Value;
 
 use crate::openai::models::{InputItem, MessageContent, ResponsesRequest, Tool};
 
 use super::models::{
-    AnthropicMessage, ContentBlock, ImageSource, MessagesRequest, SystemBlock, ToolDef,
+    AnthropicMessage, ContentBlock, ImageSource, MessagesRequest, SystemBlock, ThinkingConfig,
+    ToolDef,
 };
 
-/// Maximum tokens to ask Claude to generate per turn. Anthropic requires
-/// `max_tokens` to be set; 32k is a generous default that leaves headroom
-/// for long tool-using turns without truncating real responses.
+/// Default cap when no extended thinking is requested. Anthropic requires
+/// `max_tokens` to be set; 32k leaves headroom for long tool-using turns.
 const DEFAULT_MAX_TOKENS: u32 = 32_000;
+/// Lifted ceiling for `max` effort, which can deliberate for many tokens and
+/// still needs room to emit a final answer.
+const MAX_EFFORT_MAX_TOKENS: u32 = 64_000;
+
+/// Map a reasoning-effort label onto Anthropic adaptive-thinking shape.
+/// Newer Claude 4 models accept `{"type":"adaptive","effort":"<level>"}`
+/// (manual `budget_tokens` is deprecated). Haiku doesn't support thinking.
+///
+/// Effort values per docs:
+///   - low/medium/high  → all adaptive-capable Claude 4 models
+///   - xhigh            → Opus 4.7 only (between high and max)
+///   - max              → Opus 4.6+, Sonnet 4.6+, Opus 4.7
+fn map_effort(model: &str, effort: Option<&str>) -> (Option<ThinkingConfig>, u32) {
+    let model_lc = model.to_ascii_lowercase();
+    if model_lc.contains("haiku") {
+        return (None, DEFAULT_MAX_TOKENS);
+    }
+    let Some(raw) = effort else {
+        return (None, DEFAULT_MAX_TOKENS);
+    };
+    // Normalise: OpenAI "none"/"minimal" disable thinking for Anthropic too.
+    let normalised: Option<&str> = match raw {
+        "none" | "minimal" | "disabled" => None,
+        "low" | "medium" | "high" | "max" => Some(raw),
+        "xhigh" => {
+            if model_lc.contains("opus-4-7") {
+                Some("xhigh")
+            } else {
+                Some("high")
+            }
+        }
+        _ => Some("high"),
+    };
+    match normalised {
+        None => (None, DEFAULT_MAX_TOKENS),
+        Some(level) => {
+            let max_tokens = if level == "max" {
+                MAX_EFFORT_MAX_TOKENS
+            } else {
+                DEFAULT_MAX_TOKENS
+            };
+            (
+                Some(ThinkingConfig::Adaptive {
+                    effort: level.to_string(),
+                }),
+                max_tokens,
+            )
+        }
+    }
+}
 
 pub fn to_messages_request(req: &ResponsesRequest) -> MessagesRequest {
     let mut messages: Vec<AnthropicMessage> = Vec::new();
@@ -97,15 +147,19 @@ pub fn to_messages_request(req: &ResponsesRequest) -> MessagesRequest {
 
     let tools = req.tools.iter().filter_map(tool_to_anthropic).collect();
 
+    let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
+    let (thinking, max_tokens) = map_effort(&req.model, effort);
+
     MessagesRequest {
         model: req.model.clone(),
-        max_tokens: DEFAULT_MAX_TOKENS,
+        max_tokens,
         messages,
         system,
         tools,
         stream: req.stream,
         temperature: None,
         top_p: None,
+        thinking,
     }
 }
 
@@ -255,6 +309,58 @@ mod tests {
         let out = to_messages_request(&req);
         assert_eq!(out.tools.len(), 1);
         assert_eq!(out.tools[0].name, "search");
+    }
+
+    #[test]
+    fn high_effort_emits_adaptive_thinking() {
+        let req = ResponsesRequest::new(
+            "claude-opus-4-7",
+            vec![InputItem::Message {
+                role: "user".into(),
+                content: vec![MessageContent::text("hi")],
+            }],
+        )
+        .with_reasoning("high");
+        let out = to_messages_request(&req);
+        let ThinkingConfig::Adaptive { effort } =
+            out.thinking.expect("high must enable adaptive thinking");
+        assert_eq!(effort, "high");
+    }
+
+    #[test]
+    fn max_effort_lifts_max_tokens() {
+        let req = ResponsesRequest::new("claude-opus-4-7", vec![]).with_reasoning("max");
+        let out = to_messages_request(&req);
+        let ThinkingConfig::Adaptive { effort } = out.thinking.unwrap();
+        assert_eq!(effort, "max");
+        assert!(out.max_tokens > 32_000, "max effort needs lifted ceiling");
+    }
+
+    #[test]
+    fn xhigh_passes_through_only_for_opus_4_7() {
+        let req = ResponsesRequest::new("claude-opus-4-7", vec![]).with_reasoning("xhigh");
+        let out = to_messages_request(&req);
+        let ThinkingConfig::Adaptive { effort } = out.thinking.unwrap();
+        assert_eq!(effort, "xhigh", "Opus 4.7 must accept xhigh");
+
+        let req = ResponsesRequest::new("claude-sonnet-4-6", vec![]).with_reasoning("xhigh");
+        let out = to_messages_request(&req);
+        let ThinkingConfig::Adaptive { effort } = out.thinking.unwrap();
+        assert_eq!(effort, "high", "non-Opus-4.7 must downgrade xhigh to high");
+    }
+
+    #[test]
+    fn minimal_disables_thinking() {
+        let req = ResponsesRequest::new("claude-opus-4-7", vec![]).with_reasoning("minimal");
+        let out = to_messages_request(&req);
+        assert!(out.thinking.is_none(), "minimal must skip thinking");
+    }
+
+    #[test]
+    fn haiku_never_gets_thinking() {
+        let req = ResponsesRequest::new("claude-haiku-4-5", vec![]).with_reasoning("max");
+        let out = to_messages_request(&req);
+        assert!(out.thinking.is_none(), "haiku does not support thinking");
     }
 
     #[test]

@@ -335,6 +335,11 @@ pub fn efforts() -> Vec<PickerItem> {
             description: "no extra reasoning, fastest".into(),
         },
         PickerItem {
+            key: "minimal".into(),
+            title: "minimal".into(),
+            description: "GPT-5 minimal · Claude: same as none".into(),
+        },
+        PickerItem {
             key: "low".into(),
             title: "low".into(),
             description: "light reasoning · latency-sensitive".into(),
@@ -352,7 +357,12 @@ pub fn efforts() -> Vec<PickerItem> {
         PickerItem {
             key: "xhigh".into(),
             title: "xhigh".into(),
-            description: "hardest async / eval workloads".into(),
+            description: "GPT-5 xhigh · Claude Opus 4.7 xhigh".into(),
+        },
+        PickerItem {
+            key: "max".into(),
+            title: "max".into(),
+            description: "Claude adaptive max — top thinking tier".into(),
         },
     ]
 }
