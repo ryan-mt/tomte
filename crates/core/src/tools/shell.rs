@@ -277,7 +277,7 @@ async fn spawn_background(
                 match reader.read(&mut buf).await {
                     Ok(0) => break,
                     Ok(n) => {
-                        state.stdout.lock().await.extend_from_slice(&buf[..n]);
+                        append_capped(&state.stdout, &state.stdout_cursor, &buf[..n]).await;
                     }
                     Err(_) => break,
                 }
@@ -295,7 +295,7 @@ async fn spawn_background(
                 match reader.read(&mut buf).await {
                     Ok(0) => break,
                     Ok(n) => {
-                        state.stderr.lock().await.extend_from_slice(&buf[..n]);
+                        append_capped(&state.stderr, &state.stderr_cursor, &buf[..n]).await;
                     }
                     Err(_) => break,
                 }
@@ -337,6 +337,32 @@ async fn spawn_background(
     Ok(format!(
         "{{\"bash_id\": \"{id}\", \"status\": \"running\"}}"
     ))
+}
+
+/// Per-stream cap on background-shell output retention. A command like
+/// `yes` or `dd if=/dev/urandom` previously filled memory at gigabytes
+/// per minute because the Vec<u8> was never truncated. We retain the
+/// most recent 4 MiB and drop older bytes; the cursor is adjusted so
+/// already-returned bytes stay accounted for.
+const BG_BUFFER_MAX_BYTES: usize = 4 * 1_048_576;
+
+/// Append `chunk`, then truncate from the front if `buf` exceeds the cap.
+/// Locks are acquired in the order (buf, cursor); the reader follows the
+/// same order to avoid deadlock and to close the buf-then-cursor race
+/// that previously let appends slip between the reader's two locks.
+async fn append_capped(
+    buf: &tokio::sync::Mutex<Vec<u8>>,
+    cursor: &tokio::sync::Mutex<usize>,
+    chunk: &[u8],
+) {
+    let mut b = buf.lock().await;
+    let mut c = cursor.lock().await;
+    b.extend_from_slice(chunk);
+    if b.len() > BG_BUFFER_MAX_BYTES {
+        let drop_n = b.len() - BG_BUFFER_MAX_BYTES;
+        b.drain(..drop_n);
+        *c = c.saturating_sub(drop_n);
+    }
 }
 
 #[derive(Deserialize)]
@@ -388,11 +414,16 @@ Parameters:\n\
                 .cloned()
                 .ok_or_else(|| anyhow!("unknown bash_id: {}", a.bash_id))?
         };
-        // Drain new stdout/stderr bytes since the last cursor.
+        // Drain new stdout/stderr bytes since the last cursor. Lock order
+        // (buf, cursor) matches append_capped so the writer can't append new
+        // bytes between us locking buf and updating the cursor — previously
+        // that produced torn reads where the cursor advanced past appended
+        // bytes that were never returned.
         let new_stdout = {
             let buf = state.stdout.lock().await;
             let mut cursor = state.stdout_cursor.lock().await;
-            let slice = &buf[*cursor..];
+            let start = (*cursor).min(buf.len());
+            let slice = &buf[start..];
             let out = String::from_utf8_lossy(slice).into_owned();
             *cursor = buf.len();
             out
@@ -400,7 +431,8 @@ Parameters:\n\
         let new_stderr = {
             let buf = state.stderr.lock().await;
             let mut cursor = state.stderr_cursor.lock().await;
-            let slice = &buf[*cursor..];
+            let start = (*cursor).min(buf.len());
+            let slice = &buf[start..];
             let out = String::from_utf8_lossy(slice).into_owned();
             *cursor = buf.len();
             out
