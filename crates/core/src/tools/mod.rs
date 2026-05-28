@@ -226,7 +226,6 @@ impl Registry {
             .map(|b| b.as_ref())
     }
 
-
     /// Build a registry that contains only the named built-in tools.
     ///
     /// - An empty list, or one containing `"*"`, returns `Self::standard()`
@@ -240,8 +239,7 @@ impl Registry {
         let wildcard = allowed.is_empty() || allowed.iter().any(|t| t == "*");
         if wildcard {
             let mut s = Self::standard();
-            s.tools
-                .retain(|t| t.name() != "dispatch_agent");
+            s.tools.retain(|t| t.name() != "dispatch_agent");
             return s;
         }
         let mut tools: Vec<Box<dyn BuiltinTool>> = Vec::new();

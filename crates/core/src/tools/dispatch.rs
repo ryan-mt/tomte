@@ -130,7 +130,11 @@ Behaviour:\n\
             match ev {
                 AgentEvent::AssistantTextDone { text } => final_text = text,
                 AgentEvent::Error { message } => error_msgs.push(message),
-                AgentEvent::ToolResult { output, error: true, .. } => {
+                AgentEvent::ToolResult {
+                    output,
+                    error: true,
+                    ..
+                } => {
                     // Capture for diagnostic context; do not surface unless
                     // the child produced no final text at all.
                     tool_errors.push(output);

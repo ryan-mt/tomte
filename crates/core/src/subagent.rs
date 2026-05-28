@@ -85,12 +85,8 @@ pub fn load_by_name(name: &str) -> Result<SubagentDefinition> {
         ));
     }
     let path = subagents_dir().join(format!("{name}.md"));
-    let text = std::fs::read_to_string(&path).map_err(|e| {
-        anyhow!(
-            "subagent `{name}` not found at {}: {e}",
-            path.display()
-        )
-    })?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow!("subagent `{name}` not found at {}: {e}", path.display()))?;
     parse(&text, &path)
 }
 
@@ -110,12 +106,12 @@ pub fn parse(text: &str, path: &Path) -> Result<SubagentDefinition> {
         )
     })?;
     let rest = rest.strip_prefix('\n').unwrap_or(rest);
-    let end_idx = rest
-        .find("\n---")
-        .ok_or_else(|| anyhow!(
+    let end_idx = rest.find("\n---").ok_or_else(|| {
+        anyhow!(
             "subagent at {} missing closing `---` frontmatter line",
             path.display()
-        ))?;
+        )
+    })?;
     let frontmatter = &rest[..end_idx];
     let mut body = &rest[end_idx + "\n---".len()..];
     body = body.strip_prefix('\r').unwrap_or(body);
@@ -146,10 +142,8 @@ pub fn parse(text: &str, path: &Path) -> Result<SubagentDefinition> {
                     .filter(|s| !s.is_empty())
                     .collect();
             }
-            "model" => {
-                if !value.is_empty() {
-                    model = Some(value.to_string());
-                }
+            "model" if !value.is_empty() => {
+                model = Some(value.to_string());
             }
             _ => {
                 // Unrecognised keys are ignored, allowing forward-compat
@@ -242,8 +236,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_missing_name() {
-        let err = parse("---\ndescription: only desc\n---\nbody\n", &fake("bad"))
-            .unwrap_err();
+        let err = parse("---\ndescription: only desc\n---\nbody\n", &fake("bad")).unwrap_err();
         assert!(err.to_string().contains("missing required `name`"));
     }
 
