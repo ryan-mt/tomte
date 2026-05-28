@@ -124,6 +124,12 @@ pub struct BackgroundShellState {
 pub struct UndoEntry {
     pub path: std::path::PathBuf,
     pub original_content: Option<String>,
+    /// Mtime snapshot captured immediately after the tool wrote the file.
+    /// Compared against the current mtime at undo time — if the file has
+    /// been touched in between (user edited it externally, another tool,
+    /// an editor save) we refuse to restore so the user's manual changes
+    /// are not silently overwritten. `None` disables the check.
+    pub post_edit_mtime: Option<std::time::SystemTime>,
 }
 
 #[derive(Debug, Default)]

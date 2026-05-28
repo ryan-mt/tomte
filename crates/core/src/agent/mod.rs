@@ -124,6 +124,20 @@ impl Agent {
         use anyhow::{anyhow, Context};
         let entry = { let mut session = self.session.lock().await; session.undo_stack.pop_back() };
         let entry = entry.ok_or_else(|| anyhow!("no edits to undo"))?;
+        // Mirrors the TOCTOU guard in the `undo_last_edit` tool: refuse to
+        // overwrite a file that has been touched since we edited it, so a
+        // user's manual changes can't be silently destroyed by /undo.
+        if let Some(expected) = entry.post_edit_mtime {
+            let current = std::fs::metadata(&entry.path)
+                .and_then(|m| m.modified())
+                .ok();
+            if current != Some(expected) {
+                return Err(anyhow!(
+                    "refusing to undo {}: file has been modified since the edit",
+                    entry.path.display()
+                ));
+            }
+        }
         match entry.original_content {
             Some(content) => {
                 tokio::fs::write(&entry.path, content).await

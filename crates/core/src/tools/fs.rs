@@ -202,7 +202,8 @@ Parameters:\n\
         tokio::fs::write(&path, a.content.as_bytes())
             .await
             .with_context(|| format!("write {}", path.display()))?;
-        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: original });
+        let post_edit_mtime = snapshot_mtime(&path);
+        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: original, post_edit_mtime });
         Ok(format!("Wrote {} bytes to {}", a.content.len(), path.display()))
     }
 }
@@ -299,7 +300,8 @@ Parameters:\n\
         tokio::fs::rename(&tmp, &path)
             .await
             .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
-        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: Some(original) });
+        let post_edit_mtime = snapshot_mtime(&path);
+        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: Some(original), post_edit_mtime });
         Ok(format!("Replaced {} occurrence(s) in {}", count, path.display()))
     }
 }
@@ -480,7 +482,8 @@ Parameters:\n\
         tokio::fs::rename(&tmp, &path)
             .await
             .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
-        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: Some(original_for_undo) });
+        let post_edit_mtime = snapshot_mtime(&path);
+        ctx.session.lock().await.push_undo_entry(super::UndoEntry { path: path.clone(), original_content: Some(original_for_undo), post_edit_mtime });
         Ok(format!(
             "Applied {} edit(s) ({} total replacement(s)) to {}",
             a.edits.len(),
@@ -504,6 +507,19 @@ impl BuiltinTool for UndoLastEdit {
     async fn execute(&self, _args: Value, ctx: &ToolContext) -> Result<String> {
         let entry = { let mut session = ctx.session.lock().await; session.undo_stack.pop_back() };
         let entry = entry.ok_or_else(|| anyhow!("no edits to undo"))?;
+        // TOCTOU guard: refuse to restore if the file has been touched since
+        // the edit. Without this, an `undo_last_edit` after the user manually
+        // edits the file (in their editor, another shell, etc.) would
+        // silently nuke those changes.
+        if let Some(expected) = entry.post_edit_mtime {
+            let current = snapshot_mtime(&entry.path);
+            if current != Some(expected) {
+                return Err(anyhow!(
+                    "refusing to undo {}: file has been modified since the edit; restore manually if intended",
+                    entry.path.display()
+                ));
+            }
+        }
         match entry.original_content {
             Some(content) => {
                 tokio::fs::write(&entry.path, content).await
@@ -517,6 +533,13 @@ impl BuiltinTool for UndoLastEdit {
             }
         }
     }
+}
+
+/// mtime helper used by every edit/write tool to snapshot the file state
+/// immediately after a successful write, and by `UndoLastEdit` to detect
+/// post-edit modifications before restoring.
+fn snapshot_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// Resolve a model-supplied path against the sandbox `cwd`. Rejects absolute
