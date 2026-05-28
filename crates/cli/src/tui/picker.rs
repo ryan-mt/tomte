@@ -255,9 +255,19 @@ pub fn models() -> Vec<PickerItem> {
             Provider::OpenAi => {
                 items.extend([
                     PickerItem {
-                        key: "gpt-5".into(),
-                        title: "gpt-5".into(),
-                        description: "frontier · 1M context · default".into(),
+                        key: "gpt-5.5".into(),
+                        title: "gpt-5.5".into(),
+                        description: "frontier · default".into(),
+                    },
+                    PickerItem {
+                        key: "gpt-5.4".into(),
+                        title: "gpt-5.4".into(),
+                        description: "previous frontier · stable".into(),
+                    },
+                    PickerItem {
+                        key: "gpt-5.3".into(),
+                        title: "gpt-5.3".into(),
+                        description: "older frontier".into(),
                     },
                     PickerItem {
                         key: "gpt-5-pro".into(),
@@ -319,7 +329,7 @@ pub fn models() -> Vec<PickerItem> {
     }
     if items.is_empty() {
         items.push(PickerItem {
-            key: "gpt-5".into(),
+            key: "gpt-5.5".into(),
             title: "(not signed in)".into(),
             description: "run `/login` to choose a provider".into(),
         });

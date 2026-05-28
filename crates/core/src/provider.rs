@@ -44,7 +44,9 @@ impl Provider {
     pub fn available_models(&self) -> &'static [&'static str] {
         match self {
             Self::OpenAi => &[
-                "gpt-5",
+                "gpt-5.5",
+                "gpt-5.4",
+                "gpt-5.3",
                 "gpt-5-pro",
                 "gpt-5-codex",
                 "gpt-5-mini",

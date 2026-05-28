@@ -19,7 +19,7 @@ pub struct Config {
 }
 
 fn default_model() -> String {
-    "gpt-5".to_string()
+    "gpt-5.5".to_string()
 }
 fn default_reasoning_effort() -> String {
     "medium".to_string()
@@ -33,13 +33,11 @@ fn default_verbosity() -> String {
 /// names like `gpt-5.5` that don't resolve at the API, so without this
 /// migration the first turn after upgrade would 404. Idempotent.
 pub fn migrate_legacy_model_name(name: &str) -> String {
+    // gpt-5 / gpt-5.1 / gpt-5.2 were removed from the catalogue in favour
+    // of gpt-5.3 / 5.4 / 5.5. Map old base ids onto the current default so
+    // a returning user keeps a working model after the picker change.
     match name {
-        "gpt-5.5" => "gpt-5".to_string(),
-        "gpt-5.5-pro" => "gpt-5-pro".to_string(),
-        "gpt-5.4" => "gpt-5".to_string(),
-        "gpt-5.4-pro" => "gpt-5-pro".to_string(),
-        "gpt-5.4-mini" => "gpt-5-mini".to_string(),
-        "gpt-5.4-nano" => "gpt-5-nano".to_string(),
+        "gpt-5" | "gpt-5.1" | "gpt-5.2" => "gpt-5.5".to_string(),
         other => other.to_string(),
     }
 }
@@ -132,12 +130,9 @@ mod tests {
 
     #[test]
     fn migrate_legacy_model_name_maps_all_legacy_aliases() {
-        assert_eq!(migrate_legacy_model_name("gpt-5.5"), "gpt-5");
-        assert_eq!(migrate_legacy_model_name("gpt-5.5-pro"), "gpt-5-pro");
-        assert_eq!(migrate_legacy_model_name("gpt-5.4"), "gpt-5");
-        assert_eq!(migrate_legacy_model_name("gpt-5.4-pro"), "gpt-5-pro");
-        assert_eq!(migrate_legacy_model_name("gpt-5.4-mini"), "gpt-5-mini");
-        assert_eq!(migrate_legacy_model_name("gpt-5.4-nano"), "gpt-5-nano");
+        assert_eq!(migrate_legacy_model_name("gpt-5"), "gpt-5.5");
+        assert_eq!(migrate_legacy_model_name("gpt-5.1"), "gpt-5.5");
+        assert_eq!(migrate_legacy_model_name("gpt-5.2"), "gpt-5.5");
     }
 
     #[test]
@@ -162,7 +157,9 @@ mod tests {
     #[test]
     fn migrate_legacy_model_name_passes_through_new_names() {
         for name in [
-            "gpt-5",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.3",
             "gpt-5-pro",
             "gpt-5-codex",
             "gpt-5-mini",
