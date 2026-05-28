@@ -833,7 +833,7 @@ fn render_tool(
                 branch.to_string(),
                 Style::default().fg(Color::Rgb(160, 160, 160)),
             ))
-            .chain(body.spans.into_iter())
+            .chain(body.spans)
             .collect::<Vec<_>>(),
         ));
     }

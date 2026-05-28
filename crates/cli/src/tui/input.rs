@@ -28,7 +28,7 @@ impl TextInput {
             return;
         }
         let before = &self.buffer[..self.cursor];
-        let prev = before.chars().rev().next();
+        let prev = before.chars().next_back();
         if let Some(c) = prev {
             let new_cursor = self.cursor - c.len_utf8();
             self.buffer.replace_range(new_cursor..self.cursor, "");
@@ -62,7 +62,7 @@ impl TextInput {
             return;
         }
         let before = &self.buffer[..self.cursor];
-        if let Some(c) = before.chars().rev().next() {
+        if let Some(c) = before.chars().next_back() {
             self.cursor -= c.len_utf8();
         }
     }

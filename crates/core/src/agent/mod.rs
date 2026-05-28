@@ -315,8 +315,9 @@ impl Agent {
                     Ok(Some(Ok(v))) => v,
                 };
                 match ev {
-                    ResponseStreamEvent::OutputItemAdded { item, .. } => {
-                        if item.get("type").and_then(|v| v.as_str()) == Some("function_call") {
+                    ResponseStreamEvent::OutputItemAdded { item, .. }
+                        if item.get("type").and_then(|v| v.as_str()) == Some("function_call") =>
+                    {
                             let call_id = item
                                 .get("call_id")
                                 .and_then(|v| v.as_str())
@@ -359,12 +360,12 @@ impl Agent {
                                 args_buf,
                             });
                             let _ = tx
-                                .send(AgentEvent::ToolCallStarted { name, call_id })
-                                .await;
-                        }
+                            .send(AgentEvent::ToolCallStarted { name, call_id })
+                            .await;
                     }
-                    ResponseStreamEvent::OutputItemDone { item, .. } => {
-                        if item.get("type").and_then(|v| v.as_str()) == Some("function_call") {
+                    ResponseStreamEvent::OutputItemDone { item, .. }
+                        if item.get("type").and_then(|v| v.as_str()) == Some("function_call") =>
+                    {
                             let call_id = item
                                 .get("call_id")
                                 .and_then(|v| v.as_str())
@@ -384,9 +385,8 @@ impl Agent {
                                 .iter_mut()
                                 .find(|p| p.call_id == call_id || p.item_id == item_id)
                             {
-                                if !arguments.is_empty() {
-                                    pc.args_buf = arguments.clone();
-                                }
+                            if !arguments.is_empty() {
+                                pc.args_buf = arguments.clone();
                             }
                         }
                     }

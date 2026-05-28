@@ -572,7 +572,9 @@ mod tests {
     #[tokio::test]
     async fn background_bash_output_returns_only_new_bytes() {
         let ctx = ctx();
-        // Emit two lines spaced apart so we can poll between them.
+        // Accumulate every poll's stdout so we can assert (a) each line
+        // appears exactly once and (b) both lines arrived — without depending
+        // on a specific poll/print interleaving (inherently racy on CI).
         let out = RunShell
             .execute(
                 json!({
@@ -586,27 +588,35 @@ mod tests {
             .await
             .unwrap();
         let id = parse_bash_id(&out);
-        // First poll: catch "first\n" (may also already include "second" if scheduler is fast — assert weakly).
-        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-        let r1 = BashOutput
-            .execute(json!({"bash_id": id}), &ctx)
-            .await
-            .unwrap();
-        let v1: serde_json::Value = serde_json::from_str(&r1).unwrap();
-        let s1 = v1.get("stdout").unwrap().as_str().unwrap().to_string();
-        assert!(s1.contains("first"), "first poll missed `first`: {r1}");
-
-        // Drain the rest until exit; subsequent polls must NOT re-emit `first`.
-        let r2 = wait_until_status(&ctx, &id, "exited", 5000).await;
-        let v2: serde_json::Value = serde_json::from_str(&r2).unwrap();
-        let s2 = v2.get("stdout").unwrap().as_str().unwrap().to_string();
-        if s1.contains("second") {
-            // Already saw both on first poll — second poll's stdout must be empty.
-            assert!(s2.is_empty(), "cursor leaked stdout: {r2}");
-        } else {
-            assert!(s2.contains("second"), "second never arrived: {r2}");
-            assert!(!s2.contains("first"), "cursor re-emitted first: {r2}");
-        }
+        let mut accumulated = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(5000);
+        let last_status = loop {
+            let raw = BashOutput
+                .execute(json!({"bash_id": id}), &ctx)
+                .await
+                .unwrap();
+            let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            let chunk = v.get("stdout").unwrap().as_str().unwrap().to_string();
+            accumulated.push_str(&chunk);
+            let status = v.get("status").unwrap().as_str().unwrap().to_string();
+            if status.contains("exited") {
+                break status;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("background command never exited; last={raw}, acc={accumulated:?}");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        };
+        assert_eq!(
+            accumulated.matches("first").count(),
+            1,
+            "first must appear exactly once; status={last_status}, got: {accumulated:?}"
+        );
+        assert_eq!(
+            accumulated.matches("second").count(),
+            1,
+            "second must appear exactly once; status={last_status}, got: {accumulated:?}"
+        );
     }
 
     #[tokio::test]

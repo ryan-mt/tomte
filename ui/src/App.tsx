@@ -446,7 +446,7 @@ function StatusBlock({
   );
 }
 
-const MODELS = ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"];
+const MODELS = ["gpt-5", "gpt-5-pro", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano"];
 const REASONING = ["low", "medium", "high", "xhigh"];
 const VERBOSITY = ["low", "medium", "high"];
 

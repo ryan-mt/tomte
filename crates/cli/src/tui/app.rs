@@ -25,6 +25,15 @@ use super::login::{self, LoginScreen, Stage as LoginStage};
 use super::picker::{self, Picker};
 use super::ui;
 
+/// Shared handle into the Agent's in-flight approval map. Cloned from
+/// `Agent.pending_approvals` BEFORE the long-lived `run_turn` lock is taken so
+/// the TUI can deliver Y/N decisions without blocking on the outer agent mutex.
+pub type ApprovalHandle = std::sync::Arc<
+    tokio::sync::Mutex<
+        std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>,
+    >,
+>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionMode {
     Plan,
@@ -216,13 +225,7 @@ pub struct App {
     /// long-lived turn lock so Y/N keystrokes can deliver a decision without
     /// blocking on the outer agent mutex (run_turn holds it for the whole
     /// turn and is itself waiting on this approval).
-    pub approval_handle: Option<
-        std::sync::Arc<
-            tokio::sync::Mutex<
-                std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>,
-            >,
-        >,
-    >,
+    pub approval_handle: Option<ApprovalHandle>,
 }
 
 /// Snapshot of the last `render_chat` output along with the inputs that
@@ -301,8 +304,7 @@ impl App {
         let config = config::load();
         let auth_mode = auth::load_auth().map(|a| a.mode).unwrap_or(AuthMode::None);
         let cwd = std::env::current_dir().unwrap_or_default();
-        let mut blocks = Vec::new();
-        blocks.push(Block::Welcome);
+        let blocks = vec![Block::Welcome];
         let has_env_key = std::env::var("OPENAI_API_KEY")
             .map(|v| !v.is_empty())
             .unwrap_or(false);
@@ -760,32 +762,28 @@ async fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.overlay = None;
             handle_overlay_select(app, kind, &key_sel).await;
         }
-        KeyCode::Backspace => {
-            if kind == OverlayKind::SlashMenu {
-                app.input.backspace();
-                let buf = app.input.buffer.clone();
-                if let Some(rest) = buf.strip_prefix('/') {
-                    let q = rest.to_string();
-                    if let Some((_, p)) = app.overlay.as_mut() {
-                        p.query = q;
-                        p.ensure_visible_selected();
-                    }
-                } else {
-                    app.overlay = None;
-                    app.input.clear();
+        KeyCode::Backspace if kind == OverlayKind::SlashMenu => {
+            app.input.backspace();
+            let buf = app.input.buffer.clone();
+            if let Some(rest) = buf.strip_prefix('/') {
+                let q = rest.to_string();
+                if let Some((_, p)) = app.overlay.as_mut() {
+                    p.query = q;
+                    p.ensure_visible_selected();
                 }
+            } else {
+                app.overlay = None;
+                app.input.clear();
             }
         }
-        KeyCode::Char(c) => {
-            if kind == OverlayKind::SlashMenu {
-                app.input.insert_char(c);
-                let buf = app.input.buffer.clone();
-                if let Some(rest) = buf.strip_prefix('/') {
-                    let q = rest.to_string();
-                    if let Some((_, p)) = app.overlay.as_mut() {
-                        p.query = q;
-                        p.ensure_visible_selected();
-                    }
+        KeyCode::Char(c) if kind == OverlayKind::SlashMenu => {
+            app.input.insert_char(c);
+            let buf = app.input.buffer.clone();
+            if let Some(rest) = buf.strip_prefix('/') {
+                let q = rest.to_string();
+                if let Some((_, p)) = app.overlay.as_mut() {
+                    p.query = q;
+                    p.ensure_visible_selected();
                 }
             }
         }
@@ -1454,12 +1452,11 @@ async fn handle_slash(app: &mut App, cmd: &str) {
 /// Update when official pricing changes; an inexact estimate beats none.
 fn pricing_for(model: &str) -> (f64, f64) {
     match model {
-        "gpt-5.5" => (1.25, 10.0),
-        "gpt-5.5-pro" => (5.00, 20.0),
-        "gpt-5.4" => (1.25, 10.0),
-        "gpt-5.4-pro" => (5.00, 20.0),
-        "gpt-5.4-mini" => (0.15, 0.60),
-        "gpt-5.4-nano" => (0.05, 0.20),
+        "gpt-5" | "gpt-5.5" | "gpt-5.4" => (1.25, 10.0),
+        "gpt-5-pro" | "gpt-5.5-pro" | "gpt-5.4-pro" => (5.00, 20.0),
+        "gpt-5-codex" => (1.25, 10.0),
+        "gpt-5-mini" | "gpt-5.4-mini" => (0.25, 2.00),
+        "gpt-5-nano" | "gpt-5.4-nano" => (0.05, 0.40),
         _ => (1.25, 10.0),
     }
 }

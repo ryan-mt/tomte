@@ -70,7 +70,7 @@ OAuth uses PKCE + the callback `http://localhost:1455/auth/callback`. Tokens are
 
 ```bash
 opencli chat "write a fibonacci function in Python"
-opencli chat --model gpt-5.5-pro --reasoning high "refactor module X"
+opencli chat --model gpt-5-pro --reasoning high "refactor module X"
 echo "read CLAUDE.md and summarize" | opencli chat
 ```
 
@@ -85,14 +85,14 @@ opencli web --no-open
 
 ```bash
 opencli config --show
-opencli config --set-model gpt-5.5-pro --set-reasoning high
+opencli config --set-model gpt-5-pro --set-reasoning high
 ```
 
 Config lives at `$XDG_CONFIG_HOME/opencli/config.json`:
 
 ```json
 {
-  "model": "gpt-5.5",
+  "model": "gpt-5",
   "reasoning_effort": "medium",
   "verbosity": "medium",
   "auto_approve_read": true,
@@ -113,13 +113,17 @@ cd ui && npm install && npm run dev
 
 ## Supported models
 
-| Model            | Context | Notes                                   |
-| ---------------- | ------- | --------------------------------------- |
-| `gpt-5.5`        | 1M      | Default, balanced                       |
-| `gpt-5.5-pro`    | 1M      | Deeper reasoning, harder agent tasks    |
-| `gpt-5.4`        | 1M      | Comparable to 5.5, slower; tool calling |
-| `gpt-5.4-mini`   | 400k    | Fast, cheap                             |
-| `gpt-5.4-nano`   | 200k    | Latency-sensitive                       |
+| Model            | Notes                                                            |
+| ---------------- | ---------------------------------------------------------------- |
+| `gpt-5`          | Default, balanced reasoning + speed                              |
+| `gpt-5-pro`      | Extended reasoning for hard agent tasks                          |
+| `gpt-5-codex`    | Code-specialised model (used via the ChatGPT Codex OAuth backend)|
+| `gpt-5-mini`     | Fast, cheaper, still strong for routine code                     |
+| `gpt-5-nano`     | Latency-sensitive, cheapest                                      |
+
+Older opencli builds shipped placeholder names (`gpt-5.5`, `gpt-5.4-mini`, …).
+`opencli` now auto-migrates those to the matching real model on startup, so an
+existing `config.json` keeps working.
 
 Reasoning effort: `low` · `medium` · `high` · `xhigh`.
 Verbosity: `low` · `medium` · `high`.

@@ -19,7 +19,7 @@ pub struct Config {
 }
 
 fn default_model() -> String {
-    "gpt-5.5".to_string()
+    "gpt-5".to_string()
 }
 fn default_reasoning_effort() -> String {
     "medium".to_string()
@@ -27,6 +27,23 @@ fn default_reasoning_effort() -> String {
 fn default_verbosity() -> String {
     "medium".to_string()
 }
+
+/// Map legacy model names from earlier opencli versions to the real OpenAI
+/// Responses API model IDs. Older `config.json`s shipped with placeholder
+/// names like `gpt-5.5` that don't resolve at the API, so without this
+/// migration the first turn after upgrade would 404. Idempotent.
+pub fn migrate_legacy_model_name(name: &str) -> String {
+    match name {
+        "gpt-5.5" => "gpt-5".to_string(),
+        "gpt-5.5-pro" => "gpt-5-pro".to_string(),
+        "gpt-5.4" => "gpt-5".to_string(),
+        "gpt-5.4-pro" => "gpt-5-pro".to_string(),
+        "gpt-5.4-mini" => "gpt-5-mini".to_string(),
+        "gpt-5.4-nano" => "gpt-5-nano".to_string(),
+        other => other.to_string(),
+    }
+}
+
 
 impl Default for Config {
     fn default() -> Self {
@@ -52,7 +69,7 @@ pub fn config_file() -> PathBuf {
 
 pub fn load() -> Config {
     let path = config_file();
-    match std::fs::read_to_string(&path) {
+    let mut cfg = match std::fs::read_to_string(&path) {
         Ok(s) => match serde_json::from_str::<Config>(&s) {
             Ok(cfg) => cfg,
             Err(e) => {
@@ -69,7 +86,18 @@ pub fn load() -> Config {
             }
         },
         Err(_) => Config::default(),
+    };
+    // Auto-upgrade legacy placeholder model names from earlier opencli builds.
+    let migrated = migrate_legacy_model_name(&cfg.model);
+    if migrated != cfg.model {
+        tracing::info!(
+            old = %cfg.model,
+            new = %migrated,
+            "migrating legacy model name in config.json"
+        );
+        cfg.model = migrated;
     }
+    cfg
 }
 
 pub fn save(cfg: &Config) -> std::io::Result<()> {
@@ -82,4 +110,26 @@ pub fn save(cfg: &Config) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, &path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_legacy_model_name_maps_all_legacy_aliases() {
+        assert_eq!(migrate_legacy_model_name("gpt-5.5"), "gpt-5");
+        assert_eq!(migrate_legacy_model_name("gpt-5.5-pro"), "gpt-5-pro");
+        assert_eq!(migrate_legacy_model_name("gpt-5.4"), "gpt-5");
+        assert_eq!(migrate_legacy_model_name("gpt-5.4-pro"), "gpt-5-pro");
+        assert_eq!(migrate_legacy_model_name("gpt-5.4-mini"), "gpt-5-mini");
+        assert_eq!(migrate_legacy_model_name("gpt-5.4-nano"), "gpt-5-nano");
+    }
+
+    #[test]
+    fn migrate_legacy_model_name_passes_through_new_names() {
+        for name in ["gpt-5", "gpt-5-pro", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano", "o3"] {
+            assert_eq!(migrate_legacy_model_name(name), name);
+        }
+    }
 }

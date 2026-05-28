@@ -342,7 +342,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             .await;
         return;
     }
-    let session_id = start.session_id.unwrap_or_else(|| nanoid_like());
+    let session_id = start.session_id.unwrap_or_else(nanoid_like);
     let prompt = start.prompt.unwrap_or_default();
     if prompt.trim().is_empty() {
         let _ = socket.send(Message::Text(json_err("empty prompt".into()))).await;
