@@ -221,6 +221,13 @@ pub fn slash_commands() -> Vec<PickerItem> {
         item("cwd", "/cwd", "show / set working directory"),
         item("clear", "/clear", "clear the conversation"),
         item("resume", "/resume", "pick a previous session to continue"),
+        item("agents", "/agents", "list installed subagents"),
+        item("skills", "/skills", "list installed skills"),
+        item(
+            "commands",
+            "/commands",
+            "list installed custom slash commands",
+        ),
         item("plan", "/plan", "enter plan mode (read-only tools)"),
         item("normal", "/normal", "leave plan mode"),
         item(
