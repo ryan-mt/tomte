@@ -170,7 +170,7 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| s("message")),
         },
-        other if other.is_empty() => ResponseStreamEvent::Other {
+        "" => ResponseStreamEvent::Other {
             kind: "(no type)".into(),
         },
         other => ResponseStreamEvent::Other { kind: other.into() },

@@ -151,6 +151,6 @@ pub fn list(cwd: &Path) -> Vec<SessionMeta> {
             out.push(rec.meta);
         }
     }
-    out.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    out.sort_by_key(|m| std::cmp::Reverse(m.updated_at_ms));
     out
 }

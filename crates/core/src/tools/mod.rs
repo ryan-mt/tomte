@@ -162,11 +162,12 @@ impl ToolContext {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ApprovalMode {
     /// Auto-approve everything (dangerous).
     Auto,
     /// Auto-approve read-only ops, require approval for writes/shell.
+    #[default]
     OnRequest,
     /// Prompt for every action.
     Manual,
@@ -174,12 +175,6 @@ pub enum ApprovalMode {
     /// before they run; the model receives an error so it can adjust the
     /// plan instead of stalling. Mirrors Claude Code's Plan mode.
     Plan,
-}
-
-impl Default for ApprovalMode {
-    fn default() -> Self {
-        Self::OnRequest
-    }
 }
 
 pub struct Registry {
