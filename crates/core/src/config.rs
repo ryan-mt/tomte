@@ -53,7 +53,21 @@ pub fn config_file() -> PathBuf {
 pub fn load() -> Config {
     let path = config_file();
     match std::fs::read_to_string(&path) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Ok(s) => match serde_json::from_str::<Config>(&s) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                // Silently resetting to defaults on a corrupt file used to make
+                // model/effort changes appear to vanish — log loudly so the
+                // user sees something is wrong instead of debugging mystery
+                // setting resets.
+                tracing::warn!(
+                    config = %path.display(),
+                    error = %e,
+                    "config.json parse failed; falling back to defaults"
+                );
+                Config::default()
+            }
+        },
         Err(_) => Config::default(),
     }
 }

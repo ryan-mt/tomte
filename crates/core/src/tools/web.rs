@@ -31,8 +31,9 @@ Use this when you need the contents of a web page or a public API response — f
 \n\
 Constraints:\n\
 - Only `http://` and `https://` URLs are accepted.\n\
+- Hosts that resolve to loopback / private (RFC1918) / link-local / CGNAT IPs are rejected (cloud metadata endpoints like 169.254.169.254 are unreachable).\n\
 - The request times out after 30 seconds.\n\
-- Redirects are followed automatically.\n\
+- Redirects are NOT followed automatically — a 3xx response is returned verbatim with its `Location` header so the model can decide whether to fetch the next URL.\n\
 - Non-UTF8 bytes are replaced with the Unicode replacement character.\n\
 \n\
 Parameters:\n\
@@ -58,6 +59,10 @@ Parameters:\n\
         if !(a.url.starts_with("http://") || a.url.starts_with("https://")) {
             return Err(anyhow!("URL must start with http:// or https://"));
         }
+        // SSRF guard: resolve the host and reject loopback / RFC1918 / link-local
+        // ranges so the model can't be coaxed into hitting cloud metadata
+        // (169.254.169.254) or internal admin endpoints (127.0.0.1, 10.x).
+        validate_ssrf_safe(&a.url).await?;
         let cap = a
             .max_bytes
             .unwrap_or(DEFAULT_MAX_BYTES)
@@ -65,6 +70,10 @@ Parameters:\n\
         let client = reqwest::Client::builder()
             .user_agent(concat!("opencli/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
+            // Disable automatic redirects: a redirect could send us to a
+            // private address even though the initial host was public. We
+            // surface 3xx + Location in the body so the model can choose.
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
 
         // Retry transient failures: connection errors, DNS hiccups, 5xx.
@@ -111,6 +120,12 @@ Parameters:\n\
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
+        // Surface Location for 3xx so the model can pick the next hop.
+        let location = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
         let bytes = resp
             .bytes()
             .await
@@ -119,11 +134,16 @@ Parameters:\n\
         let truncated = total > cap;
         let slice = &bytes[..total.min(cap)];
         let body = String::from_utf8_lossy(slice);
+        let location_line = match (&location, status.is_redirection()) {
+            (Some(loc), true) => format!("Location: {loc}\n"),
+            _ => String::new(),
+        };
         Ok(format!(
-            "HTTP {} {}\nContent-Type: {}\nBytes: {}{}\n---\n{}",
+            "HTTP {} {}\nContent-Type: {}\n{}Bytes: {}{}\n---\n{}",
             status.as_u16(),
             status.canonical_reason().unwrap_or(""),
             content_type,
+            location_line,
             total,
             if truncated { " (truncated)" } else { "" },
             body
@@ -144,4 +164,84 @@ fn backoff(attempt: u32) -> Duration {
 /// than a definitive protocol error like an invalid URL or redirect loop.
 fn is_transient(e: &reqwest::Error) -> bool {
     e.is_timeout() || e.is_connect() || e.is_request()
+}
+
+/// SSRF guard. Parses `url`, resolves the host, and rejects loopback,
+/// private (RFC1918), link-local (169.254.0.0/16 — AWS metadata),
+/// CGNAT, unspecified, and IPv6 unique-local / link-local addresses.
+///
+/// Note: this only validates the initial host. Automatic redirects are
+/// disabled separately in the caller so a 302 cannot bypass the check.
+/// We do not defend against DNS rebinding (resolving twice and getting a
+/// different address); rebinding would require a determined attacker
+/// controlling DNS, which is outside the local-tool threat model.
+async fn validate_ssrf_safe(url_str: &str) -> Result<()> {
+    let parsed = url::Url::parse(url_str)
+        .with_context(|| format!("parse URL: {url_str}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("URL has no host: {url_str}"))?;
+    let port = parsed.port_or_known_default().unwrap_or(80);
+
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .with_context(|| format!("DNS lookup failed for {host}"))?
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(anyhow!("no addresses resolved for {host}"));
+    }
+
+    for sa in &addrs {
+        if is_blocked_ip(&sa.ip()) {
+            return Err(anyhow!(
+                "blocked: {host} resolves to {} (loopback/private/link-local)",
+                sa.ip()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Returns true for any IP we should refuse to fetch from a model-issued
+/// `web_fetch`. Covers v4 loopback / RFC1918 / link-local / CGNAT /
+/// unspecified / broadcast / documentation, and v6 loopback /
+/// unique-local (fc00::/7) / link-local (fe80::/10) / unspecified /
+/// multicast / IPv4-mapped equivalents.
+fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let oct = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                // CGNAT 100.64.0.0/10
+                || (oct[0] == 100 && (oct[1] & 0xc0) == 64)
+                // Benchmarking 198.18.0.0/15
+                || (oct[0] == 198 && (oct[1] & 0xfe) == 18)
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                return true;
+            }
+            let seg = v6.segments();
+            // Unique-local fc00::/7
+            if (seg[0] & 0xfe00) == 0xfc00 {
+                return true;
+            }
+            // Link-local fe80::/10
+            if (seg[0] & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            // IPv4-mapped: ::ffff:0:0/96 — re-check against v4 rules.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_blocked_ip(&IpAddr::V4(v4));
+            }
+            false
+        }
+    }
 }
