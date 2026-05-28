@@ -205,6 +205,12 @@ pub struct App {
     /// Snapshot of the agent's session todo list, refreshed after every
     /// tool batch via `AgentEvent::TodosSnapshot`. Read by `/todos`.
     pub session_todos: Vec<TodoItem>,
+    /// Memoised wrapped-line output from `render_chat`. Re-using the previous
+    /// frame's lines when nothing relevant has changed (chat length, terminal
+    /// width, last block size, expanded-tools toggle) keeps long sessions out
+    /// of an O(n*frames) textwrap loop. Invalidated implicitly by signature
+    /// comparison inside `render_chat`.
+    pub chat_render_cache: Option<ChatRenderCache>,
     pub pending_approval: Option<PendingApproval>,
     /// Clone of the Agent's `pending_approvals` Arc, captured BEFORE the
     /// long-lived turn lock so Y/N keystrokes can deliver a decision without
@@ -217,6 +223,24 @@ pub struct App {
             >,
         >,
     >,
+}
+
+/// Snapshot of the last `render_chat` output along with the inputs that
+/// produced it. If `signature_matches(...)` returns true on the next frame
+/// the cached `lines` are returned verbatim, skipping the textwrap pass
+/// over every block. The cache is invalidated implicitly: a content change
+/// or width resize produces a new signature, never matches the old one.
+#[derive(Clone)]
+pub struct ChatRenderCache {
+    pub blocks_len: usize,
+    pub inner_width: usize,
+    pub expanded_tools: bool,
+    /// Cheap fingerprint of the most recent block. During streaming the
+    /// last block's text grows; comparing its size detects deltas without
+    /// hashing every block. For non-streaming idle frames this stays
+    /// constant and the cache is hit cleanly.
+    pub last_block_size: usize,
+    pub lines: Vec<ratatui::text::Line<'static>>,
 }
 
 #[derive(Debug, Clone)]
@@ -324,6 +348,7 @@ impl App {
             pending_undo: false,
             start_with_resume_picker: false,
             session_todos: Vec::new(),
+            chat_render_cache: None,
             pending_approval: None,
             approval_handle: None,
         }

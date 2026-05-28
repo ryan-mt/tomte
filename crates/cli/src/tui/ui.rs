@@ -119,7 +119,26 @@ fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
 fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let expanded = app.expanded_tools;
-    let mut lines: Vec<Line> = Vec::new();
+
+    // Re-wrapping every block on every frame is O(blocks * avg_text_len) of
+    // textwrap calls plus matching allocations. For a 500-block chat at
+    // 30Hz that's tens of thousands of textwrap invocations per second and
+    // shows up as visible CPU + lag. Skip the whole pass when nothing
+    // observable has changed since the previous frame.
+    let last_block_size = app.blocks.last().map(block_fingerprint).unwrap_or(0);
+    if let Some(c) = app.chat_render_cache.as_ref() {
+        if c.blocks_len == app.blocks.len()
+            && c.inner_width == inner_width
+            && c.expanded_tools == expanded
+            && c.last_block_size == last_block_size
+        {
+            let lines = c.lines.clone();
+            finalize_chat_render(f, area, app, lines);
+            return;
+        }
+    }
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
     let mut i = 0;
     while i < app.blocks.len() {
         // Group consecutive read_file tool calls into a single block so a
@@ -210,6 +229,50 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
         i += 1;
     }
 
+    // Save into the cache so the next frame can skip the rebuild loop. The
+    // lines clone here is cheap relative to the textwrap pass we just did.
+    app.chat_render_cache = Some(crate::tui::app::ChatRenderCache {
+        blocks_len: app.blocks.len(),
+        inner_width,
+        expanded_tools: expanded,
+        last_block_size,
+        lines: lines.clone(),
+    });
+
+    finalize_chat_render(f, area, app, lines);
+}
+
+/// Compute a cheap fingerprint of a block's mutable content. Streaming
+/// deltas grow `text`/`output`; a length change invalidates the cache. The
+/// fingerprint deliberately ignores identifiers and timing fields because
+/// those don't affect the wrapped output.
+fn block_fingerprint(block: &Block) -> usize {
+    match block {
+        Block::Welcome => 0,
+        Block::User(s) | Block::System(s) => s.len(),
+        Block::Assistant { text, reasoning, thought_for_secs, done, .. } => {
+            // Multiply each field by a distinct prime so e.g. a block that
+            // moves bytes from `reasoning` into `text` still produces a
+            // different fingerprint instead of an accidental cache hit.
+            text.len()
+                .wrapping_mul(31)
+                .wrapping_add(reasoning.len().wrapping_mul(17))
+                .wrapping_add(thought_for_secs.unwrap_or(0) as usize)
+                .wrapping_add(if *done { 1 } else { 0 })
+        }
+        Block::Tool { args, output, error, .. } => {
+            args.len()
+                .wrapping_mul(31)
+                .wrapping_add(output.as_deref().map(|s| s.len()).unwrap_or(0).wrapping_mul(17))
+                .wrapping_add(if *error { 1 } else { 0 })
+        }
+    }
+}
+
+/// Shared tail of `render_chat`: scroll math + Paragraph dispatch. Same
+/// code runs whether we hit the cache (early return) or just rebuilt the
+/// lines; pulled into a helper to keep the two paths in lockstep.
+fn finalize_chat_render(f: &mut Frame, area: Rect, app: &mut App, lines: Vec<Line<'static>>) {
     let total_lines = lines.len();
     let inner_height = area.height.saturating_sub(2) as usize;
     let max_scroll = total_lines.saturating_sub(inner_height) as u16;
