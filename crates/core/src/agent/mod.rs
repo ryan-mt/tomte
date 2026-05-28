@@ -332,6 +332,19 @@ impl Agent {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
+                            // If both ids are missing, downstream args deltas can't
+                            // be matched back to this call — pending_calls would
+                            // hold a ghost entry that any later "empty id" delta
+                            // would corrupt, eventually dispatching a tool with
+                            // bogus or empty arguments. Drop the event with a
+                            // warning instead of pretending it worked.
+                            if call_id.is_empty() && item_id.is_empty() {
+                                tracing::warn!(
+                                    name = %name,
+                                    "function_call event missing both call_id and id; skipping"
+                                );
+                                continue;
+                            }
                             // Some models send the complete arguments inline on the
                             // OutputItemAdded item; capture them as an initial buffer.
                             let args_buf = item
