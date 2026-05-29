@@ -276,6 +276,14 @@ pub struct ChatRenderCache {
     /// constant and the cache is hit cleanly.
     pub last_block_size: usize,
     pub lines: Vec<ratatui::text::Line<'static>>,
+    /// Wrapped lines for every block EXCEPT the last one, when the last block
+    /// renders as its own standalone stanza (the common streaming case: a
+    /// growing `Assistant` block). `None` when the last block has no clean
+    /// split point (e.g. it was merged into a grouped read_file stanza). Lets
+    /// a streaming frame re-wrap only the final block instead of the whole
+    /// transcript — the difference between O(transcript) and O(last block) per
+    /// token, which is what kept long chats from streaming smoothly.
+    pub prefix_lines: Option<Vec<ratatui::text::Line<'static>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1402,7 +1410,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
         "help" | "?" => {
             app.blocks.push(Block::System(
                 "Commands:\n  \
-                 /login              sign in with ChatGPT (OAuth)\n  \
+                 /login              sign in (OpenAI / Anthropic, OAuth or API key)\n  \
                  /apikey <sk-…>      save an API key\n  \
                  /logout             clear credentials\n  \
                  /model              pick model (arrow keys), then reasoning\n  \

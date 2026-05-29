@@ -13,16 +13,13 @@
 //! Terms of Service. Surface [`TOS_WARNING`] in the UI before starting the
 //! flow and require an explicit opt-in.
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
-use tokio::sync::{oneshot, Mutex as AsyncMutex};
+use tokio::sync::Mutex as AsyncMutex;
 
 use super::pkce::{generate_pkce, random_state, Pkce};
 use super::storage::{load_auth, save_auth, AuthMode, AuthRecord, StoredTokens};
@@ -41,16 +38,12 @@ pub const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 pub const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 pub const MANUAL_REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
-pub const DEFAULT_PORT: u16 = 1456;
-pub const FALLBACK_PORT: u16 = 1458;
-const CALLBACK_HOST: &str = "127.0.0.1";
 pub const SCOPES: &str = "org:create_api_key user:profile user:inference";
 
 /// Serializes refresh swaps for the Anthropic refresh-token grant. Two
 /// concurrent turns racing the refresh endpoint would otherwise burn the
 /// single-use refresh_token and brick the credential.
 static REFRESH_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
-type ShutdownHandle = Arc<AsyncMutex<Option<oneshot::Sender<()>>>>;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TokenSet {
@@ -62,9 +55,14 @@ pub struct TokenSet {
     pub scope: Option<String>,
 }
 
-pub struct PendingLogin {
+/// A manual (copy/paste) Anthropic login in progress. The Claude OAuth client
+/// does not register a loopback redirect URI, so the official
+/// `console.anthropic.com/oauth/code/callback` redirect is used instead:
+/// claude.ai shows the user an authorization code which they paste back in.
+pub struct ManualLogin {
     pub auth_url: String,
-    pub completion: tokio::task::JoinHandle<Result<AuthRecord>>,
+    pkce: Pkce,
+    state: String,
 }
 
 pub fn build_authorize_url(redirect_uri: &str, pkce: &Pkce, state: &str) -> String {
@@ -88,188 +86,56 @@ pub fn build_authorize_url(redirect_uri: &str, pkce: &Pkce, state: &str) -> Stri
     format!("{}?{}", AUTHORIZE_URL, qs)
 }
 
-/// Start a browser-based Anthropic OAuth flow. Returns immediately with the
-/// authorize URL so a TUI can display it; `completion` resolves when the
-/// callback fires.
-pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
+/// Begin a manual Anthropic OAuth login: build the authorize URL (optionally
+/// opening the browser) and return the handle needed to finish the flow once
+/// the user pastes the code shown by claude.ai.
+pub fn begin_manual_login(open_browser: bool) -> ManualLogin {
     let pkce = generate_pkce();
     let state = random_state();
-
-    let (_port, redirect_uri, code_rx, shutdown) = spawn_callback_server(&state).await?;
-    let auth_url = build_authorize_url(&redirect_uri, &pkce, &state);
-
+    let auth_url = build_authorize_url(MANUAL_REDIRECT_URI, &pkce, &state);
     if open_browser {
         let _ = webbrowser::open(&auth_url);
     }
-
-    let redirect = redirect_uri.clone();
-    let url = auth_url.clone();
-    let completion = tokio::spawn(async move {
-        let code = match tokio::time::timeout(Duration::from_secs(600), code_rx).await {
-            Ok(Ok(result)) => result?,
-            Ok(Err(_)) => {
-                signal_shutdown(&shutdown).await;
-                return Err(anyhow!("callback channel closed"));
-            }
-            Err(_) => {
-                signal_shutdown(&shutdown).await;
-                return Err(anyhow!("login timed out after 10 minutes"));
-            }
-        };
-
-        let tokens = exchange_code_for_tokens(&redirect, &pkce, &code, &state).await?;
-        let expires_at = tokens.expires_in.and_then(|sec| {
-            // Guard a hostile/buggy out-of-range `expires_in`: chrono's
-            // Duration::seconds and (DateTime + TimeDelta) both PANIC on
-            // overflow. None here is treated as "needs refresh", not a crash.
-            chrono::Duration::try_seconds(sec).and_then(|d| Utc::now().checked_add_signed(d))
-        });
-
-        // Start from a default record if auth.json is missing OR unreadable: a
-        // fresh login is meant to overwrite whatever is there, so propagating a
-        // parse error (`?`) on a corrupt file would needlessly lock the user out
-        // of the self-healing re-login path.
-        let mut record = load_auth().unwrap_or_default();
-        record.mode = AuthMode::AnthropicOauth;
-        record.anthropic_tokens = Some(StoredTokens {
-            access_token: tokens.access_token,
-            refresh_token: tokens.refresh_token,
-            id_token: None,
-            account_id: None,
-            expires_at,
-        });
-        record.last_refresh = Some(Utc::now());
-        save_auth(&record)?;
-        Ok(record)
-    });
-
-    Ok(PendingLogin {
-        auth_url: url,
-        completion,
-    })
+    ManualLogin {
+        auth_url,
+        pkce,
+        state,
+    }
 }
 
-pub async fn login_with_browser(open_browser: bool) -> Result<AuthRecord> {
-    let pending = start_browser_login(open_browser).await?;
-    println!(
-        "\n  Open the following URL to sign in with Claude:\n     {}\n",
-        pending.auth_url
-    );
-    let record = pending
-        .completion
-        .await
-        .map_err(|e| anyhow!("login task panicked: {e}"))??;
-    println!("  Signed in with Claude.");
+/// Finish a manual Anthropic OAuth login with the code the user pasted from the
+/// browser. The pasted value is usually `CODE#STATE`; the `#STATE` fragment is
+/// stripped by [`exchange_code_for_tokens`].
+pub async fn complete_manual_login(login: &ManualLogin, pasted_code: &str) -> Result<AuthRecord> {
+    let code = pasted_code.trim();
+    if code.is_empty() {
+        return Err(anyhow!("no authorization code provided"));
+    }
+    let tokens =
+        exchange_code_for_tokens(MANUAL_REDIRECT_URI, &login.pkce, code, &login.state).await?;
+    let expires_at = tokens.expires_in.and_then(|sec| {
+        // Guard a hostile/buggy out-of-range `expires_in`: chrono's
+        // Duration::seconds and (DateTime + TimeDelta) both PANIC on
+        // overflow. None here is treated as "needs refresh", not a crash.
+        chrono::Duration::try_seconds(sec).and_then(|d| Utc::now().checked_add_signed(d))
+    });
+
+    // Start from a default record if auth.json is missing OR unreadable: a
+    // fresh login is meant to overwrite whatever is there, so propagating a
+    // parse error (`?`) on a corrupt file would needlessly lock the user out
+    // of the self-healing re-login path.
+    let mut record = load_auth().unwrap_or_default();
+    record.mode = AuthMode::AnthropicOauth;
+    record.anthropic_tokens = Some(StoredTokens {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        id_token: None,
+        account_id: None,
+        expires_at,
+    });
+    record.last_refresh = Some(Utc::now());
+    save_auth(&record)?;
     Ok(record)
-}
-
-async fn spawn_callback_server(
-    expected_state: &str,
-) -> Result<(
-    u16,
-    String,
-    oneshot::Receiver<Result<String>>,
-    ShutdownHandle,
-)> {
-    use axum::extract::{Query, State};
-    use axum::response::Html;
-    use axum::routing::get;
-    use axum::Router;
-
-    #[derive(Clone)]
-    struct AppState {
-        tx: Arc<tokio::sync::Mutex<Option<oneshot::Sender<Result<String>>>>>,
-        shutdown_tx: ShutdownHandle,
-        expected_state: String,
-    }
-
-    async fn callback(
-        State(st): State<AppState>,
-        Query(params): Query<HashMap<String, String>>,
-    ) -> Html<String> {
-        let result: Result<String> = (|| {
-            let state = params.get("state").cloned().unwrap_or_default();
-            if state != st.expected_state {
-                return Err(anyhow!("OAuth state mismatch"));
-            }
-            if let Some(err) = params.get("error") {
-                let desc = params.get("error_description").cloned().unwrap_or_default();
-                return Err(anyhow!("OAuth error ({err}): {desc}"));
-            }
-            let code = params
-                .get("code")
-                .cloned()
-                .ok_or_else(|| anyhow!("missing code in callback"))?;
-            Ok(code)
-        })();
-        let ok = result.is_ok();
-        let mut guard = st.tx.lock().await;
-        if let Some(tx) = guard.take() {
-            let _ = tx.send(result);
-        }
-        let body = if ok {
-            include_str!("../assets/success.html")
-        } else {
-            include_str!("../assets/error.html")
-        };
-        // Signal shutdown *after* the response body is ready; axum finishes
-        // sending this response before the server stops. Without this the
-        // callback server runs until process exit, leaking the bound port (a
-        // second in-process login then falls back to FALLBACK_PORT, a third
-        // fails to bind). Mirrors the OpenAI flow in oauth.rs.
-        if let Some(stx) = st.shutdown_tx.lock().await.take() {
-            let _ = stx.send(());
-        }
-        Html(body.to_string())
-    }
-
-    let (tx, rx) = oneshot::channel();
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let shutdown_handle = Arc::new(AsyncMutex::new(Some(shutdown_tx)));
-    let state = AppState {
-        tx: Arc::new(tokio::sync::Mutex::new(Some(tx))),
-        shutdown_tx: shutdown_handle.clone(),
-        expected_state: expected_state.to_string(),
-    };
-    let app = Router::new()
-        .route("/callback", get(callback))
-        .with_state(state);
-
-    let (port, listener) = match try_bind(DEFAULT_PORT).await {
-        Ok(v) => v,
-        Err(_) => try_bind(FALLBACK_PORT)
-            .await
-            .context("Failed to bind Anthropic callback port")?,
-    };
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                // A closed shutdown channel (sender dropped on login timeout)
-                // also releases the port even if no callback ever arrived.
-                let _ = shutdown_rx.await;
-            })
-            .await;
-    });
-
-    let redirect_uri = callback_redirect_uri(port);
-    Ok((port, redirect_uri, rx, shutdown_handle))
-}
-
-async fn signal_shutdown(handle: &ShutdownHandle) {
-    if let Some(tx) = handle.lock().await.take() {
-        let _ = tx.send(());
-    }
-}
-
-async fn try_bind(port: u16) -> Result<(u16, tokio::net::TcpListener)> {
-    let addr: SocketAddr = format!("{CALLBACK_HOST}:{port}").parse()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    let port = listener.local_addr()?.port();
-    Ok((port, listener))
-}
-
-fn callback_redirect_uri(port: u16) -> String {
-    format!("http://{CALLBACK_HOST}:{port}/callback")
 }
 
 fn token_http() -> Result<reqwest::Client> {
@@ -420,10 +286,14 @@ mod tests {
     }
 
     #[test]
-    fn callback_redirect_uri_uses_same_ipv4_host_as_listener() {
-        assert_eq!(
-            callback_redirect_uri(1456),
-            "http://127.0.0.1:1456/callback"
-        );
+    fn authorize_url_uses_manual_redirect_uri() {
+        let pkce = Pkce {
+            code_verifier: "verifier".into(),
+            code_challenge: "challenge".into(),
+        };
+        let url = build_authorize_url(MANUAL_REDIRECT_URI, &pkce, "abc123");
+        assert!(url.contains(
+            "redirect_uri=https%3A%2F%2Fconsole.anthropic.com%2Foauth%2Fcode%2Fcallback"
+        ));
     }
 }

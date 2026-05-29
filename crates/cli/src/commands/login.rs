@@ -101,7 +101,18 @@ async fn login_anthropic_oauth(open_browser: bool) -> Result<()> {
         println!("Cancelled.");
         return Ok(());
     }
-    anth_oauth::login_with_browser(open_browser).await?;
+    let login = anth_oauth::begin_manual_login(open_browser);
+    println!();
+    println!("  Open this URL in your browser to sign in with Claude:");
+    println!("     {}", login.auth_url);
+    println!();
+    println!("  After you approve, claude.ai shows an authorization code.");
+    print!("  Paste the code here and press Enter: ");
+    std::io::stdout().flush().ok();
+    let mut code = String::new();
+    std::io::stdin().lock().read_line(&mut code)?;
+    anth_oauth::complete_manual_login(&login, code.trim()).await?;
+    println!("  Signed in with Claude.");
     Ok(())
 }
 

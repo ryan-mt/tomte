@@ -1,16 +1,16 @@
 //! Onboarding / login screen — first screen when the user is not authenticated.
 //!
-//! UX mirrors Codex CLI:
-//!   ▸ welcome blurb
-//!   ▸ pick mode: Sign in with ChatGPT / Provide your own API key
-//!   ▸ on ChatGPT: shows the auth URL + "Finish signing in via your browser…"
-//!   ▸ on API key: a single-line text input
-//!   ▸ on success: closes login and hands control back to the chat screen
+//! Offers the same four sign-in paths as `opencli login`:
+//!   ▸ OpenAI — ChatGPT account (OAuth via a local browser callback)
+//!   ▸ OpenAI — API key
+//!   ▸ Anthropic — Claude Pro/Max (OAuth, manual code paste, may violate ToS)
+//!   ▸ Anthropic — Console API key
 use std::sync::Arc;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use opencli_core::auth::{self, AuthMode};
+use opencli_core::auth::{self, anthropic as anth, AuthMode};
+use opencli_core::provider::Provider;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -22,15 +22,50 @@ use super::input::TextInput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Option_ {
-    ChatGpt,
-    ApiKey,
+    OpenAiChatGpt,
+    OpenAiApiKey,
+    AnthropicOauth,
+    AnthropicApiKey,
+}
+
+impl Option_ {
+    const ALL: [Option_; 4] = [
+        Option_::OpenAiChatGpt,
+        Option_::OpenAiApiKey,
+        Option_::AnthropicOauth,
+        Option_::AnthropicApiKey,
+    ];
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|o| *o == self).unwrap_or(0)
+    }
+
+    fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    fn prev(self) -> Self {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum Stage {
     PickMode,
-    WaitingForBrowser { url: String },
-    ApiKeyEntry,
+    /// OpenAI OAuth: waiting on the local browser callback.
+    WaitingForBrowser {
+        url: String,
+    },
+    /// API-key entry, shared by both providers.
+    ApiKeyEntry {
+        provider: Provider,
+    },
+    /// Anthropic OAuth: ToS gate shown before the flow starts.
+    AnthropicTos,
+    /// Anthropic OAuth: URL shown, waiting for the user to paste the code.
+    AnthropicPaste {
+        url: String,
+    },
     Success(AuthMode),
     Cancelled,
 }
@@ -39,16 +74,23 @@ pub struct LoginScreen {
     pub stage: Arc<Mutex<Stage>>,
     pub selected: Option_,
     pub api_input: TextInput,
+    pub paste_input: TextInput,
     pub error: Arc<Mutex<Option<String>>>,
+    /// Held between [`Stage::AnthropicPaste`] start and code submission. The
+    /// Claude OAuth client has no loopback redirect, so there is no callback —
+    /// the user pastes the code and we finish the exchange here.
+    anth_pending: Option<anth::ManualLogin>,
 }
 
 impl LoginScreen {
     pub fn new() -> Self {
         Self {
             stage: Arc::new(Mutex::new(Stage::PickMode)),
-            selected: Option_::ChatGpt,
+            selected: Option_::OpenAiChatGpt,
             api_input: TextInput::default(),
+            paste_input: TextInput::default(),
             error: Arc::new(Mutex::new(None)),
+            anth_pending: None,
         }
     }
 
@@ -78,25 +120,40 @@ impl LoginScreen {
                 }
                 Ok(false)
             }
-            Stage::ApiKeyEntry => self.handle_api_key(key).await,
+            Stage::ApiKeyEntry { provider } => self.handle_api_key(key, provider).await,
+            Stage::AnthropicTos => self.handle_tos(key).await,
+            Stage::AnthropicPaste { .. } => self.handle_paste(key).await,
             Stage::Success(_) | Stage::Cancelled => Ok(true),
         }
     }
 
     async fn handle_pick(&mut self, key: KeyEvent) -> Result<bool> {
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.selected = Option_::ChatGpt;
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.selected = Option_::ApiKey;
-            }
-            KeyCode::Char('1') => self.selected = Option_::ChatGpt,
-            KeyCode::Char('2') => self.selected = Option_::ApiKey,
+            KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.prev(),
+            KeyCode::Down | KeyCode::Char('j') => self.selected = self.selected.next(),
+            KeyCode::Char('1') => self.selected = Option_::OpenAiChatGpt,
+            KeyCode::Char('2') => self.selected = Option_::OpenAiApiKey,
+            KeyCode::Char('3') => self.selected = Option_::AnthropicOauth,
+            KeyCode::Char('4') => self.selected = Option_::AnthropicApiKey,
             KeyCode::Enter => match self.selected {
-                Option_::ChatGpt => self.start_chatgpt().await,
-                Option_::ApiKey => {
-                    *self.stage.lock().await = Stage::ApiKeyEntry;
+                Option_::OpenAiChatGpt => self.start_chatgpt().await,
+                Option_::OpenAiApiKey => {
+                    self.api_input.clear();
+                    *self.error.lock().await = None;
+                    *self.stage.lock().await = Stage::ApiKeyEntry {
+                        provider: Provider::OpenAi,
+                    };
+                }
+                Option_::AnthropicOauth => {
+                    *self.error.lock().await = None;
+                    *self.stage.lock().await = Stage::AnthropicTos;
+                }
+                Option_::AnthropicApiKey => {
+                    self.api_input.clear();
+                    *self.error.lock().await = None;
+                    *self.stage.lock().await = Stage::ApiKeyEntry {
+                        provider: Provider::Anthropic,
+                    };
                 }
             },
             _ => {}
@@ -104,7 +161,7 @@ impl LoginScreen {
         Ok(false)
     }
 
-    async fn handle_api_key(&mut self, key: KeyEvent) -> Result<bool> {
+    async fn handle_api_key(&mut self, key: KeyEvent, provider: Provider) -> Result<bool> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
@@ -117,12 +174,23 @@ impl LoginScreen {
                     return Ok(false);
                 }
                 let mut record = auth::load_auth().unwrap_or_default();
-                record.mode = AuthMode::OpenaiApiKey;
-                record.api_key = Some(key_str);
-                record.tokens = None;
+                let mode = match provider {
+                    Provider::OpenAi => {
+                        record.mode = AuthMode::OpenaiApiKey;
+                        record.api_key = Some(key_str);
+                        record.tokens = None;
+                        AuthMode::OpenaiApiKey
+                    }
+                    Provider::Anthropic => {
+                        record.mode = AuthMode::AnthropicApiKey;
+                        record.anthropic_api_key = Some(key_str);
+                        record.anthropic_tokens = None;
+                        AuthMode::AnthropicApiKey
+                    }
+                };
                 match auth::save_auth(&record) {
                     Ok(_) => {
-                        *self.stage.lock().await = Stage::Success(AuthMode::OpenaiApiKey);
+                        *self.stage.lock().await = Stage::Success(mode);
                         return Ok(true);
                     }
                     Err(e) => {
@@ -138,6 +206,74 @@ impl LoginScreen {
             KeyCode::Right => self.api_input.move_right(),
             KeyCode::Home => self.api_input.move_home(),
             KeyCode::End => self.api_input.move_end(),
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn handle_tos(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.code {
+            KeyCode::Esc => {
+                *self.stage.lock().await = Stage::PickMode;
+            }
+            KeyCode::Enter => {
+                // Build the authorize URL and open the browser. Claude's OAuth
+                // client registers no loopback redirect, so the user copies the
+                // code shown by claude.ai back into the paste field.
+                let login = anth::begin_manual_login(true);
+                let url = login.auth_url.clone();
+                self.anth_pending = Some(login);
+                self.paste_input.clear();
+                *self.error.lock().await = None;
+                *self.stage.lock().await = Stage::AnthropicPaste { url };
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    async fn handle_paste(&mut self, key: KeyEvent) -> Result<bool> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => {
+                self.anth_pending = None;
+                *self.stage.lock().await = Stage::PickMode;
+            }
+            KeyCode::Enter => {
+                let code = self.paste_input.buffer.trim().to_string();
+                if code.is_empty() {
+                    *self.error.lock().await = Some("Paste the code from the browser".into());
+                    return Ok(false);
+                }
+                // Borrow ends when `result` is produced, freeing self for the
+                // mutation/lock calls below.
+                let result = match self.anth_pending.as_ref() {
+                    Some(login) => Some(anth::complete_manual_login(login, &code).await),
+                    None => None,
+                };
+                match result {
+                    None => {
+                        *self.error.lock().await = Some("Login expired; start again".into());
+                        *self.stage.lock().await = Stage::PickMode;
+                    }
+                    Some(Ok(_)) => {
+                        self.anth_pending = None;
+                        *self.stage.lock().await = Stage::Success(AuthMode::AnthropicOauth);
+                        return Ok(true);
+                    }
+                    Some(Err(e)) => {
+                        *self.error.lock().await = Some(e.to_string());
+                    }
+                }
+            }
+            KeyCode::Backspace => self.paste_input.backspace(),
+            KeyCode::Char('u') if ctrl => self.paste_input.clear(),
+            KeyCode::Char('w') if ctrl => self.paste_input.delete_word_left(),
+            KeyCode::Char(c) if !ctrl => self.paste_input.insert_char(c),
+            KeyCode::Left => self.paste_input.move_left(),
+            KeyCode::Right => self.paste_input.move_right(),
+            KeyCode::Home => self.paste_input.move_home(),
+            KeyCode::End => self.paste_input.move_end(),
             _ => {}
         }
         Ok(false)
@@ -203,7 +339,11 @@ pub fn render(f: &mut Frame, area: Rect, screen: &LoginScreen, stage: &Stage, er
     match stage {
         Stage::PickMode => render_pick(f, layout[2], screen.selected, err),
         Stage::WaitingForBrowser { url } => render_browser(f, layout[2], url, err),
-        Stage::ApiKeyEntry => render_api_key(f, layout[2], &screen.api_input, err),
+        Stage::ApiKeyEntry { provider } => {
+            render_api_key(f, layout[2], *provider, &screen.api_input, err)
+        }
+        Stage::AnthropicTos => render_tos(f, layout[2], err),
+        Stage::AnthropicPaste { url } => render_paste(f, layout[2], url, &screen.paste_input, err),
         Stage::Success(_) => {}
         Stage::Cancelled => {}
     }
@@ -246,7 +386,7 @@ fn render_tagline(f: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            " powered by OpenAI Responses API",
+            " powered by OpenAI & Anthropic models",
             Style::default().fg(Color::Rgb(180, 180, 180)),
         )),
     ];
@@ -256,16 +396,12 @@ fn render_tagline(f: &mut Frame, area: Rect) {
 fn render_pick(f: &mut Frame, area: Rect, selected: Option_, err: Option<&str>) {
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        " Sign in with ChatGPT to use your paid plan",
+        " Choose how to sign in to opencli",
         Style::default().fg(Color::Rgb(240, 240, 240)),
-    )));
-    lines.push(Line::from(Span::styled(
-        " or use an OpenAI API key for usage-based billing",
-        Style::default().fg(Color::Rgb(190, 190, 190)),
     )));
     lines.push(Line::raw(""));
 
-    let item = |idx: usize, opt: Option_, title: &str, desc: &str| -> Vec<Line<'static>> {
+    let item = |opt: Option_, idx: usize, title: &str, desc: &str| -> Vec<Line<'static>> {
         let is_sel = selected == opt;
         let caret = if is_sel { ">" } else { " " };
         let title_style = if is_sel {
@@ -293,17 +429,28 @@ fn render_pick(f: &mut Frame, area: Rect, selected: Option_, err: Option<&str>) 
         vec![head, sub]
     };
     lines.extend(item(
+        Option_::OpenAiChatGpt,
         1,
-        Option_::ChatGpt,
-        "Sign in with ChatGPT",
+        "OpenAI — Sign in with ChatGPT",
         "Included with Plus, Pro, Business, and Enterprise plans",
     ));
-    lines.push(Line::raw(""));
     lines.extend(item(
+        Option_::OpenAiApiKey,
         2,
-        Option_::ApiKey,
-        "Use an OpenAI API key",
-        "Pay for what you use",
+        "OpenAI — API key",
+        "Pay-as-you-go with an sk-… key",
+    ));
+    lines.extend(item(
+        Option_::AnthropicOauth,
+        3,
+        "Anthropic — Claude Pro/Max (OAuth)",
+        "Uses your claude.ai subscription — MAY violate Anthropic ToS",
+    ));
+    lines.extend(item(
+        Option_::AnthropicApiKey,
+        4,
+        "Anthropic — Console API key",
+        "Pay-as-you-go with an sk-ant-… key",
     ));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
@@ -358,23 +505,128 @@ fn render_browser(f: &mut Frame, area: Rect, url: &str, err: Option<&str>) {
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
-fn render_api_key(f: &mut Frame, area: Rect, input: &TextInput, err: Option<&str>) {
+fn render_tos(f: &mut Frame, area: Rect, err: Option<&str>) {
+    use ratatui::widgets::Wrap;
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        " Claude Pro/Max sign-in — read this first",
+        Style::default()
+            .fg(Color::Rgb(255, 196, 0))
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::raw(""));
+    for raw in anth::TOS_WARNING.lines() {
+        lines.push(Line::from(Span::styled(
+            format!(" {raw}"),
+            Style::default().fg(Color::Rgb(220, 200, 160)),
+        )));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " Press Enter to accept and continue · Esc to cancel",
+        Style::default().fg(Color::Rgb(170, 170, 170)),
+    )));
+    if let Some(e) = err {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            format!(" {e}"),
+            Style::default().fg(Color::Red),
+        )));
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+fn render_paste(f: &mut Frame, area: Rect, url: &str, input: &TextInput, err: Option<&str>) {
+    use ratatui::widgets::Wrap;
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        " Sign in with Claude in your browser…",
+        Style::default()
+            .fg(Color::Rgb(25, 195, 154))
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " If the page didn't open automatically, copy this URL:",
+        Style::default().fg(Color::Rgb(190, 190, 190)),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!(" {url}"),
+        Style::default()
+            .fg(Color::Rgb(120, 200, 255))
+            .add_modifier(Modifier::UNDERLINED),
+    )));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " After approving, paste the authorization code shown by claude.ai:",
+        Style::default().fg(Color::Rgb(230, 230, 230)),
+    )));
+    lines.push(Line::raw(""));
+    let body = if input.is_empty() {
+        Span::styled(
+            "paste code here…",
+            Style::default().fg(Color::Rgb(120, 120, 120)),
+        )
+    } else {
+        Span::styled(input.buffer.clone(), Style::default().fg(Color::White))
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            " > ",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        body,
+        Span::styled("█", Style::default().fg(Color::Gray)),
+    ]));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " Enter to finish · Esc to cancel · Ctrl+U to clear",
+        Style::default().fg(Color::Rgb(170, 170, 170)),
+    )));
+    if let Some(e) = err {
+        lines.push(Line::raw(""));
+        for chunk in textwrap::wrap(e, area.width.saturating_sub(2) as usize) {
+            lines.push(Line::from(Span::styled(
+                format!(" {chunk}"),
+                Style::default().fg(Color::Rgb(255, 120, 120)),
+            )));
+        }
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+fn render_api_key(
+    f: &mut Frame,
+    area: Rect,
+    provider: Provider,
+    input: &TextInput,
+    err: Option<&str>,
+) {
+    let (label, hint, placeholder) = match provider {
+        Provider::OpenAi => (" Paste your OpenAI API key", " starts with sk-…", "sk-…"),
+        Provider::Anthropic => (
+            " Paste your Anthropic API key",
+            " starts with sk-ant-…",
+            "sk-ant-…",
+        ),
+    };
     let masked: String = "•".repeat(input.buffer.chars().count());
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        " Paste your OpenAI API key",
+        label,
         Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
-        " starts with sk-…",
+        hint,
         Style::default().fg(Color::Rgb(170, 170, 170)),
     )));
     lines.push(Line::raw(""));
-    let cursor = "█";
     let body = if input.is_empty() {
-        Span::styled("sk-…", Style::default().fg(Color::Rgb(170, 170, 170)))
+        Span::styled(placeholder, Style::default().fg(Color::Rgb(170, 170, 170)))
     } else {
         Span::styled(masked, Style::default().fg(Color::White))
     };
@@ -386,7 +638,7 @@ fn render_api_key(f: &mut Frame, area: Rect, input: &TextInput, err: Option<&str
                 .add_modifier(Modifier::BOLD),
         ),
         body,
-        Span::styled(cursor, Style::default().fg(Color::Gray)),
+        Span::styled("█", Style::default().fg(Color::Gray)),
     ]));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
@@ -406,7 +658,7 @@ fn render_api_key(f: &mut Frame, area: Rect, input: &TextInput, err: Option<&str
 fn render_footer(f: &mut Frame, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            " opencli · Rust + OpenAI · MIT",
+            " opencli · Rust · MIT",
             Style::default().fg(Color::Rgb(170, 170, 170)),
         ))),
         area,
@@ -448,7 +700,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().await;
         let _env = EnvGuard::set("OPENAI_API_KEY", "sk-secret-should-not-render");
         let mut login = LoginScreen::new();
-        login.selected = Option_::ApiKey;
+        login.selected = Option_::OpenAiApiKey;
 
         let finished = login
             .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -456,7 +708,26 @@ mod tests {
             .unwrap();
 
         assert!(!finished);
-        assert!(matches!(login.stage().await, Stage::ApiKeyEntry));
+        assert!(matches!(
+            login.stage().await,
+            Stage::ApiKeyEntry {
+                provider: Provider::OpenAi
+            }
+        ));
         assert!(login.api_input.is_empty());
+    }
+
+    #[tokio::test]
+    async fn anthropic_oauth_routes_through_tos_gate() {
+        let mut login = LoginScreen::new();
+        login.selected = Option_::AnthropicOauth;
+
+        let finished = login
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert!(!finished);
+        assert!(matches!(login.stage().await, Stage::AnthropicTos));
     }
 }

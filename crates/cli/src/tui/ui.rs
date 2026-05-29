@@ -180,21 +180,55 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
     // shows up as visible CPU + lag. Skip the whole pass when nothing
     // observable has changed since the previous frame.
     let last_block_size = app.blocks.last().map(block_fingerprint).unwrap_or(0);
-    if let Some(c) = app.chat_render_cache.as_ref() {
-        if c.blocks_len == app.blocks.len()
+    let cache_meta_matches = app.chat_render_cache.as_ref().is_some_and(|c| {
+        c.blocks_len == app.blocks.len()
             && c.inner_width == inner_width
             && c.expanded_tools == expanded
-            && c.last_block_size == last_block_size
-        {
-            let lines = c.lines.clone();
+    });
+    if cache_meta_matches {
+        // Borrow the cache only long enough to produce owned lines, so the
+        // mutable cache write below doesn't overlap the immutable read. The
+        // bool says whether the cache's `lines`/`last_block_size` need updating
+        // (true only on the streaming fast path).
+        let hit: Option<(Vec<Line<'static>>, bool)> = {
+            let c = app.chat_render_cache.as_ref().unwrap();
+            if c.last_block_size == last_block_size {
+                // Exact hit: nothing observable changed since last frame.
+                Some((c.lines.clone(), false))
+            } else if let (Some(prefix), Some(Block::Assistant { .. })) =
+                (c.prefix_lines.as_ref(), app.blocks.last())
+            {
+                // Streaming fast path: only the final Assistant block grew.
+                // Reuse the cached prefix; re-wrap just that one block.
+                let mut lines = prefix.clone();
+                push_assistant_lines(&mut lines, app.blocks.last().unwrap(), inner_width);
+                Some((lines, true))
+            } else {
+                None
+            }
+        };
+        if let Some((lines, update_cache)) = hit {
+            if update_cache {
+                if let Some(c) = app.chat_render_cache.as_mut() {
+                    c.lines = lines.clone();
+                    c.last_block_size = last_block_size;
+                }
+            }
             finalize_chat_render(f, area, app, lines);
             return;
         }
     }
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // Records where the final block's lines begin, so a streaming frame can
+    // reuse everything before it. Set only when the last block renders as its
+    // own standalone stanza; left `None` when it merges into a read_file group.
+    let mut prefix_split: Option<usize> = None;
     let mut i = 0;
     while i < app.blocks.len() {
+        if i + 1 == app.blocks.len() {
+            prefix_split = Some(lines.len());
+        }
         // Group consecutive read_file tool calls into a single block so a
         // batch of reads doesn't dominate the chat with one stanza per file.
         if matches!(&app.blocks[i], Block::Tool { name, .. } if name == "read_file") {
@@ -203,6 +237,11 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 && matches!(&app.blocks[j], Block::Tool { name, .. } if name == "read_file")
             {
                 j += 1;
+            }
+            // A group that reaches the end swallows the final block, so there
+            // is no standalone last-block stanza to split on.
+            if j == app.blocks.len() {
+                prefix_split = None;
             }
             render_read_group(&mut lines, &app.blocks[i..j], expanded);
             i = j;
@@ -230,40 +269,8 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 }
                 lines.push(Line::raw(""));
             }
-            Block::Assistant {
-                text,
-                reasoning,
-                thought_for_secs,
-                ..
-            } => {
-                // Compact "Thought for Xs" line once reasoning has completed for this
-                // assistant block. While reasoning is still streaming, we suppress it —
-                // the spinner row already communicates that the model is thinking.
-                if let Some(secs) = thought_for_secs {
-                    lines.push(Line::from(vec![
-                        Span::styled("● ", Style::default().fg(Color::Rgb(200, 120, 220))),
-                        Span::styled(
-                            format!("Thought for {secs}s"),
-                            Style::default()
-                                .fg(Color::Rgb(190, 190, 190))
-                                .add_modifier(Modifier::ITALIC),
-                        ),
-                    ]));
-                    lines.push(Line::raw(""));
-                }
-                // Suppress raw reasoning text in chat history.
-                let _ = reasoning;
-                if !text.is_empty() {
-                    for raw in text.split('\n') {
-                        for l in wrap(raw, inner_width.saturating_sub(2)) {
-                            let spans = render_markdown_inline(&l);
-                            let mut row = vec![Span::raw("  ")];
-                            row.extend(spans);
-                            lines.push(Line::from(row));
-                        }
-                    }
-                    lines.push(Line::raw(""));
-                }
+            Block::Assistant { .. } => {
+                push_assistant_lines(&mut lines, &app.blocks[i], inner_width);
             }
             Block::Tool {
                 name,
@@ -297,15 +304,58 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
 
     // Save into the cache so the next frame can skip the rebuild loop. The
     // lines clone here is cheap relative to the textwrap pass we just did.
+    let prefix_lines = prefix_split.map(|s| lines[..s].to_vec());
     app.chat_render_cache = Some(crate::tui::app::ChatRenderCache {
         blocks_len: app.blocks.len(),
         inner_width,
         expanded_tools: expanded,
         last_block_size,
         lines: lines.clone(),
+        prefix_lines,
     });
 
     finalize_chat_render(f, area, app, lines);
+}
+
+/// Render a single `Assistant` block's wrapped lines into `lines`. Pulled out
+/// of `render_chat`'s main loop so the streaming fast path can re-wrap just the
+/// final block. A no-op for non-Assistant blocks.
+fn push_assistant_lines(lines: &mut Vec<Line<'static>>, block: &Block, inner_width: usize) {
+    let Block::Assistant {
+        text,
+        thought_for_secs,
+        ..
+    } = block
+    else {
+        return;
+    };
+    // Compact "Thought for Xs" line once reasoning has completed for this
+    // assistant block. While reasoning is still streaming, we suppress it —
+    // the spinner row already communicates that the model is thinking.
+    if let Some(secs) = thought_for_secs {
+        lines.push(Line::from(vec![
+            Span::styled("· ", Style::default().fg(Color::Rgb(200, 120, 220))),
+            Span::styled(
+                format!("Thought for {secs}s"),
+                Style::default()
+                    .fg(Color::Rgb(190, 190, 190))
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+        lines.push(Line::raw(""));
+    }
+    // Raw reasoning text is intentionally suppressed in chat history.
+    if !text.is_empty() {
+        for raw in text.split('\n') {
+            for l in wrap(raw, inner_width.saturating_sub(2)) {
+                let spans = render_markdown_inline(&l);
+                let mut row = vec![Span::raw("  ")];
+                row.extend(spans);
+                lines.push(Line::from(row));
+            }
+        }
+        lines.push(Line::raw(""));
+    }
 }
 
 /// Compute a cheap fingerprint of a block's mutable content. Streaming
@@ -380,6 +430,8 @@ fn finalize_chat_render(f: &mut Frame, area: Rect, app: &mut App, lines: Vec<Lin
 }
 
 fn render_input(f: &mut Frame, area: Rect, app: &App) {
+    use ratatui::widgets::{Block as RBlock, BorderType, Borders};
+
     let prompt_color = if app.busy {
         Color::Rgb(160, 160, 160)
     } else {
@@ -389,6 +441,28 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
         .fg(prompt_color)
         .add_modifier(Modifier::BOLD);
 
+    // Rounded border around the prompt, matching Claude Code's input box. The
+    // border dims while a turn is running so the box reads as "not your turn".
+    let border_color = if app.busy {
+        Color::Rgb(80, 80, 80)
+    } else {
+        Color::Rgb(120, 120, 120)
+    };
+    let block = RBlock::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color));
+    let bordered = block.inner(area);
+    f.render_widget(block, area);
+    // One column of breathing room inside the border on each side, so the "> "
+    // prompt isn't flush against the left edge (matches Claude Code's box).
+    let inner = Rect {
+        x: bordered.x.saturating_add(1),
+        y: bordered.y,
+        width: bordered.width.saturating_sub(2),
+        height: bordered.height,
+    };
+
     if app.input.is_empty() {
         let lines = vec![Line::from(vec![
             Span::styled("> ", prompt_style),
@@ -397,9 +471,9 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(Color::Rgb(160, 160, 160)),
             ),
         ])];
-        f.render_widget(Paragraph::new(lines), area);
-        if area.width > 2 && area.height > 0 {
-            f.set_cursor_position((area.x + 2, area.y));
+        f.render_widget(Paragraph::new(lines), inner);
+        if inner.width > 2 && inner.height > 0 {
+            f.set_cursor_position((inner.x + 2, inner.y));
         }
         return;
     }
@@ -409,7 +483,7 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
     // wrap model. ratatui's word Wrap diverged from cursor_pos()'s logical
     // coordinates, which let the cursor drift off the row (and vanish) on long
     // or soft-wrapped input.
-    let content_w = (area.width as usize).saturating_sub(2).max(1);
+    let content_w = (inner.width as usize).saturating_sub(2).max(1);
     let (cur_line, cur_col) = app.input.cursor_pos();
     let mut lines: Vec<Line> = Vec::new();
     let mut cursor_rc: Option<(usize, usize)> = None;
@@ -429,17 +503,17 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    f.render_widget(Paragraph::new(lines), area);
+    f.render_widget(Paragraph::new(lines), inner);
 
     if let Some((row, col)) = cursor_rc {
-        let cx = area
+        let cx = inner
             .x
             .saturating_add(2)
             .saturating_add(u16::try_from(col).unwrap_or(u16::MAX));
-        let cy = area
+        let cy = inner
             .y
             .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
-        if cx < area.x + area.width && cy < area.y + area.height {
+        if cx < inner.x + inner.width && cy < inner.y + inner.height {
             f.set_cursor_position((cx, cy));
         }
     }
@@ -920,7 +994,7 @@ fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block], expanded:
             Span::styled(format!("({})", pretty_path(path)), gray),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("  └ ".to_string(), dim),
+            Span::styled("  ⎿ ".to_string(), dim),
             Span::styled(format!("{} line{}", lc, plural(*lc)), gray),
         ]));
     } else {
@@ -938,8 +1012,7 @@ fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block], expanded:
         ]));
         if expanded {
             for (idx, (path, lc, err, done)) in entries.iter().enumerate() {
-                let last = idx + 1 == count;
-                let branch = if last { "  └ " } else { "  ├ " };
+                let branch = if idx == 0 { "  ⎿ " } else { "    " };
                 let path_style = if *err {
                     Style::default().fg(Color::Red)
                 } else if !*done {
@@ -1013,7 +1086,9 @@ fn render_tool(
         return;
     }
     for (i, body) in body_lines.into_iter().enumerate() {
-        let branch = if i + 1 == total { "  └ " } else { "  │ " };
+        // Claude Code branches the first result line with `⎿`, then aligns any
+        // continuation lines under it — no per-line gutter glyph.
+        let branch = if i == 0 { "  ⎿ " } else { "    " };
         lines.push(Line::from(
             std::iter::once(Span::styled(
                 branch.to_string(),
@@ -1036,7 +1111,8 @@ fn friendly_header(name: &str, args: &serde_json::Value) -> (String, String) {
     match name {
         "read_file" => ("Read".into(), pretty_path(&s("path"))),
         "write_file" => ("Write".into(), pretty_path(&s("path"))),
-        "edit_file" => ("Edit".into(), pretty_path(&s("path"))),
+        "edit_file" => ("Update".into(), pretty_path(&s("path"))),
+        "multi_edit" => ("Update".into(), pretty_path(&s("path"))),
         "list_dir" => ("List".into(), pretty_path(&s("path"))),
         "grep" => {
             let pat = s("pattern");
@@ -1052,6 +1128,18 @@ fn friendly_header(name: &str, args: &serde_json::Value) -> (String, String) {
         }
         "glob" => ("Glob".into(), s("pattern")),
         "todo_write" => ("Update Todos".into(), String::new()),
+        "ask_user_question" => {
+            // The full question + options render in the System block pushed just
+            // below this tool result; the header only needs the first chip label.
+            let first_header = args
+                .get("questions")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|q| q.get("header"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            ("Question".into(), first_header.to_string())
+        }
         "run_shell" => {
             let cmd = s("command");
             let short = if cmd.chars().count() > 80 {
@@ -1359,6 +1447,11 @@ fn friendly_body<'a>(
                 }
             }
         }
+        "ask_user_question" => {
+            // No inline body: the System block rendered right below this tool
+            // result already shows the questions and options. Dumping the raw
+            // envelope JSON here just duplicated it.
+        }
         "glob" | "list_dir" => {
             let total = text.lines().filter(|l| !l.is_empty()).count();
             out.push(Line::from(Span::styled(
@@ -1631,9 +1724,14 @@ fn compact_args(s: &str) -> String {
 
 fn input_height(app: &App) -> u16 {
     let max_visible = (app.last_height / 3).max(3) as usize;
-    let content_w = (app.last_width as usize).saturating_sub(2).max(1);
+    // -6: 1 col of rounded border + 1 col of inner padding on each side (4),
+    // plus the 2-col "> " gutter. Must match the content width used in
+    // `render_input` so the wrapped row count here matches what's actually
+    // drawn (otherwise a long line overflows the box's bottom border).
+    let content_w = (app.last_width as usize).saturating_sub(6).max(1);
     let rows = input_visual_row_count(app.input.lines(), content_w);
     let inner = rows.min(max_visible);
+    // +2 for the top and bottom border rows of the rounded input box.
     (inner as u16).saturating_add(2)
 }
 
