@@ -188,7 +188,8 @@ pub fn parse(text: &str, path: &Path) -> Result<SubagentDefinition> {
     let mut tools: Vec<String> = Vec::new();
     let mut model: Option<String> = None;
 
-    for raw_line in frontmatter.lines() {
+    let mut lines = frontmatter.lines().peekable();
+    while let Some(raw_line) = lines.next() {
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -202,7 +203,30 @@ pub fn parse(text: &str, path: &Path) -> Result<SubagentDefinition> {
             "name" => name = value.to_string(),
             "description" => description = value.to_string(),
             "tools" => {
-                tools = parse_tool_list(value);
+                tools = if value.is_empty() {
+                    // YAML block-sequence form:
+                    //   tools:
+                    //     - Read
+                    //     - Grep
+                    // Without this the `- item` lines (no `:`) are skipped and
+                    // `tools` stays empty → treated as wildcard → the subagent
+                    // silently gets ALL tools instead of the whitelisted set.
+                    let mut collected = Vec::new();
+                    while let Some(peek) = lines.peek() {
+                        let Some(item) = peek.trim().strip_prefix('-') else {
+                            break;
+                        };
+                        let item = strip_quotes(item.trim()).trim().to_string();
+                        if !item.is_empty() {
+                            collected.push(item);
+                        }
+                        lines.next();
+                    }
+                    collected
+                } else {
+                    // Inline form: `tools: read_file, grep` or `["Read","Grep"]`.
+                    parse_tool_list(value)
+                };
             }
             "model" if !value.is_empty() => {
                 model = Some(value.to_string());
@@ -280,6 +304,26 @@ mod tests {
         let text = "---\nname: x\ndescription: y\ntools: read_file, grep, glob\nmodel: gpt-5-mini\n---\nsys\n";
         let def = parse(text, &fake("x")).unwrap();
         assert_eq!(def.tools, vec!["read_file", "grep", "glob"]);
+        assert_eq!(def.model.as_deref(), Some("gpt-5-mini"));
+    }
+
+    #[test]
+    fn parse_yaml_block_tool_list() {
+        // Claude Code agent files often use a YAML block sequence for tools.
+        // Previously these parsed to an empty list → wildcard → the subagent
+        // silently received every tool instead of the whitelist.
+        let text =
+            "---\nname: x\ndescription: y\ntools:\n  - Read\n  - Grep\n  - \"Bash\"\n---\nsys\n";
+        let def = parse(text, &fake("x")).unwrap();
+        assert_eq!(def.tools, vec!["Read", "Grep", "Bash"]);
+    }
+
+    #[test]
+    fn parse_block_tool_list_stops_at_next_key() {
+        // The block collector must not swallow the following `model:` key.
+        let text = "---\nname: x\ndescription: y\ntools:\n  - Read\nmodel: gpt-5-mini\n---\nsys\n";
+        let def = parse(text, &fake("x")).unwrap();
+        assert_eq!(def.tools, vec!["Read"]);
         assert_eq!(def.model.as_deref(), Some("gpt-5-mini"));
     }
 
