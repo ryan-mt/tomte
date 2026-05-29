@@ -543,20 +543,12 @@ Parameters:\n\
         let new_stdout = {
             let buf = state.stdout.lock().await;
             let mut cursor = state.stdout_cursor.lock().await;
-            let start = (*cursor).min(buf.len());
-            let slice = &buf[start..];
-            let out = String::from_utf8_lossy(slice).into_owned();
-            *cursor = buf.len();
-            out
+            drain_utf8(&buf, &mut cursor)
         };
         let new_stderr = {
             let buf = state.stderr.lock().await;
             let mut cursor = state.stderr_cursor.lock().await;
-            let start = (*cursor).min(buf.len());
-            let slice = &buf[start..];
-            let out = String::from_utf8_lossy(slice).into_owned();
-            *cursor = buf.len();
-            out
+            drain_utf8(&buf, &mut cursor)
         };
         let status = state.status.lock().await.label();
         Ok(serde_json::to_string(&json!({
@@ -624,6 +616,27 @@ Parameters:\n\
             }
         }
     }
+}
+
+/// Decode newly-appended bytes from `buf[*cursor..]` as UTF-8, advancing the
+/// cursor only past complete characters. A multi-byte sequence split across a
+/// `bash_output` read boundary is left in the buffer for the next read instead
+/// of being mangled into U+FFFD (the previous code advanced the cursor to
+/// `buf.len()` and lossy-decoded the partial tail). A genuinely invalid byte is
+/// still consumed lossily so a single bad byte can't stall the stream forever.
+fn drain_utf8(buf: &[u8], cursor: &mut usize) -> String {
+    let start = (*cursor).min(buf.len());
+    let slice = &buf[start..];
+    let take = match std::str::from_utf8(slice) {
+        Ok(_) => slice.len(),
+        // Incomplete trailing sequence: stop at the last complete char.
+        Err(e) if e.error_len().is_none() => e.valid_up_to(),
+        // Genuinely invalid byte(s): include them so we make progress.
+        Err(e) => e.valid_up_to() + e.error_len().unwrap(),
+    };
+    let out = String::from_utf8_lossy(&slice[..take]).into_owned();
+    *cursor = start + take;
+    out
 }
 
 #[cfg(test)]
@@ -952,5 +965,30 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("exit_code:"));
+    }
+
+    #[test]
+    fn drain_utf8_keeps_split_multibyte_for_next_read() {
+        // "é" (0xC3 0xA9) arriving split across two reads must not be mangled.
+        let mut buf = vec![0xC3u8];
+        let mut cursor = 0usize;
+        assert_eq!(drain_utf8(&buf, &mut cursor), "");
+        assert_eq!(cursor, 0, "partial trailing byte must stay in the buffer");
+        buf.push(0xA9);
+        assert_eq!(drain_utf8(&buf, &mut cursor), "é");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn drain_utf8_progresses_past_an_invalid_byte() {
+        // A complete prefix is emitted; a lone invalid byte is consumed lossily
+        // so it can't stall the stream.
+        let mut buf = b"ab".to_vec();
+        let mut cursor = 0usize;
+        assert_eq!(drain_utf8(&buf, &mut cursor), "ab");
+        assert_eq!(cursor, 2);
+        buf.push(0xFF);
+        assert_eq!(drain_utf8(&buf, &mut cursor), "\u{FFFD}");
+        assert_eq!(cursor, 3);
     }
 }
