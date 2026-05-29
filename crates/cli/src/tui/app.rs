@@ -2405,6 +2405,13 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             // this, empty Assistant blocks accumulated between back-to-back
             // tool calls.
             rotate_assistant_block(&mut app.blocks);
+            // Invalidate the render cache: this event mutated a non-last block
+            // (the tool's output flipped None->Some) while `rotate_assistant_block`
+            // removed the empty open assistant and pushed a fresh one, leaving
+            // `blocks.len()` unchanged. The cache is keyed on (blocks_len, +
+            // last-block fingerprint), so without this the next frame would
+            // replay the stale lines where the tool still looked pending.
+            app.chat_render_cache = None;
         }
         AgentEvent::TurnComplete => {
             collapse_reasoning_into_thought(app);
@@ -2773,5 +2780,50 @@ mod tests {
         assert_eq!(pricing_for("gpt-5.4-nano"), (0.20, 1.25));
         assert_eq!(pricing_for("gpt-5-mini"), (0.25, 2.00));
         assert_eq!(pricing_for("gpt-5-nano"), (0.05, 0.40));
+    }
+
+    #[test]
+    fn tool_result_invalidates_render_cache() {
+        // A completed tool result mutates a non-last block (output None->Some)
+        // while rotate_assistant_block keeps blocks.len() constant, which the
+        // (blocks_len, last-block fingerprint) cache key alone misses. The
+        // handler must drop the cache so the finished tool re-renders instead
+        // of replaying the stale "pending" lines.
+        let mut app = App::new();
+        apply_agent_event(
+            &mut app,
+            AgentEvent::ToolCallStarted {
+                name: "read_file".to_string(),
+                call_id: "c1".to_string(),
+            },
+        );
+        apply_agent_event(
+            &mut app,
+            AgentEvent::ToolCallArgsDone {
+                call_id: "c1".to_string(),
+                arguments: "{\"path\":\"x\"}".to_string(),
+            },
+        );
+        // Stand in for a frame the renderer already cached.
+        app.chat_render_cache = Some(ChatRenderCache {
+            blocks_len: app.blocks.len(),
+            inner_width: 80,
+            expanded_tools: false,
+            last_block_size: 0,
+            lines: Vec::new(),
+            prefix_lines: None,
+        });
+        apply_agent_event(
+            &mut app,
+            AgentEvent::ToolResult {
+                call_id: "c1".to_string(),
+                output: "done".to_string(),
+                error: false,
+            },
+        );
+        assert!(
+            app.chat_render_cache.is_none(),
+            "tool result must invalidate the stale render cache"
+        );
     }
 }
