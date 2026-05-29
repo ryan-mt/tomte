@@ -2,7 +2,6 @@ use std::io::{Read, Write};
 
 use anyhow::Result;
 use opencli_core::agent::{Agent, AgentEvent};
-use opencli_core::auth::resolve_credential;
 use opencli_core::client::LlmClient;
 use opencli_core::config;
 use opencli_core::provider::Provider;
@@ -42,9 +41,7 @@ pub async fn run(
     }
     let format = normalize_output_format(&output_format)?;
 
-    let provider = Provider::from_model(&cfg.model);
-    let credential = resolve_credential(provider).await?;
-    let client = LlmClient::new(credential)?;
+    let client = LlmClient::for_config(&cfg).await?;
     let mut agent = Agent::new(client, cfg);
     // Match the interactive TUI: load project/global memory and the skill
     // manifest so a one-shot `chat` sees the same context an interactive

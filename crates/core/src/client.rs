@@ -9,6 +9,8 @@ use async_trait::async_trait;
 
 use crate::anthropic::AnthropicClient;
 use crate::auth::Credential;
+use crate::config::Config;
+use crate::openai::chat::ChatCompletionsClient;
 use crate::openai::stream::StreamHandle;
 use crate::openai::{OpenAiClient, ResponsesRequest};
 use crate::provider::Provider;
@@ -39,6 +41,28 @@ impl LlmClient {
         Ok(Self { inner })
     }
 
+    /// Build a client from the active config. A `<id>/<model>` whose `<id>` is
+    /// declared in `config.providers` routes to the OpenAI-compatible Chat
+    /// Completions adapter; everything else uses the built-in OpenAI/Anthropic
+    /// path, resolving the stored credential for the detected provider.
+    pub async fn for_config(cfg: &Config) -> Result<Self> {
+        if let Some((prefix, _)) = cfg.model.split_once('/') {
+            if let Some(pc) = cfg.providers.get(prefix) {
+                let client = ChatCompletionsClient::new(
+                    prefix.to_string(),
+                    pc.base_url.clone(),
+                    pc.resolve_api_key(),
+                )?;
+                return Ok(Self {
+                    inner: Box::new(client),
+                });
+            }
+        }
+        let provider = Provider::from_model(&cfg.model);
+        let credential = crate::auth::resolve_credential(provider).await?;
+        Self::new(credential)
+    }
+
     pub fn provider(&self) -> Provider {
         self.inner.provider()
     }
@@ -49,5 +73,32 @@ impl LlmClient {
 
     pub async fn create(&self, req: ResponsesRequest) -> Result<serde_json::Value> {
         self.inner.create(req).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, ProviderConfig};
+
+    #[tokio::test]
+    async fn for_config_routes_declared_provider_to_chat_adapter() {
+        // A `<id>/<model>` whose id is in `providers` builds without touching
+        // auth.json or the network (the Chat Completions client is local).
+        let cfg = Config {
+            model: "groq/llama-3.3-70b".to_string(),
+            providers: std::collections::HashMap::from([(
+                "groq".to_string(),
+                ProviderConfig {
+                    base_url: "https://api.groq.com/openai/v1".to_string(),
+                    api_key: Some("sk-test".to_string()),
+                    api_key_env: None,
+                },
+            )]),
+            ..Config::default()
+        };
+        let client = LlmClient::for_config(&cfg).await.unwrap();
+        // The Chat Completions adapter reports the OpenAI-compatible protocol.
+        assert_eq!(client.provider(), Provider::OpenAi);
     }
 }

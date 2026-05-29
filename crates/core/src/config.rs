@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +28,41 @@ pub struct Config {
     pub auto_approve_read: bool,
     #[serde(default)]
     pub auto_approve_write: bool,
+    /// Extra OpenAI-compatible providers, keyed by the id used in the `model`
+    /// field as `<id>/<model>` (e.g. `groq/llama-3.3-70b`). Optional and empty
+    /// by default, so existing configs are unaffected.
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderConfig>,
+}
+
+/// Configuration for one OpenAI-compatible (`/v1/chat/completions`) provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    /// API base URL, e.g. `https://api.groq.com/openai/v1`. The adapter appends
+    /// `/chat/completions`.
+    pub base_url: String,
+    /// Literal API key. Prefer `api_key_env` so keys stay out of config.json.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Name of an environment variable to read the API key from (checked first).
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+}
+
+impl ProviderConfig {
+    /// Resolve the API key: the env var named by `api_key_env` (if set and
+    /// non-empty) wins, then the literal `api_key`, else empty (local servers
+    /// such as Ollama/LM Studio accept no key).
+    pub fn resolve_api_key(&self) -> String {
+        if let Some(var) = &self.api_key_env {
+            if let Ok(v) = std::env::var(var) {
+                if !v.is_empty() {
+                    return v;
+                }
+            }
+        }
+        self.api_key.clone().unwrap_or_default()
+    }
 }
 
 fn default_model() -> String {
@@ -65,6 +101,7 @@ impl Default for Config {
             auto_compact: true,
             auto_approve_read: true,
             auto_approve_write: false,
+            providers: HashMap::new(),
         }
     }
 }
@@ -240,5 +277,23 @@ mod tests {
         assert_eq!(normalize_verbosity(" LOW "), Some("low".into()));
         assert_eq!(normalize_verbosity("medium"), Some("medium".into()));
         assert_eq!(normalize_verbosity("xhigh"), None);
+    }
+
+    #[test]
+    fn config_without_providers_parses_to_empty_map() {
+        // Backward compatibility: an old config.json with no `providers` key.
+        let cfg: Config = serde_json::from_str(r#"{"model":"gpt-5.5"}"#).unwrap();
+        assert!(cfg.providers.is_empty());
+    }
+
+    #[test]
+    fn provider_config_parses_and_resolves_literal_key() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"model":"groq/llama","providers":{"groq":{"base_url":"https://api.groq.com/openai/v1","api_key":"sk-literal"}}}"#,
+        )
+        .unwrap();
+        let pc = cfg.providers.get("groq").expect("groq provider present");
+        assert_eq!(pc.base_url, "https://api.groq.com/openai/v1");
+        assert_eq!(pc.resolve_api_key(), "sk-literal");
     }
 }

@@ -17,9 +17,7 @@ use tokio::sync::mpsc;
 
 use super::{BuiltinTool, Registry, ToolContext};
 use crate::agent::{Agent, AgentEvent};
-use crate::auth::resolve_credential;
 use crate::client::LlmClient;
-use crate::provider::Provider;
 use crate::subagent::{load_all, load_by_name, resolve_model_alias};
 
 pub struct DispatchAgent;
@@ -116,9 +114,7 @@ Behaviour:\n\
                 cfg.model = resolve_model_alias(m);
             }
         }
-        let provider = Provider::from_model(&cfg.model);
-        let credential = resolve_credential(provider).await?;
-        let client = LlmClient::new(credential)?;
+        let client = LlmClient::for_config(&cfg).await?;
         let mut agent = Agent::new(client, cfg);
         agent.cwd = ctx.cwd.clone();
         agent.registry = Registry::filtered(&def.tools);

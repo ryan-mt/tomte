@@ -1249,16 +1249,7 @@ async fn apply_resume(
             // Lazily construct an Agent so we can stash the restored state
             // on it. The client will be created on the next turn via
             // launch_turn, which rebuilds it from the active credential.
-            let provider = Provider::from_model(&app.config.model);
-            let credential = match opencli_core::auth::resolve_credential(provider).await {
-                Ok(c) => c,
-                Err(e) => {
-                    app.blocks
-                        .push(Block::System(format!("resume auth error: {e}")));
-                    return;
-                }
-            };
-            let client = match LlmClient::new(credential) {
+            let client = match LlmClient::for_config(&app.config).await {
                 Ok(c) => c,
                 Err(e) => {
                     app.blocks
@@ -2165,15 +2156,7 @@ async fn launch_turn(
             .push(Block::System(format!("⛔ prompt blocked: {reason}")));
         return;
     }
-    let provider = Provider::from_model(&app.config.model);
-    let credential = match opencli_core::auth::resolve_credential(provider).await {
-        Ok(c) => c,
-        Err(e) => {
-            app.blocks.push(Block::System(format!("Auth error: {e}")));
-            return;
-        }
-    };
-    let client = match LlmClient::new(credential) {
+    let client = match LlmClient::for_config(&app.config).await {
         Ok(c) => c,
         Err(e) => {
             app.blocks.push(Block::System(format!("Client error: {e}")));
