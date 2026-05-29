@@ -75,11 +75,19 @@ pub enum AgentEvent {
         limit: u64,
     },
     /// Stronger than `ContextWarning`: input has crossed 85% of the model's
-    /// context window. The UI should suggest /compact (or trigger it
-    /// automatically in a future opt-in build).
+    /// context window. The UI auto-compacts when `config.auto_compact` is on,
+    /// otherwise it urges the user to run `/compact`.
     AutoCompactSuggested {
         used: u64,
         limit: u64,
+    },
+    /// A background compaction finished. Sent by the TUI's compaction task over
+    /// the same channel so the main loop can stop the progress bar and report
+    /// the outcome. `error` is `None` on success (`original_len` is the item
+    /// count collapsed into one summary) or `Some(reason)` on failure/no-op.
+    CompactDone {
+        original_len: u64,
+        error: Option<String>,
     },
     ApprovalRequest {
         call_id: String,
@@ -110,6 +118,18 @@ const EDIT_TOOLS: &[&str] = &[
     "notebook_edit",
 ];
 
+/// Below this many history items, compaction is a no-op: too short to be worth
+/// a summarization round-trip (and the result wouldn't free meaningful space).
+const COMPACT_MIN_ITEMS: usize = 4;
+
+/// Instruction appended to the history to elicit a compact, self-contained
+/// summary that becomes the new conversation baseline.
+const COMPACT_PROMPT: &str =
+    "Summarize the conversation so far into a single self-contained block: \
+                              what we worked on, what files / decisions matter going forward, and \
+                              where we left off. Keep it under 30 lines. After this, treat the \
+                              summary as the canonical context — earlier messages are gone.";
+
 /// Context-window size (tokens) per model, used to warn before a turn
 /// overflows. Verified against published model docs (May 2026):
 ///   - Anthropic: Opus 4.6 / 4.7 / 4.8 and Sonnet 4.6 ship a 1M window. Opus
@@ -139,6 +159,28 @@ pub fn model_context_limit(model: &str) -> u64 {
         return 1_000_000;
     }
     400_000
+}
+
+/// Build the post-compaction history: a single user message carrying the
+/// summary as the new canonical context. A plain text message with no
+/// `call_id` can never leave an orphaned function_call/output pair, which is
+/// why full replacement (rather than mid-history truncation) is the safe,
+/// provider-agnostic strategy. Role `user` because `translate.rs` coalesces
+/// non-assistant roles to Anthropic's `user`, and a conversation that opens
+/// with a user turn is valid for every provider.
+fn compacted_history(summary: &str) -> Vec<InputItem> {
+    vec![InputItem::Message {
+        role: "user".to_string(),
+        content: vec![MessageContent::text(format!(
+            "[Conversation summary — earlier history was compacted to save context]\n\n{summary}"
+        ))],
+    }]
+}
+
+/// Whether a history of this many items is worth compacting. Pulled out so the
+/// threshold is unit-testable without constructing an Agent or a network call.
+fn should_compact(history_len: usize) -> bool {
+    history_len > COMPACT_MIN_ITEMS
 }
 
 pub struct Agent {
@@ -403,7 +445,105 @@ impl Agent {
 
     /// Drive one full turn: send the current history, process tool calls until
     /// the model produces final assistant text. Emits events through `tx`.
+    ///
+    /// Thin wrapper so the `Stop` hook fires on EVERY exit — success or error —
+    /// per its documented contract. The inner loop has several early error
+    /// returns (idle timeout, stream error, response.failed); firing here covers
+    /// all of them instead of only the clean-completion path.
     pub async fn run_turn(&mut self, tx: mpsc::Sender<AgentEvent>) -> Result<()> {
+        let result = self.run_turn_inner(tx).await;
+        self.hooks.fire_stop().await;
+        result
+    }
+
+    /// Replace the entire conversation history with one model-generated summary
+    /// message, reclaiming context-window space. Provider-agnostic: it operates
+    /// on `self.history` before any request is built, so every model benefits.
+    ///
+    /// On a trivially short history, an empty summary, or a stream error,
+    /// `self.history` is left UNTOUCHED and an `Err` is returned. On success
+    /// returns the number of history items that were compacted away.
+    pub async fn compact_history(&mut self) -> Result<usize> {
+        let original_len = self.history.len();
+        if !should_compact(original_len) {
+            return Err(anyhow::anyhow!(
+                "nothing to compact — conversation is already short"
+            ));
+        }
+
+        // One-off summary request from the CURRENT history plus a summarize
+        // instruction. Deliberately built WITHOUT `.with_tools(...)`: the
+        // summary turn must not start editing files or running commands.
+        let mut input = self.history.clone();
+        input.push(InputItem::Message {
+            role: "user".to_string(),
+            content: vec![MessageContent::text(COMPACT_PROMPT)],
+        });
+        let request = ResponsesRequest::new(self.config.model.clone(), input)
+            .with_instructions(self.system_prompt.clone())
+            .with_reasoning(self.config.reasoning_effort.clone())
+            .with_verbosity(self.config.verbosity.clone());
+
+        let summary = self.collect_text(request).await?;
+        if summary.trim().is_empty() {
+            return Err(anyhow::anyhow!("compaction produced an empty summary"));
+        }
+
+        self.history = compacted_history(&summary);
+        Ok(original_len)
+    }
+
+    /// Drive a request through the streaming path and return the accumulated
+    /// assistant text. A minimal recv loop for tool-free turns (used by
+    /// `compact_history`): it handles only text and terminal events. It does
+    /// NOT call `emit_usage`, so the summary turn's large input doesn't re-fire
+    /// the 85% context warning while we are in the middle of compacting.
+    async fn collect_text(&self, request: ResponsesRequest) -> Result<String> {
+        let mut handle = self.client.stream(request).await?;
+        let mut text = String::new();
+        loop {
+            let recv = tokio::time::timeout(STREAM_IDLE_TIMEOUT, handle.rx.recv()).await;
+            let ev = match recv {
+                Err(_) => {
+                    return Err(anyhow::anyhow!(
+                        "stream idle for {}s — connection may be stale, try again",
+                        STREAM_IDLE_TIMEOUT.as_secs()
+                    ));
+                }
+                Ok(None) => break,
+                Ok(Some(Err(e))) => return Err(e),
+                Ok(Some(Ok(v))) => v,
+            };
+            match ev {
+                ResponseStreamEvent::OutputTextDelta { delta, .. } => {
+                    text.push_str(&delta);
+                }
+                // Fall back to the block's full text only if no deltas arrived
+                // (some providers emit Done without deltas); otherwise keep the
+                // accumulated deltas.
+                ResponseStreamEvent::OutputTextDone { text: t, .. } if text.is_empty() => {
+                    text = t;
+                }
+                ResponseStreamEvent::Completed { .. } => break,
+                ResponseStreamEvent::Failed { response } => {
+                    let message = response
+                        .get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("response.failed (no message)")
+                        .to_string();
+                    return Err(anyhow::anyhow!("response.failed: {message}"));
+                }
+                ResponseStreamEvent::Error { message } => {
+                    return Err(anyhow::anyhow!(message));
+                }
+                _ => {}
+            }
+        }
+        Ok(text)
+    }
+
+    async fn run_turn_inner(&mut self, tx: mpsc::Sender<AgentEvent>) -> Result<()> {
         loop {
             let request = ResponsesRequest::new(self.config.model.clone(), self.history.clone())
                 .with_instructions(self.system_prompt.clone())
@@ -575,7 +715,13 @@ impl Agent {
                             .iter_mut()
                             .find(|p| p.item_id == item_id || p.call_id == item_id)
                             .map(|pc| {
-                                pc.args_buf = arguments.clone();
+                                // Only overwrite when the done event actually
+                                // carried args; an empty/absent `arguments` must
+                                // not wipe the buffer accumulated from the deltas
+                                // (matches the OutputItemDone handler above).
+                                if !arguments.is_empty() {
+                                    pc.args_buf = arguments.clone();
+                                }
                                 pc.call_id.clone()
                             })
                             .unwrap_or_else(|| item_id.clone());
@@ -639,8 +785,6 @@ impl Agent {
                     });
                 }
                 let _ = tx.send(AgentEvent::TurnComplete).await;
-                // Best-effort end-of-turn Stop hook.
-                self.hooks.fire_stop().await;
                 return Ok(());
             }
 
@@ -882,6 +1026,20 @@ impl Agent {
             // order shuffled.
             let mut by_id: std::collections::HashMap<String, String> =
                 results.into_iter().map(|(id, out, _)| (id, out)).collect();
+            // Record the assistant's narration that preceded the tool calls
+            // BEFORE the function-call items, so the transcript (and the next
+            // turn's context, and any resumed session) keeps what the model said.
+            // Without this, an "I'll read that file…" preamble vanished whenever
+            // a response mixed text with tool calls (the only other push of
+            // assistant text lives in the no-tool-calls branch).
+            if !final_text.is_empty() {
+                self.history.push(InputItem::Message {
+                    role: "assistant".to_string(),
+                    content: vec![MessageContent::OutputText {
+                        text: std::mem::take(&mut final_text),
+                    }],
+                });
+            }
             for pc in &pending_calls {
                 if let Some(output) = by_id.remove(&pc.call_id) {
                     self.history.push(InputItem::FunctionCall {
@@ -1115,5 +1273,44 @@ mod context_limit_tests {
         assert_eq!(model_context_limit("gpt-5.3"), 400_000);
         assert_eq!(model_context_limit("gpt-5-mini"), 400_000);
         assert_eq!(model_context_limit("gpt-5-nano"), 200_000);
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::{compacted_history, should_compact, COMPACT_MIN_ITEMS};
+    use crate::openai::{InputItem, MessageContent};
+
+    #[test]
+    fn compacted_history_is_single_orphan_free_user_message() {
+        let h = compacted_history("a summary of the work");
+        assert_eq!(h.len(), 1, "compaction must collapse to exactly one item");
+        match &h[0] {
+            InputItem::Message { role, content } => {
+                assert_eq!(role, "user");
+                assert_eq!(content.len(), 1);
+                match &content[0] {
+                    MessageContent::InputText { text } => {
+                        assert!(text.contains("a summary of the work"));
+                    }
+                    other => panic!("expected input_text, got {other:?}"),
+                }
+            }
+            other => panic!("expected a Message, got {other:?}"),
+        }
+        // The point of full replacement: no tool-call pairing survives, so the
+        // compacted history can never present an orphaned call/output (which
+        // both Anthropic and OpenAI reject with a 4xx).
+        assert!(!h.iter().any(|i| matches!(
+            i,
+            InputItem::FunctionCall { .. } | InputItem::FunctionCallOutput { .. }
+        )));
+    }
+
+    #[test]
+    fn should_compact_respects_min_items() {
+        assert!(!should_compact(0));
+        assert!(!should_compact(COMPACT_MIN_ITEMS));
+        assert!(should_compact(COMPACT_MIN_ITEMS + 1));
     }
 }

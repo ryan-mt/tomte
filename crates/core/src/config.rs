@@ -12,6 +12,11 @@ pub struct Config {
     pub reasoning_effort: String,
     #[serde(default = "default_verbosity")]
     pub verbosity: String,
+    /// Automatically compact the conversation when the context window nears
+    /// its limit (~85%), replacing history with a model-generated summary so
+    /// long sessions don't overflow or re-bill the full transcript each turn.
+    #[serde(default = "default_auto_compact")]
+    pub auto_compact: bool,
     #[serde(default)]
     pub auto_approve_read: bool,
     #[serde(default)]
@@ -26,6 +31,9 @@ fn default_reasoning_effort() -> String {
 }
 fn default_verbosity() -> String {
     "medium".to_string()
+}
+fn default_auto_compact() -> bool {
+    true
 }
 
 /// Map legacy model names from earlier opencli versions to the real OpenAI
@@ -48,6 +56,7 @@ impl Default for Config {
             model: default_model(),
             reasoning_effort: default_reasoning_effort(),
             verbosity: default_verbosity(),
+            auto_compact: true,
             auto_approve_read: true,
             auto_approve_write: false,
         }
@@ -153,6 +162,14 @@ mod tests {
         cfg.reasoning_effort = "max".into();
         let p = super::persist_view(&cfg);
         assert_eq!(p.reasoning_effort, "max");
+    }
+
+    #[test]
+    fn auto_compact_defaults_on() {
+        assert!(Config::default().auto_compact);
+        // A config.json predating the flag still deserializes with it enabled.
+        let cfg: Config = serde_json::from_str(r#"{"model":"gpt-5.5"}"#).unwrap();
+        assert!(cfg.auto_compact);
     }
 
     #[test]

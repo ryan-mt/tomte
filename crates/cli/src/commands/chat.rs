@@ -44,6 +44,16 @@ pub async fn run(
     // Best-effort: spawn MCP servers configured in settings.json. A
     // misconfigured server logs a warning but does not abort the turn.
     agent.load_mcp().await.ok();
+
+    // Lifecycle hooks: SessionStart (best-effort), then UserPromptSubmit which
+    // may BLOCK the prompt (exit 2) before the model ever sees it.
+    agent.hooks.fire_session_start().await;
+    if let opencli_core::hooks::HookDecision::Block(reason) =
+        agent.hooks.fire_user_prompt_submit(&prompt).await
+    {
+        eprintln!("prompt blocked by UserPromptSubmit hook: {reason}");
+        return Ok(());
+    }
     agent.push_user_message(prompt);
 
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(256);

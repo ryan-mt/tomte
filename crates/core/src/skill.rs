@@ -99,8 +99,13 @@ fn collect_skill_files(root: &Path, out: &mut Vec<PathBuf>) {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Ok(ft) = entry.file_type() else { continue };
-            if ft.is_dir() {
+            // metadata() follows symlinks (file_type() does not), so a symlinked
+            // skill directory — common for shared/team checkouts — is traversed
+            // instead of silently skipped. MAX_SKILL_DEPTH bounds any loop.
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
                 if depth + 1 > MAX_SKILL_DEPTH {
                     continue;
                 }
@@ -245,12 +250,22 @@ pub fn parse(text: &str, path: &Path) -> Result<Skill> {
         )
     })?;
     let rest = rest.strip_prefix('\n').unwrap_or(rest);
-    let end_idx = rest.find("\n---").ok_or_else(|| {
-        anyhow!(
-            "skill at {} missing closing `---` frontmatter line",
-            path.display()
-        )
-    })?;
+    // Closing fence: a `\n---` where the `---` ends the line (newline or EOF).
+    // A bare `rest.find("\n---")` also matched `\n----`/`\n---foo`, truncating
+    // the frontmatter early.
+    let end_idx = rest
+        .match_indices("\n---")
+        .find(|(i, _)| {
+            let after = &rest[i + 4..];
+            after.is_empty() || after.starts_with('\n') || after.starts_with('\r')
+        })
+        .map(|(i, _)| i)
+        .ok_or_else(|| {
+            anyhow!(
+                "skill at {} missing closing `---` frontmatter line",
+                path.display()
+            )
+        })?;
     let frontmatter = &rest[..end_idx];
     let mut body = &rest[end_idx + "\n---".len()..];
     body = body.strip_prefix('\r').unwrap_or(body);

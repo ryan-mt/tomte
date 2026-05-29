@@ -199,7 +199,11 @@ Parameters:\n\
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: WriteArgs = super::parse_args("write_file", args)?;
         let path = resolve(&ctx.cwd, &a.path)?;
-        let original = tokio::fs::read_to_string(&path).await.ok();
+        // Snapshot prior contents as RAW BYTES, not UTF-8: a binary file that
+        // exists must be restorable on undo. read_to_string().ok() returned
+        // None for both "missing" and "non-UTF-8", so undo deleted overwritten
+        // binaries instead of restoring them.
+        let original = tokio::fs::read(&path).await.ok();
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -327,7 +331,7 @@ Parameters:\n\
         let post_edit_mtime = snapshot_mtime(&path);
         ctx.session.lock().await.push_undo_entry(super::UndoEntry {
             path: path.clone(),
-            original_content: Some(original),
+            original_content: Some(original.into_bytes()),
             post_edit_mtime,
         });
         Ok(format!(
@@ -521,7 +525,7 @@ Parameters:\n\
         let post_edit_mtime = snapshot_mtime(&path);
         ctx.session.lock().await.push_undo_entry(super::UndoEntry {
             path: path.clone(),
-            original_content: Some(original_for_undo),
+            original_content: Some(original_for_undo.into_bytes()),
             post_edit_mtime,
         });
         Ok(format!(

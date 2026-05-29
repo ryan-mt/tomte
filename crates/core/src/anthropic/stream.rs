@@ -130,10 +130,18 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                         }))
                                         .await;
                                 } else {
+                                    // Store the real block type ("text",
+                                    // "thinking", "redacted_thinking", …). Only a
+                                    // "text" block finalizes into OutputTextDone;
+                                    // a thinking block has no text_buf (its content
+                                    // streams via ReasoningDelta), so labelling it
+                                    // "text" made content_block_stop emit an empty
+                                    // OutputTextDone that blanked the assistant
+                                    // buffer mid-stream on every thinking turn.
                                     blocks.insert(
                                         index,
                                         PendingBlock {
-                                            kind: "text".into(),
+                                            kind: btype,
                                             item_id: format!("text_{index}"),
                                             args_buf: String::new(),
                                             text_buf: String::new(),
@@ -221,9 +229,13 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                                 arguments: b.args_buf,
                                             }))
                                             .await;
-                                    } else {
-                                        // Emit OutputTextDone so the agent layer can
-                                        // finalize final_text and emit AssistantTextDone.
+                                    } else if b.kind == "text" {
+                                        // Only real text blocks finalize into
+                                        // OutputTextDone so the agent can finalize
+                                        // final_text. thinking/redacted_thinking
+                                        // blocks carry no text_buf (streamed via
+                                        // ReasoningDelta); emitting a done for them
+                                        // would blank the assistant buffer.
                                         let _ = tx
                                             .send(Ok(ResponseStreamEvent::OutputTextDone {
                                                 text: b.text_buf,

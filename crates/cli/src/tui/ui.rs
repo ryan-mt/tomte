@@ -8,7 +8,9 @@ use super::app::{App, Block};
 use opencli_core::auth::AuthMode;
 
 pub fn render(f: &mut Frame, app: &mut App) {
-    let spinner_h: u16 = if app.busy { 1 } else { 0 };
+    // The same one-row slot shows the turn spinner OR the compaction progress
+    // bar — they never run at once (compaction only starts once a turn ends).
+    let spinner_h: u16 = if app.busy || app.compacting { 1 } else { 0 };
     let queue_h: u16 = queued_height(app);
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -24,6 +26,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     render_chat(f, layout[0], app);
     if app.busy {
         render_spinner(f, layout[1], app);
+    } else if app.compacting {
+        render_compact_progress(f, layout[1], app);
     }
     if queue_h > 0 {
         render_queue(f, layout[2], app);
@@ -44,9 +48,13 @@ fn queued_height(app: &App) -> u16 {
     if app.message_queue.is_empty() {
         0
     } else {
-        // 1 row per queued message (truncated) + 1 hint row
-        let n = app.message_queue.len().min(4) as u16;
-        n + 1
+        // Must match render_queue exactly: up to 4 message rows, plus a
+        // " …+N queued" overflow row when more than 4 are queued, plus the
+        // summary row. Omitting the overflow row clipped the summary off-screen.
+        let total = app.message_queue.len();
+        let shown = total.min(4) as u16;
+        let overflow = u16::from(total > 4);
+        shown + overflow + 1
     }
 }
 
@@ -118,6 +126,45 @@ fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
             format!(" ({}{extras})", format_elapsed(elapsed)),
             Style::default().fg(Color::Rgb(160, 160, 160)),
         ),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
+}
+
+/// One-row progress bar for a running compaction. With no real percentage from
+/// the model, the fill eases asymptotically toward 95% by elapsed time (so it
+/// always looks alive, never stalls at 0), then snaps to 100% once the task
+/// reports done. All widths use saturating/clamped math so a narrow terminal
+/// can't underflow.
+fn render_compact_progress(f: &mut Frame, area: Rect, app: &App) {
+    let pct: u16 = if app.compact_done_at.is_some() {
+        100
+    } else {
+        let t = app
+            .compact_started_at
+            .map(|s| s.elapsed().as_millis() as f64)
+            .unwrap_or(0.0);
+        (95.0 * t / (t + 4000.0)).round().clamp(0.0, 95.0) as u16
+    };
+    let purple = Style::default().fg(Color::Rgb(220, 130, 220));
+    let dim = Style::default().fg(Color::Rgb(160, 160, 160));
+    let track = Style::default().fg(Color::Rgb(90, 90, 90));
+
+    let label = " compacting ";
+    let suffix = format!(" {pct:>3}%");
+    // Reserve room for the label, the "[" "]" brackets and the suffix so the
+    // bar itself can never be wider than the row.
+    let reserved = label.chars().count() + suffix.chars().count() + 2;
+    let bar_width = (area.width as usize).saturating_sub(reserved).min(40);
+    let filled = bar_width * pct as usize / 100;
+    let empty = bar_width.saturating_sub(filled);
+
+    let line = Line::from(vec![
+        Span::styled(label, purple.add_modifier(Modifier::BOLD)),
+        Span::styled("[", dim),
+        Span::styled("█".repeat(filled), purple),
+        Span::styled("░".repeat(empty), track),
+        Span::styled("]", dim),
+        Span::styled(suffix, dim),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
@@ -337,52 +384,113 @@ fn render_input(f: &mut Frame, area: Rect, app: &App) {
     } else {
         Color::Magenta
     };
-    let prompt = Span::styled(
-        "> ",
-        Style::default()
-            .fg(prompt_color)
-            .add_modifier(Modifier::BOLD),
-    );
+    let prompt_style = Style::default()
+        .fg(prompt_color)
+        .add_modifier(Modifier::BOLD);
 
-    let lines: Vec<Line> = if app.input.is_empty() {
-        vec![Line::from(vec![
-            prompt.clone(),
+    if app.input.is_empty() {
+        let lines = vec![Line::from(vec![
+            Span::styled("> ", prompt_style),
             Span::styled(
                 "Try \"build me a todo list app\"",
                 Style::default().fg(Color::Rgb(160, 160, 160)),
             ),
-        ])]
-    } else {
-        app.input
-            .lines()
-            .into_iter()
-            .enumerate()
-            .map(|(i, l)| {
-                let prefix = if i == 0 {
-                    prompt.clone()
-                } else {
-                    Span::raw("  ")
-                };
-                Line::from(vec![prefix, Span::raw(l.to_string())])
-            })
-            .collect()
-    };
-
-    let p = Paragraph::new(lines).wrap(Wrap { trim: false });
-    f.render_widget(p, area);
-
-    // cursor
-    let (line_idx, col) = app.input.cursor_pos();
-    let cx = area
-        .x
-        .saturating_add(2)
-        .saturating_add(u16::try_from(col).unwrap_or(u16::MAX)); // +2 for "> "
-    let cy = area
-        .y
-        .saturating_add(u16::try_from(line_idx).unwrap_or(u16::MAX));
-    if cx < area.x + area.width && cy < area.y + area.height {
-        f.set_cursor_position((cx, cy));
+        ])];
+        f.render_widget(Paragraph::new(lines), area);
+        if area.width > 2 && area.height > 0 {
+            f.set_cursor_position((area.x + 2, area.y));
+        }
+        return;
     }
+
+    // Char-wrap each logical line at the content width and prefix every visual
+    // row with a 2-col gutter, so the rendered rows and the cursor share ONE
+    // wrap model. ratatui's word Wrap diverged from cursor_pos()'s logical
+    // coordinates, which let the cursor drift off the row (and vanish) on long
+    // or soft-wrapped input.
+    let content_w = (area.width as usize).saturating_sub(2).max(1);
+    let (cur_line, cur_col) = app.input.cursor_pos();
+    let mut lines: Vec<Line> = Vec::new();
+    let mut cursor_rc: Option<(usize, usize)> = None;
+    for (li, logical) in app.input.lines().into_iter().enumerate() {
+        let want = if li == cur_line { Some(cur_col) } else { None };
+        let (rows, cur_in_line) = wrap_visual_rows(logical, content_w, want);
+        if let Some((r, c)) = cur_in_line {
+            cursor_rc = Some((lines.len() + r, c));
+        }
+        for (vi, row) in rows.into_iter().enumerate() {
+            let gutter = if li == 0 && vi == 0 {
+                Span::styled("> ", prompt_style)
+            } else {
+                Span::raw("  ")
+            };
+            lines.push(Line::from(vec![gutter, Span::raw(row)]));
+        }
+    }
+
+    f.render_widget(Paragraph::new(lines), area);
+
+    if let Some((row, col)) = cursor_rc {
+        let cx = area
+            .x
+            .saturating_add(2)
+            .saturating_add(u16::try_from(col).unwrap_or(u16::MAX));
+        let cy = area
+            .y
+            .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
+        if cx < area.x + area.width && cy < area.y + area.height {
+            f.set_cursor_position((cx, cy));
+        }
+    }
+}
+
+/// Character-wrap one logical input line into visual rows of at most `width`
+/// display columns. When `cursor_col` is the cursor's display column within
+/// this logical line, also return the cursor's (visual_row, visual_col) under
+/// the SAME wrapping, so the rendered cursor never drifts off the drawn text.
+fn wrap_visual_rows(
+    line: &str,
+    width: usize,
+    cursor_col: Option<usize>,
+) -> (Vec<String>, Option<(usize, usize)>) {
+    use unicode_width::UnicodeWidthChar;
+    let mut rows: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0usize; // display width of `cur`
+    let mut col = 0usize; // display cols consumed from line start
+    let mut cursor_rc: Option<(usize, usize)> = None;
+    for ch in line.chars() {
+        let w = ch.width().unwrap_or(0);
+        // Break before a char that would overflow the current row.
+        if cur_w + w > width && !cur.is_empty() {
+            rows.push(std::mem::take(&mut cur));
+            cur_w = 0;
+        }
+        // The cursor sits immediately before the char at display col `col`.
+        if cursor_rc.is_none() && cursor_col == Some(col) {
+            cursor_rc = Some((rows.len(), cur_w));
+        }
+        cur.push(ch);
+        cur_w += w;
+        col += w;
+    }
+    // Cursor at (or past) the end of the line.
+    if cursor_rc.is_none() {
+        if let Some(c) = cursor_col {
+            if c >= col {
+                cursor_rc = Some((rows.len(), cur_w));
+            }
+        }
+    }
+    rows.push(cur);
+    // A cursor exactly at the right edge (end of a full row) belongs at the
+    // start of the next visual row, not off the edge.
+    if let Some((r, c)) = cursor_rc {
+        if c >= width {
+            cursor_rc = Some((r + 1, 0));
+        }
+    }
+    (rows, cursor_rc)
 }
 
 fn render_status(f: &mut Frame, area: Rect, app: &App) {
@@ -1525,4 +1633,65 @@ fn input_height(app: &App) -> u16 {
     let lines = app.input.lines().len().max(1);
     let inner = lines.min(max_visible);
     (inner as u16).saturating_add(2)
+}
+
+#[cfg(test)]
+mod input_wrap_tests {
+    use super::wrap_visual_rows;
+
+    #[test]
+    fn no_wrap_short_line() {
+        assert_eq!(
+            wrap_visual_rows("hello", 10, Some(5)),
+            (vec!["hello".to_string()], Some((0, 5)))
+        );
+    }
+
+    #[test]
+    fn cursor_tracked_into_second_row() {
+        assert_eq!(
+            wrap_visual_rows("abcdef", 3, Some(4)),
+            (vec!["abc".to_string(), "def".to_string()], Some((1, 1)))
+        );
+    }
+
+    #[test]
+    fn cursor_at_wrap_boundary_starts_next_row() {
+        assert_eq!(
+            wrap_visual_rows("abcdef", 3, Some(3)),
+            (vec!["abc".to_string(), "def".to_string()], Some((1, 0)))
+        );
+    }
+
+    #[test]
+    fn cursor_at_end_of_full_row_wraps() {
+        assert_eq!(
+            wrap_visual_rows("abc", 3, Some(3)),
+            (vec!["abc".to_string()], Some((1, 0)))
+        );
+    }
+
+    #[test]
+    fn empty_line_keeps_one_row() {
+        assert_eq!(
+            wrap_visual_rows("", 5, Some(0)),
+            (vec![String::new()], Some((0, 0)))
+        );
+    }
+
+    #[test]
+    fn no_cursor_off_this_line() {
+        assert_eq!(
+            wrap_visual_rows("abcdef", 3, None),
+            (vec!["abc".to_string(), "def".to_string()], None)
+        );
+    }
+
+    #[test]
+    fn wide_chars_use_two_columns() {
+        assert_eq!(
+            wrap_visual_rows("世界A", 4, None).0,
+            vec!["世界".to_string(), "A".to_string()]
+        );
+    }
 }

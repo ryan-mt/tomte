@@ -163,7 +163,9 @@ Parameters:\n\
         // source file), which html_to_text would then mangle.
         let is_html = ct.contains("html")
             || (!ct.contains("json") && !ct.contains("text/plain") && {
-                let h = head.trim_start();
+                // trim_start() does NOT strip a UTF-8 BOM (U+FEFF is not
+                // Unicode whitespace), so strip it explicitly before sniffing.
+                let h = head.trim_start_matches('\u{feff}').trim_start();
                 h.starts_with("<!doctype html") || h.starts_with("<html")
             });
         let (rendered, note) = if is_html {
@@ -571,12 +573,16 @@ fn attach_snippets(
     snippets: Vec<(usize, String)>,
 ) -> Vec<SearchResult> {
     for (spos, text) in snippets {
-        if let Some((_, r)) = results
-            .iter_mut()
-            .rev()
-            .find(|(rpos, r)| *rpos < spos && r.snippet.is_empty())
-        {
-            r.snippet = text;
+        // Attach to the NEAREST result whose tag starts before this snippet,
+        // filling only if it's still empty. Surplus snippets (deep-link/sub-row
+        // blocks a result emits after its main one) are dropped rather than
+        // back-filled onto an EARLIER empty result — the old `&& is_empty()` in
+        // the `find` predicate walked past the filled nearest result and
+        // mis-assigned the surplus to a preceding row.
+        if let Some((_, r)) = results.iter_mut().rev().find(|(rpos, _)| *rpos < spos) {
+            if r.snippet.is_empty() {
+                r.snippet = text;
+            }
         }
     }
     results.into_iter().map(|(_, r)| r).collect()
@@ -691,6 +697,11 @@ fn clean_html(s: &str) -> String {
         .replace("&#x27;", "'")
         .replace("&#39;", "'")
         .replace("&#x2F;", "/")
+        // Non-breaking space → ordinary space (collapsed by split_whitespace
+        // below), matching web_fetch's decode_entities so snippets don't keep a
+        // literal `&nbsp;`. Before `&amp;` so a double-encoded `&amp;nbsp;`
+        // stays literal rather than collapsing to a space.
+        .replace("&nbsp;", " ")
         // `&amp;` LAST so an encoded entity like `&amp;lt;` decodes to the literal
         // `&lt;`, not double-decoded into `<`.
         .replace("&amp;", "&")

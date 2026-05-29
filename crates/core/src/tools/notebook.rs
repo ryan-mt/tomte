@@ -167,7 +167,7 @@ Parameters:\n\
         let post_edit_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         ctx.session.lock().await.push_undo_entry(UndoEntry {
             path: path.clone(),
-            original_content: Some(original),
+            original_content: Some(original.into_bytes()),
             post_edit_mtime,
         });
         Ok(msg)

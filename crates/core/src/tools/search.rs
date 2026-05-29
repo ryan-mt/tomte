@@ -149,7 +149,10 @@ Parameters:\n\
         if let Some(t) = &a.file_type {
             cmd.arg("--type").arg(t);
         }
-        cmd.arg(&a.pattern);
+        // `--` stops flag parsing so a pattern beginning with `-` (e.g. `-rf`)
+        // is searched literally instead of being read as ripgrep flags. The
+        // grep fallback below already does this.
+        cmd.arg("--").arg(&a.pattern);
         if let Some(p) = &a.path {
             let resolved = super::fs::resolve(&ctx.cwd, p)?;
             cmd.arg(&resolved);
@@ -159,6 +162,17 @@ Parameters:\n\
         cmd.current_dir(&ctx.cwd);
         let out = cmd.output().await;
         if let Ok(out) = out {
+            // rg exits 0 on matches and 1 on "no matches" (both fine); exit 2+
+            // is a real error (invalid regex, bad glob). Surface that instead of
+            // returning empty stdout, which the model reads as "no matches".
+            if !out.status.success() && out.status.code() != Some(1) {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let msg = stderr.trim();
+                return Err(anyhow::anyhow!(
+                    "ripgrep failed: {}",
+                    if msg.is_empty() { "unknown error" } else { msg }
+                ));
+            }
             let stdout = String::from_utf8_lossy(&out.stdout).to_string();
             return Ok(apply_limits(&stdout, a.head_limit, 8000));
         }
@@ -278,7 +292,11 @@ Parameters:\n\
             .output()
             .await
         {
-            Ok(out) if out.status.success() => Some(
+            // exit 0 = matches, exit 1 = no matches — both authoritative, so an
+            // empty result must NOT fall through to the looser basename-only
+            // `find` matcher. Only a missing/errored rg (spawn err, exit 2+)
+            // falls back.
+            Ok(out) if out.status.success() || out.status.code() == Some(1) => Some(
                 String::from_utf8_lossy(&out.stdout)
                     .lines()
                     .map(|s| s.to_string())
@@ -597,6 +615,90 @@ mod tests {
         assert!(
             payload_lines <= 5,
             "got {payload_lines} payload lines: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn grep_dash_pattern_is_searched_literally() {
+        // Regression: a pattern starting with `-` must be searched literally,
+        // not parsed as ripgrep flags (fixed by the `--` separator).
+        if !rg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "f.txt", "this line has -rf in it\nplain line\n");
+        let out = Grep
+            .execute(
+                json!({
+                    "pattern": "-rf",
+                    "path": null, "glob": null, "case_insensitive": false,
+                    "output_mode": "content",
+                    "head_limit": null, "context_after": null, "context_before": null,
+                    "multiline": null, "file_type": null,
+                }),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.contains("-rf"),
+            "dash pattern must match literally; got: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn grep_invalid_regex_surfaces_error_not_empty() {
+        // Regression: an invalid regex (rg exit 2) must surface an error, not an
+        // empty string the model reads as "no matches found".
+        if !rg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "f.txt", "content\n");
+        let res = Grep
+            .execute(
+                json!({
+                    "pattern": "(",
+                    "path": null, "glob": null, "case_insensitive": false,
+                    "output_mode": "content",
+                    "head_limit": null, "context_after": null, "context_before": null,
+                    "multiline": null, "file_type": null,
+                }),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid regex must surface an error, not empty output; got: {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn glob_no_match_returns_empty_not_all_files() {
+        // Regression: a non-matching glob must return empty (rg exit 1 is
+        // authoritative), not fall through to the looser basename `find` that
+        // returned every file.
+        if !rg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.rs", "x");
+        write(dir.path(), "b.rs", "y");
+        let out = Glob
+            .execute(
+                json!({
+                    "pattern": "nonexistent_dir_xyz/**/*.rs",
+                    "path": null,
+                    "sort": "name",
+                    "limit": null,
+                }),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.trim().is_empty(),
+            "non-matching glob must return empty, not all .rs files; got: {out}"
         );
     }
 }

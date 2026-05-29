@@ -128,7 +128,7 @@ pub struct BackgroundShellState {
 #[derive(Debug, Clone)]
 pub struct UndoEntry {
     pub path: std::path::PathBuf,
-    pub original_content: Option<String>,
+    pub original_content: Option<Vec<u8>>,
     /// Mtime snapshot captured immediately after the tool wrote the file.
     /// Compared against the current mtime at undo time — if the file has
     /// been touched in between (user edited it externally, another tool,
@@ -248,6 +248,7 @@ impl Registry {
             return s;
         }
         let mut tools: Vec<Box<dyn BuiltinTool>> = Vec::new();
+        let mut seen: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
         for name in allowed {
             let Some(canon) = canonical_tool_name(name) else {
                 tracing::warn!(tool = %name, "subagent referenced unknown tool; skipping");
@@ -257,6 +258,13 @@ impl Registry {
             // to the dispatch tool, which is always stripped so sub-agents
             // cannot recurse.
             if canon == "dispatch_agent" {
+                continue;
+            }
+            // Dedup: aliases that canonicalise to the same built-in (e.g.
+            // `Read`+`read_file`, `Bash`+`shell`) would otherwise push two boxes
+            // with the same name; `definitions()` would then emit a duplicate
+            // function name and the provider rejects the request with a 400.
+            if !seen.insert(canon) {
                 continue;
             }
             let tool: Box<dyn BuiltinTool> = match canon {

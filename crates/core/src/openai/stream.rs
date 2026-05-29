@@ -166,16 +166,14 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
             }
         }
         "response.function_call_arguments.done" | "response.tool_call.done" => {
-            let arguments = value
-                .get("arguments")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("missing or non-string 'arguments' in {} event", kind)
-                })?
-                .to_string();
+            // Lenient like the sibling delta handler: a `.done` without a string
+            // `arguments` must not abort the whole turn — the args were already
+            // accumulated from the deltas / OutputItemDone. Default to "" and let
+            // the agent keep its accumulated buffer (it only overwrites when the
+            // done event actually carried args).
             ResponseStreamEvent::FunctionCallArgsDone {
                 item_id: s("item_id"),
-                arguments,
+                arguments: s("arguments"),
             }
         }
         // Reasoning summary — multiple shapes.

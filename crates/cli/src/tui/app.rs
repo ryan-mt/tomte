@@ -97,6 +97,9 @@ async fn run_with(start_with_resume_picker: bool) -> Result<()> {
     }));
 
     let mut terminal = setup_terminal()?;
+    // SessionStart hook (best-effort, once per interactive session). Spawned so a
+    // slow hook can't delay the first frame; its output/exit code is ignored.
+    tokio::spawn(async { opencli_core::hooks::load().fire_session_start().await });
     let res = main_loop(&mut terminal, start_with_resume_picker).await;
     restore_terminal(&mut terminal)?;
     res
@@ -207,6 +210,26 @@ pub struct App {
     /// Set true by `/undo` so main_loop can invoke `Agent::undo_last_edit()`
     /// on the next tick (slash handlers don't have the agent Arc).
     pub pending_undo: bool,
+    /// Set true by `/compact` or the auto-compact trigger so main_loop can call
+    /// `Agent::compact_history()` on the next tick (slash/event handlers don't
+    /// have the agent Arc).
+    pub pending_compact: bool,
+    /// Guards against repeated auto-compaction within one over-threshold
+    /// window: set when the 85% trigger fires, cleared after a successful
+    /// compaction so future windows can auto-compact again.
+    pub auto_compact_done_this_window: bool,
+    /// True while a background compaction is running (and during the brief
+    /// 100%-hold after it finishes). Drives the progress bar and gates other
+    /// agent-locking work so the UI never blocks on the compaction's mutex.
+    pub compacting: bool,
+    /// When the running compaction started — drives the time-based progress
+    /// ease so the bar moves smoothly without a real percentage from the model.
+    pub compact_started_at: Option<std::time::Instant>,
+    /// Set when the compaction task reports success: the bar snaps to 100% and
+    /// holds for a moment before `compact_result_msg` replaces it.
+    pub compact_done_at: Option<std::time::Instant>,
+    /// Result line queued by a finished compaction, pushed after the 100%-hold.
+    pub compact_result_msg: Option<String>,
     /// True until the first frame has opened the resume picker. Used by
     /// `opencli resume` to bypass needing to type `/resume` after launch.
     pub start_with_resume_picker: bool,
@@ -444,6 +467,12 @@ impl App {
             should_exit: false,
             pending_resume_id: None,
             pending_undo: false,
+            pending_compact: false,
+            auto_compact_done_this_window: false,
+            compacting: false,
+            compact_started_at: None,
+            compact_done_at: None,
+            compact_result_msg: None,
             start_with_resume_picker: false,
             session_todos: Vec::new(),
             chat_render_cache: None,
@@ -613,11 +642,18 @@ async fn main_loop(
         }
         // Resume picker leaves the chosen session id here; perform the load
         // out-of-band so handle_overlay_select doesn't need the agent Arc.
-        if let Some(id) = app.pending_resume_id.take() {
-            apply_resume(&mut app, &agent, &id).await;
+        // Deferred while compacting: a background compaction holds the agent
+        // mutex, so locking here would block the whole UI (and both replace
+        // history). `&&` short-circuits before `.take()`, so the id is kept.
+        if !app.compacting {
+            if let Some(id) = app.pending_resume_id.take() {
+                apply_resume(&mut app, &agent, &id).await;
+            }
         }
         // `/undo` sets this so the agent Arc can stay out of handle_slash.
-        if std::mem::take(&mut app.pending_undo) {
+        // Deferred while compacting for the same reason (left side of `&&`
+        // short-circuits, so the flag survives until compaction finishes).
+        if !app.compacting && std::mem::take(&mut app.pending_undo) {
             let result = {
                 let mut g = agent.lock().await;
                 match g.as_mut() {
@@ -631,8 +667,57 @@ async fn main_loop(
             };
             app.blocks.push(Block::System(msg));
         }
-        // Flush the message queue after a turn completes.
-        if !app.busy && !app.message_queue.is_empty() && app.screen == Screen::Chat {
+        // `/compact` and the auto-compact trigger set this so the agent Arc can
+        // stay out of the slash/event handlers. Gated on `!busy` so it never
+        // runs mid-turn (it locks the same mutex `run_turn` holds). Don't use
+        // `mem::take` here: the auto trigger fires while `busy` is still true
+        // (AutoCompactSuggested precedes TurnComplete), and consuming the flag
+        // before the `!busy` check would silently drop that compaction. Clear
+        // it only when we actually start. Runs in the BACKGROUND (a spawned
+        // task) so the main loop keeps ticking and animates the progress bar.
+        if app.pending_compact && !app.busy && !app.compacting && app.screen == Screen::Chat {
+            app.pending_compact = false;
+            start_compaction(&mut app, &agent, &agent_tx);
+        }
+        // After a successful compaction the bar holds at 100% briefly, then we
+        // swap in the result line and tear the bar down. The 80ms select tick
+        // keeps redrawing during the hold.
+        if let Some(done_at) = app.compact_done_at {
+            if done_at.elapsed() >= Duration::from_millis(450) {
+                app.compacting = false;
+                app.compact_started_at = None;
+                app.compact_done_at = None;
+                if let Some(msg) = app.compact_result_msg.take() {
+                    app.blocks.push(Block::System(msg));
+                }
+                app.auto_scroll = true;
+            }
+        }
+        // Safety net: a compaction task that died WITHOUT reporting (e.g. an
+        // unexpected panic) would otherwise pin `compacting` true forever and
+        // wedge the queue/undo/resume gates. A panic unwinds and drops the
+        // agent MutexGuard, so the lock is free again — force-clearing here is
+        // safe. A live compaction is bounded by STREAM_IDLE_TIMEOUT (120s) and
+        // a short summary, so it never reaches this 150s backstop.
+        if app.compacting && app.compact_done_at.is_none() {
+            if let Some(started) = app.compact_started_at {
+                if started.elapsed() >= Duration::from_secs(150) {
+                    app.compacting = false;
+                    app.compact_started_at = None;
+                    app.blocks
+                        .push(Block::System("compact timed out — try again".into()));
+                    app.auto_scroll = true;
+                }
+            }
+        }
+        // Flush the message queue after a turn completes. Deferred while
+        // compacting: launch_turn would block on the agent mutex the
+        // compaction task holds, re-freezing the UI.
+        if !app.busy
+            && !app.compacting
+            && !app.message_queue.is_empty()
+            && app.screen == Screen::Chat
+        {
             let queued = std::mem::take(&mut app.message_queue);
             app.status_line.clear();
             // Process items individually: dispatch slash commands in order and
@@ -859,7 +944,11 @@ async fn handle_key(
             app.input.insert_char('/');
             app.open_overlay(OverlayKind::SlashMenu);
         }
-        KeyCode::Char(ch) => {
+        // Insert only for a plain key or AltGr (Ctrl+Alt, used for `@{}[]` etc.
+        // on international layouts — there ctrl==alt). A lone Ctrl or lone Alt is
+        // a command/no-op, not text; otherwise unhandled combos like Ctrl+A typed
+        // a literal 'a' into the composer.
+        KeyCode::Char(ch) if ctrl == alt => {
             app.input.insert_char(ch);
             app.history_pos = None;
         }
@@ -1137,6 +1226,55 @@ async fn apply_resume(
         "↻ resumed: {preview} ({msg_count} messages)"
     )));
     app.auto_scroll = true;
+}
+
+/// Kick off real compaction in the BACKGROUND (mirrors `launch_turn`'s spawn):
+/// a task locks the agent, summarizes the history and REPLACES it with the
+/// summary, persists, then reports back via `AgentEvent::CompactDone`. Running
+/// off the main loop is what keeps the UI responsive and the progress bar
+/// animating instead of freezing on the model call. Returns immediately.
+fn start_compaction(
+    app: &mut App,
+    agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
+    tx: &mpsc::Sender<AgentEvent>,
+) {
+    app.compacting = true;
+    app.compact_started_at = Some(std::time::Instant::now());
+    app.compact_done_at = None;
+    app.compact_result_msg = None;
+    let agent = agent.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let result = {
+            let mut guard = agent.lock().await;
+            match guard.as_mut() {
+                Some(a) => {
+                    let r = a.compact_history().await;
+                    // Persist the compacted history so /resume picks up the
+                    // smaller baseline (compaction runs outside the per-turn
+                    // save path).
+                    if r.is_ok() {
+                        if let Err(e) = opencli_core::session::save(&a.to_session_record()) {
+                            tracing::debug!(error = %e, "session save after compact failed");
+                        }
+                    }
+                    r
+                }
+                None => Err(anyhow::anyhow!("no agent yet — nothing to compact")),
+            }
+        };
+        let ev = match result {
+            Ok(original_len) => AgentEvent::CompactDone {
+                original_len: original_len as u64,
+                error: None,
+            },
+            Err(e) => AgentEvent::CompactDone {
+                original_len: 0,
+                error: Some(e.to_string()),
+            },
+        };
+        let _ = tx.send(ev).await;
+    });
 }
 
 /// Reconstruct chat-visible blocks from a persisted history. The Responses
@@ -1648,17 +1786,19 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             }
         }
         "compact" => {
-            // Ask the agent itself to produce a tight summary. The model
-            // sees the full history; its next assistant message becomes the
-            // new compact baseline that the user can keep iterating on.
-            let prompt = "Summarize the conversation so far into a single self-contained block: \
-                          what we worked on, what files / decisions matter going forward, and \
-                          where we left off. Keep it under 30 lines. After this turn, treat the \
-                          summary as the canonical context — earlier messages can be ignored.";
-            app.message_queue.push(prompt.to_string());
-            app.blocks.push(Block::System(
-                "Queued: agent will compact the conversation.".into(),
-            ));
+            // Real compaction: main_loop calls Agent::compact_history() on the
+            // next tick, which summarizes the history and REPLACES it with the
+            // summary — actually reclaiming context, unlike the old behavior
+            // that just appended a summary and left the full history in place.
+            if app.busy {
+                app.blocks.push(Block::System(
+                    "Can't compact mid-turn — wait for the current turn to finish.".into(),
+                ));
+            } else if app.compacting {
+                app.blocks.push(Block::System("Already compacting…".into()));
+            } else {
+                app.pending_compact = true;
+            }
         }
         "todos" | "todo" => {
             if app.session_todos.is_empty() {
@@ -1897,6 +2037,16 @@ async fn launch_turn(
     tx: &mpsc::Sender<AgentEvent>,
     text: String,
 ) {
+    // UserPromptSubmit hook: may BLOCK the prompt (exit 2). Load hooks fresh
+    // (cheap) so it works even on the first turn before the agent exists.
+    if let opencli_core::hooks::HookDecision::Block(reason) = opencli_core::hooks::load()
+        .fire_user_prompt_submit(&text)
+        .await
+    {
+        app.blocks
+            .push(Block::System(format!("⛔ prompt blocked: {reason}")));
+        return;
+    }
     let provider = Provider::from_model(&app.config.model);
     let credential = match opencli_core::auth::resolve_credential(provider).await {
         Ok(c) => c,
@@ -2174,10 +2324,47 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             // turns away from a hard 1xx context-window failure on the next
             // request. Block::System makes the message persistent in the
             // scrollback so the user can't miss it while scrolling.
-            app.blocks.push(Block::System(format!(
-                "⚠ context {used}/{limit} tokens ({pct}%) — run /compact now to avoid a context overflow on the next turn"
-            )));
+            // With auto_compact on, also schedule a real compaction (once per
+            // over-threshold window — the guard clears after it succeeds) so a
+            // long session never hits a hard context overflow unattended.
+            if app.config.auto_compact && !app.auto_compact_done_this_window {
+                app.pending_compact = true;
+                app.auto_compact_done_this_window = true;
+                app.blocks.push(Block::System(format!(
+                    "⚠ context {used}/{limit} tokens ({pct}%) — auto-compacting to free space…"
+                )));
+            } else {
+                app.blocks.push(Block::System(format!(
+                    "⚠ context {used}/{limit} tokens ({pct}%) — run /compact now to avoid a context overflow on the next turn"
+                )));
+            }
         }
+        AgentEvent::CompactDone {
+            original_len,
+            error,
+        } => match error {
+            // Success: snap the bar to 100% and let main_loop hold it briefly
+            // before swapping in the result line. Reclaiming context lets auto-
+            // compaction fire again in a future over-threshold window.
+            None => {
+                app.compact_done_at = Some(std::time::Instant::now());
+                app.compact_result_msg = Some(format!(
+                    "✓ compacted: {original_len} items → 1 summary. Earlier history is now summarized."
+                ));
+                app.auto_compact_done_this_window = false;
+            }
+            // Failure / no-op: tear the bar down immediately (no celebratory
+            // 100%) and report why.
+            Some(e) => {
+                app.compacting = false;
+                app.compact_started_at = None;
+                app.compact_done_at = None;
+                app.compact_result_msg = None;
+                app.blocks
+                    .push(Block::System(format!("compact skipped: {e}")));
+                app.auto_scroll = true;
+            }
+        },
         AgentEvent::ApprovalRequest {
             call_id,
             tool_name,

@@ -169,3 +169,42 @@ async fn undo_reverts_multi_edit() {
         "alpha beta gamma"
     );
 }
+
+#[tokio::test]
+async fn undo_restores_overwritten_binary_file() {
+    // Regression: overwriting an existing NON-UTF-8 (binary) file then undoing
+    // must restore the original bytes — not delete the file. The undo snapshot
+    // previously used read_to_string().ok(), which returned None for binary
+    // content, so undo mistook it for a newly-created file and remove_file'd it.
+    let tmp = tempfile::tempdir().unwrap();
+    let ctx = ctx(tmp.path().to_path_buf());
+
+    let original: &[u8] = &[0x00, 0xFF, 0xFE, 0x42, 0x00]; // invalid UTF-8
+    tokio::fs::write(tmp.path().join("img.bin"), original)
+        .await
+        .unwrap();
+
+    WriteFile
+        .execute(json!({"path": "img.bin", "content": "overwritten"}), &ctx)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(tmp.path().join("img.bin")).unwrap(),
+        b"overwritten"
+    );
+
+    let msg = UndoLastEdit.execute(json!({}), &ctx).await.unwrap();
+    assert!(
+        msg.contains("Restored"),
+        "must restore, not remove; got: {msg}"
+    );
+    assert!(
+        tmp.path().join("img.bin").exists(),
+        "binary file must still exist after undo"
+    );
+    assert_eq!(
+        std::fs::read(tmp.path().join("img.bin")).unwrap(),
+        original,
+        "original binary bytes must be restored exactly"
+    );
+}

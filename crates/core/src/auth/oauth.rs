@@ -118,9 +118,12 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
 
         let tokens = exchange_code_for_tokens(&client, &redirect, &pkce, &code).await?;
         let account_id = extract_account_id(tokens.id_token.as_deref());
-        let expires_at = tokens
-            .expires_in
-            .map(|sec| Utc::now() + chrono::Duration::seconds(sec));
+        let expires_at = tokens.expires_in.and_then(|sec| {
+            // Guard a hostile/buggy out-of-range `expires_in`: chrono's
+            // Duration::seconds and (DateTime + TimeDelta) both PANIC on
+            // overflow. None here is treated as "needs refresh", not a crash.
+            chrono::Duration::try_seconds(sec).and_then(|d| Utc::now().checked_add_signed(d))
+        });
 
         // Start from a default record if auth.json is missing OR unreadable: a
         // fresh login is meant to overwrite whatever is there, so propagating a
@@ -375,9 +378,12 @@ pub async fn ensure_fresh(record: &AuthRecord) -> Result<String> {
     };
 
     let refreshed = refresh_access_token(&refresh_token_to_use).await?;
-    let expires_at = refreshed
-        .expires_in
-        .map(|sec| Utc::now() + chrono::Duration::seconds(sec));
+    let expires_at = refreshed.expires_in.and_then(|sec| {
+        // Guard a hostile/buggy out-of-range `expires_in`: chrono's
+        // Duration::seconds and (DateTime + TimeDelta) both PANIC on
+        // overflow. None here is treated as "needs refresh", not a crash.
+        chrono::Duration::try_seconds(sec).and_then(|d| Utc::now().checked_add_signed(d))
+    });
     let mut updated = base_record;
     if let Some(st) = updated.tokens.as_mut() {
         st.access_token = refreshed.access_token.clone();

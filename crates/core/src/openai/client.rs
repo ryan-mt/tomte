@@ -133,6 +133,18 @@ impl OpenAiClient {
         if self.credential.is_chatgpt_subscription() && req.store.is_none() {
             req.store = Some(false);
         }
+        // The shared `/thinking` picker also offers "none" and "max": valid for
+        // Anthropic's adaptive thinking but rejected by OpenAI's reasoning.effort
+        // enum (minimal|low|medium|high|xhigh) with a 400. Map them to the
+        // nearest OpenAI tier so a picker choice never breaks the OpenAI path.
+        // (The Anthropic client maps these itself in translate.rs.)
+        if let Some(reasoning) = req.reasoning.as_mut() {
+            match reasoning.effort.as_deref() {
+                Some("none") => reasoning.effort = Some("minimal".to_string()),
+                Some("max") => reasoning.effort = Some("xhigh".to_string()),
+                _ => {}
+            }
+        }
     }
 
     async fn send_internal(&self, req: ResponsesRequest) -> Result<StreamHandle> {

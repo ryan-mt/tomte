@@ -127,9 +127,38 @@ fn prompt_api_key_provider() -> Result<String> {
 
 fn prompt_secret(prompt: &str) -> Result<String> {
     eprintln!("{prompt}");
+    // Non-TTY (piped) stdin: read normally — nothing is echoed to a terminal.
+    if !std::io::stdin().is_terminal() {
+        let mut buf = String::new();
+        std::io::stdin().lock().read_line(&mut buf)?;
+        return Ok(buf.trim().to_string());
+    }
+    // TTY: read with echo OFF so the secret isn't displayed as typed or left in
+    // scrollback. Raw mode disables line editing, so handle Enter/Backspace and
+    // Ctrl+C ourselves.
+    use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+    crossterm::terminal::enable_raw_mode()?;
     let mut buf = String::new();
-    std::io::stdin().lock().read_line(&mut buf)?;
-    Ok(buf.trim().to_string())
+    let outcome: Result<()> = loop {
+        match event::read() {
+            Ok(Event::Key(k)) => match (k.code, k.modifiers) {
+                (KeyCode::Enter, _) => break Ok(()),
+                (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                    break Err(anyhow::anyhow!("aborted"))
+                }
+                (KeyCode::Backspace, _) => {
+                    buf.pop();
+                }
+                (KeyCode::Char(c), _) => buf.push(c),
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(e) => break Err(e.into()),
+        }
+    };
+    crossterm::terminal::disable_raw_mode()?;
+    eprintln!();
+    outcome.map(|_| buf.trim().to_string())
 }
 
 /// Print the catalogue of models available for every provider the user is

@@ -110,7 +110,16 @@ pub fn matches(matcher: &str, key: &str, path_hint: Option<&str>) -> bool {
         return true;
     }
     if let Some(rx) = matcher.strip_prefix("re:") {
-        return regex::Regex::new(rx).is_ok_and(|re| re.is_match(key));
+        return match regex::Regex::new(rx) {
+            Ok(re) => re.is_match(key),
+            Err(e) => {
+                // A typo'd guard regex previously failed silently (no match → the
+                // hook never fired → the tool ran unguarded). Surface it so the
+                // user can fix the matcher rather than wonder why it never runs.
+                tracing::warn!(matcher = %matcher, error = %e, "invalid `re:` hook matcher; treating as no-match");
+                false
+            }
+        };
     }
     if let Some(pat) = matcher.strip_prefix("file:") {
         let Some(p) = path_hint else { return false };
