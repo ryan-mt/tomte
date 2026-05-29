@@ -225,6 +225,15 @@ pub struct App {
     /// blocking on the outer agent mutex (run_turn holds it for the whole
     /// turn and is itself waiting on this approval).
     pub approval_handle: Option<ApprovalHandle>,
+    /// Previously submitted prompts, oldest first. Up/Down in the composer
+    /// recall these (shell / Claude Code style). In-memory for this session.
+    pub input_history: Vec<String>,
+    /// Cursor into `input_history` while browsing with Up/Down. `None` means the
+    /// user is editing a fresh draft rather than navigating history.
+    pub history_pos: Option<usize>,
+    /// Draft text stashed when history browsing begins, restored when the user
+    /// presses Down past the newest entry.
+    pub history_draft: String,
 }
 
 /// Snapshot of the last `render_chat` output along with the inputs that
@@ -440,6 +449,51 @@ impl App {
             chat_render_cache: None,
             pending_approval: None,
             approval_handle: None,
+            input_history: Vec::new(),
+            history_pos: None,
+            history_draft: String::new(),
+        }
+    }
+
+    /// Record a submitted prompt in the input history (skipping a consecutive
+    /// duplicate) and reset the browse cursor.
+    fn record_history(&mut self, text: &str) {
+        if self.input_history.last().map(String::as_str) != Some(text) {
+            self.input_history.push(text.to_string());
+        }
+        self.history_pos = None;
+    }
+
+    /// Recall the previous (older) history entry into the composer.
+    fn history_prev(&mut self) {
+        if self.input_history.is_empty() {
+            return;
+        }
+        let target = match self.history_pos {
+            None => {
+                // Starting to browse — stash the in-progress draft.
+                self.history_draft = self.input.buffer.clone();
+                self.input_history.len() - 1
+            }
+            Some(0) => 0,
+            Some(p) => p - 1,
+        };
+        self.history_pos = Some(target);
+        self.input.set_text(self.input_history[target].clone());
+    }
+
+    /// Move toward newer history; past the newest entry restores the draft.
+    fn history_next(&mut self) {
+        let Some(p) = self.history_pos else {
+            return;
+        };
+        if p + 1 < self.input_history.len() {
+            self.history_pos = Some(p + 1);
+            self.input.set_text(self.input_history[p + 1].clone());
+        } else {
+            self.history_pos = None;
+            let draft = std::mem::take(&mut self.history_draft);
+            self.input.set_text(draft);
         }
     }
 
@@ -536,6 +590,16 @@ async fn main_loop(
     let agent: std::sync::Arc<tokio::sync::Mutex<Option<Agent>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));
 
+    // Cap redraws to a frame budget while a turn is streaming. The agent emits
+    // many token deltas per frame interval and each draw re-wraps the whole
+    // transcript; without the cap that runs hundreds of times/sec and shows up
+    // as visible jank. When idle (`!busy`) we draw immediately so keystrokes
+    // still echo without latency.
+    let frame_budget = Duration::from_millis(16);
+    let mut last_draw = std::time::Instant::now()
+        .checked_sub(frame_budget)
+        .unwrap_or_else(std::time::Instant::now);
+
     loop {
         if app.should_exit {
             break;
@@ -575,22 +639,38 @@ async fn main_loop(
             // accumulate normal messages for a single launch_turn. Flushing
             // pending normal messages before each slash command preserves order
             // and avoids sending a raw `/command` string to the model.
+            //
+            // Crucially, AT MOST ONE turn may be launched per flush: launch_turn
+            // sets `busy` and spawns a task that holds the agent mutex for the
+            // whole turn. A second launch_turn would block on that mutex while
+            // the main loop is stalled here (so `select!` never drains the
+            // 256-cap agent_rx), and the running turn would in turn block on a
+            // full channel — a hard deadlock. So when we must launch a turn with
+            // items still pending, re-queue the remainder and stop; the next
+            // flush (after the turn completes) picks them up.
             let mut normal: Vec<String> = Vec::new();
-            for item in queued {
+            let mut iter = queued.into_iter();
+            let mut launched = false;
+            while let Some(item) = iter.next() {
                 if let Some(rest) = item.strip_prefix('/') {
-                    if !normal.is_empty() {
-                        let combined = normal.join("\n\n");
+                    if normal.is_empty() {
+                        handle_slash(&mut app, rest.trim()).await;
+                    } else {
+                        let combined = std::mem::take(&mut normal).join("\n\n");
+                        let mut requeue = vec![item.clone()];
+                        requeue.extend(iter.by_ref());
+                        app.message_queue = requeue;
                         app.blocks.push(Block::User(combined.clone()));
                         app.auto_scroll = true;
                         launch_turn(&mut app, &agent, &agent_tx, combined).await;
-                        normal.clear();
+                        launched = true;
+                        break;
                     }
-                    handle_slash(&mut app, rest.trim()).await;
                 } else {
                     normal.push(item);
                 }
             }
-            if !normal.is_empty() {
+            if !launched && !normal.is_empty() {
                 let combined = normal.join("\n\n");
                 app.blocks.push(Block::User(combined.clone()));
                 app.auto_scroll = true;
@@ -622,18 +702,21 @@ async fn main_loop(
             }
         }
 
-        terminal.draw(|f| {
-            app.last_width = f.area().width;
-            app.last_height = f.area().height;
-            match app.screen {
-                Screen::Login => {
-                    if let Some((stage, login_err)) = login_render.as_ref() {
-                        login::render(f, f.area(), &app.login, stage, login_err.as_deref());
+        if !app.busy || last_draw.elapsed() >= frame_budget {
+            terminal.draw(|f| {
+                app.last_width = f.area().width;
+                app.last_height = f.area().height;
+                match app.screen {
+                    Screen::Login => {
+                        if let Some((stage, login_err)) = login_render.as_ref() {
+                            login::render(f, f.area(), &app.login, stage, login_err.as_deref());
+                        }
                     }
+                    Screen::Chat => ui::render(f, &mut app),
                 }
-                Screen::Chat => ui::render(f, &mut app),
-            }
-        })?;
+            })?;
+            last_draw = std::time::Instant::now();
+        }
 
         tokio::select! {
             biased;
@@ -679,6 +762,11 @@ async fn main_loop(
             }
             Some(ev) = agent_rx.recv() => {
                 apply_agent_event(&mut app, ev);
+                // Drain the rest of the burst so a fast token stream produces
+                // one redraw per frame, not one redraw per token.
+                while let Ok(ev) = agent_rx.try_recv() {
+                    apply_agent_event(&mut app, ev);
+                }
             }
             _ = tokio::time::sleep(Duration::from_millis(80)) => {
                 if app.busy {
@@ -754,7 +842,10 @@ async fn handle_key(
         KeyCode::Char('l') if ctrl => {
             app.blocks.clear();
         }
-        KeyCode::Char('u') if ctrl => app.input.clear(),
+        KeyCode::Char('u') if ctrl => {
+            app.input.clear();
+            app.history_pos = None;
+        }
         KeyCode::Char('w') if ctrl => app.input.delete_word_left(),
         KeyCode::Char('v') if ctrl => {
             handle_paste(app).await;
@@ -768,13 +859,17 @@ async fn handle_key(
             app.input.insert_char('/');
             app.open_overlay(OverlayKind::SlashMenu);
         }
-        KeyCode::Char(ch) => app.input.insert_char(ch),
+        KeyCode::Char(ch) => {
+            app.input.insert_char(ch);
+            app.history_pos = None;
+        }
         KeyCode::Enter if shift || alt => app.input.insert_newline(),
         KeyCode::Enter => {
             if app.input.is_empty() {
                 return Ok(false);
             }
             let text = app.input.take();
+            app.record_history(&text);
             if !app.busy {
                 if let Some(rest) = text.strip_prefix('/') {
                     handle_slash(app, rest.trim()).await;
@@ -789,11 +884,30 @@ async fn handle_key(
                 app.message_queue.push(text);
             }
         }
-        KeyCode::Backspace => app.input.backspace(),
+        KeyCode::Backspace => {
+            app.input.backspace();
+            app.history_pos = None;
+        }
         KeyCode::Left => app.input.move_left(),
         KeyCode::Right => app.input.move_right(),
-        KeyCode::Up => app.input.move_up(),
-        KeyCode::Down => app.input.move_down(),
+        KeyCode::Up => {
+            // On the first line, recall older history; otherwise move the
+            // cursor within the (multi-line) composer.
+            if app.input.cursor_pos().0 == 0 {
+                app.history_prev();
+            } else {
+                app.input.move_up();
+            }
+        }
+        KeyCode::Down => {
+            // On the last line, walk toward newer history (and the draft);
+            // otherwise move the cursor down within the composer.
+            if app.input.cursor_pos().0 + 1 >= app.input.line_count() {
+                app.history_next();
+            } else {
+                app.input.move_down();
+            }
+        }
         KeyCode::Home => app.input.move_home(),
         KeyCode::End => app.input.move_end(),
         KeyCode::PageUp => {
@@ -1008,6 +1122,7 @@ async fn apply_resume(
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
             a.apply_project_memory();
+            a.apply_skill_manifest();
             a.restore_from(record);
             *guard = Some(a);
         } else if let Some(a) = guard.as_mut() {
@@ -1597,7 +1712,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
         }
         "quit" | "exit" => app.should_exit = true,
         "agents" => {
-            let defs = opencli_core::subagent::load_all();
+            let defs = opencli_core::subagent::load_all(&app.cwd);
             if defs.is_empty() {
                 app.blocks.push(Block::System(format!(
                     "No subagents installed. Create one at {}/agents/<name>.md",
@@ -1628,29 +1743,20 @@ Invoke from the model via the dispatch_agent tool.",
             }
         }
         "skills" => {
-            let skills = opencli_core::skill::load_all();
+            let skills = opencli_core::skill::discover(&app.cwd);
             if skills.is_empty() {
                 app.blocks.push(Block::System(format!(
-                    "No skills installed. Create one at {}/skills/<name>/SKILL.md",
+                    "No skills installed. Create one at {}/skills/<name>/SKILL.md, or install Claude Code skills under ~/.claude/skills/.",
                     opencli_core::config::config_dir().display()
                 )));
             } else {
-                let mut out = String::from(
-                    "Installed skills:
-",
-                );
+                let mut out = format!("Available skills ({}):\n", skills.len());
                 for s in &skills {
-                    let trig = if s.triggers.is_empty() {
-                        "manual".to_string()
-                    } else {
-                        s.triggers.join(", ")
-                    };
-                    out.push_str(&format!(
-                        "  {:<22} {} [triggers: {}]
-",
-                        s.name, s.description, trig
-                    ));
+                    out.push_str(&format!("  {:<28} {}\n", s.name, s.description));
                 }
+                out.push_str(
+                    "\nThe model loads a skill's full instructions on demand via the `skill` tool.",
+                );
                 app.blocks.push(Block::System(out));
             }
         }
@@ -1815,6 +1921,7 @@ async fn launch_turn(
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
             a.apply_project_memory();
+            a.apply_skill_manifest();
             *guard = Some(a);
         } else {
             // Update mutable config every turn so /model, /effort, /plan take effect.

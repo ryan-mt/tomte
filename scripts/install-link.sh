@@ -42,12 +42,6 @@ esac
 if [ "$MODE" = "release" ]; then
   echo "→ Building release…"
   (cd "$REPO" && cargo build --release --bin opencli)
-  echo "→ Building UI…"
-  if [ -d "$REPO/ui/node_modules" ] || command -v npm >/dev/null 2>&1; then
-    (cd "$REPO/ui" && (test -d node_modules || npm install) && npm run build)
-  else
-    echo "  (skipping UI build: npm is not installed)"
-  fi
   ln -sf "$REPO/target/release/opencli" "$TARGET"
   echo "✅ Linked: $TARGET → $REPO/target/release/opencli"
   echo "   From now on each \`cargo build --release\` updates the binary."

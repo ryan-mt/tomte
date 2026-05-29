@@ -152,6 +152,18 @@ impl TextInput {
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
+
+    /// Replace the buffer with `s` and place the cursor at the end. Used by the
+    /// input-history recall (Up/Down through previously submitted prompts).
+    pub fn set_text(&mut self, s: String) {
+        self.buffer = s;
+        self.cursor = self.buffer.len();
+    }
+
+    /// Number of newline-separated lines in the buffer (always >= 1).
+    pub fn line_count(&self) -> usize {
+        self.buffer.matches('\n').count() + 1
+    }
 }
 
 fn display_width(s: &str) -> usize {

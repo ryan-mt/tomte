@@ -73,7 +73,13 @@ pub fn new_session_id() -> String {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    format!("{now:x}-{seq:x}")
+    // Mix the process id back in. The per-process SEQ alone collides across two
+    // processes started in the same millisecond (each begins at seq 0), and a
+    // collision lets one session's save() rename over the other's file, losing
+    // history. pid in the high 32 bits + seq in the low 32 keeps ids unique both
+    // within and across processes.
+    let mix = ((std::process::id() as u64) << 32) | (seq & 0xFFFF_FFFF);
+    format!("{now:x}-{mix:x}")
 }
 
 pub fn now_ms() -> u64 {

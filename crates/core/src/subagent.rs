@@ -18,11 +18,23 @@
 //! You are a focused code explorer. Use the tools …
 //! ```
 //!
-//! Frontmatter is a minimal YAML-ish subset: one `key: value` per line, with
-//! `tools` parsed as a comma-separated list. `model` is optional and falls
-//! back to the parent agent's configured model. Unrecognised keys are
-//! ignored. The body after the closing `---` becomes the system prompt.
+//! Frontmatter is a minimal YAML-ish subset: one `key: value` per line.
+//! `tools` accepts both opencli's comma-separated form (`read_file, grep`)
+//! and Claude Code's JSON-array form (`["Read", "Grep"]`); tool names are
+//! canonicalised to opencli built-ins at registry-build time. `model` is
+//! optional and may be a Claude Code alias (`sonnet`, `opus`, `haiku`) which
+//! is resolved to a concrete model id. Unrecognised keys are ignored. The
+//! body after the closing `---` becomes the system prompt.
+//!
+//! Definitions are discovered across multiple sources (most-specific first;
+//! first occurrence of a `name` wins) so opencli can use the sub-agents of
+//! other tools directly:
+//!   - `<cwd>/.opencli/agents/`     project, opencli-native
+//!   - `<cwd>/.claude/agents/`      project, Claude Code
+//!   - `~/.config/opencli/agents/`  opencli global
+//!   - `~/.claude/agents/`          Claude Code global
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
@@ -47,47 +59,87 @@ pub fn subagents_dir() -> PathBuf {
     crate::config::config_dir().join("agents")
 }
 
-/// Load every `*.md` file under the subagents dir, sorted by name. Files
-/// that fail to parse are logged and skipped — never abort the host process.
-pub fn load_all() -> Vec<SubagentDefinition> {
-    let dir = subagents_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+/// Ordered sub-agent root directories, most-specific first. The first root
+/// that defines a given `name` wins, so a project or opencli-native agent can
+/// shadow a global one. Includes `~/.claude/agents/` so opencli can use
+/// Claude Code's sub-agents directly.
+pub fn subagent_roots(cwd: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![
+        cwd.join(".opencli").join("agents"),
+        cwd.join(".claude").join("agents"),
+        subagents_dir(),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".claude").join("agents"));
+    }
+    roots
+}
+
+/// Load every `*.md` sub-agent across all roots, deduplicated by `name`
+/// (first root in precedence order wins) and sorted by name. Files that fail
+/// to parse are logged and skipped — never abort the host process.
+pub fn load_all(cwd: &Path) -> Vec<SubagentDefinition> {
+    let mut by_name: BTreeMap<String, SubagentDefinition> = BTreeMap::new();
+    for dir in subagent_roots(cwd) {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
-        }
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match parse(&text, &path) {
-                Ok(def) => out.push(def),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(text) => match parse(&text, &path) {
+                    // First root wins: don't overwrite a name already seen.
+                    Ok(def) => {
+                        by_name.entry(def.name.clone()).or_insert(def);
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %path.display(), error = %e, "subagent parse failed; skipping");
+                    }
+                },
                 Err(e) => {
-                    tracing::warn!(path = %path.display(), error = %e, "subagent parse failed; skipping");
+                    tracing::warn!(path = %path.display(), error = %e, "subagent read failed; skipping");
                 }
-            },
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "subagent read failed; skipping");
             }
         }
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    by_name.into_values().collect()
 }
 
-/// Load a single subagent definition by name. Returns NotFound if no file
-/// exists at `<dir>/<name>.md`.
-pub fn load_by_name(name: &str) -> Result<SubagentDefinition> {
+/// Load a single subagent definition by name, searching each root in
+/// precedence order. Returns NotFound if no `<root>/<name>.md` exists in any.
+pub fn load_by_name(cwd: &Path, name: &str) -> Result<SubagentDefinition> {
     if name.is_empty() || name.contains(['/', '\\', '.']) {
         return Err(anyhow!(
             "invalid subagent name `{name}`; must be a bare identifier"
         ));
     }
-    let path = subagents_dir().join(format!("{name}.md"));
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| anyhow!("subagent `{name}` not found at {}: {e}", path.display()))?;
-    parse(&text, &path)
+    for root in subagent_roots(cwd) {
+        let path = root.join(format!("{name}.md"));
+        // A readable file ends the search: surface its parse result (so a
+        // malformed definition reports its own error rather than NotFound).
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            return parse(&text, &path);
+        }
+    }
+    Err(anyhow!(
+        "subagent `{name}` not found in any agents directory (looked in ~/.config/opencli/agents, ~/.claude/agents, and project .opencli/.claude)"
+    ))
+}
+
+/// Resolve a Claude Code model alias to a concrete Anthropic model id. A
+/// `~/.claude/agents/*.md` file commonly sets `model: sonnet`; sent verbatim
+/// that 404s at the API, so map the well-known aliases. Anything already
+/// concrete (or an OpenAI id) passes through unchanged.
+pub fn resolve_model_alias(model: &str) -> String {
+    match model.trim().to_ascii_lowercase().as_str() {
+        "sonnet" => "claude-sonnet-4-6".to_string(),
+        "opus" => "claude-opus-4-8".to_string(),
+        "haiku" => "claude-haiku-4-5".to_string(),
+        _ => model.to_string(),
+    }
 }
 
 /// Parse a subagent markdown with YAML-ish frontmatter delimited by `---`.
@@ -136,11 +188,7 @@ pub fn parse(text: &str, path: &Path) -> Result<SubagentDefinition> {
             "name" => name = value.to_string(),
             "description" => description = value.to_string(),
             "tools" => {
-                tools = value
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                tools = parse_tool_list(value);
             }
             "model" if !value.is_empty() => {
                 model = Some(value.to_string());
@@ -176,6 +224,21 @@ fn strip_quotes(s: &str) -> &str {
     } else {
         s
     }
+}
+
+/// Parse a `tools:` value into a list of tool names. Handles both opencli's
+/// comma form (`read_file, grep`) and Claude Code's JSON-array form
+/// (`["Read", "Grep"]` or unquoted `[Read, Grep]`) by stripping surrounding
+/// brackets and per-item quotes. Names are NOT canonicalised here — that
+/// happens in `Registry::filtered`.
+fn parse_tool_list(value: &str) -> Vec<String> {
+    let v = value.trim();
+    let v = v.strip_prefix('[').unwrap_or(v);
+    let v = v.strip_suffix(']').unwrap_or(v);
+    v.split(',')
+        .map(|s| strip_quotes(s.trim()).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 #[cfg(test)]
@@ -242,8 +305,9 @@ mod tests {
 
     #[test]
     fn load_by_name_rejects_path_traversal() {
+        let cwd = std::path::Path::new(".");
         for bad in ["../etc/passwd", "agents/sub", "a.b", ""] {
-            let err = load_by_name(bad).unwrap_err();
+            let err = load_by_name(cwd, bad).unwrap_err();
             assert!(err.to_string().contains("invalid") || err.to_string().contains("not found"));
         }
     }
@@ -253,5 +317,41 @@ mod tests {
         let text = "---\nname: fwd\ndescription: d\nfuture_field: foo\nmax_turns: 5\n---\nbody\n";
         let def = parse(text, &fake("fwd")).unwrap();
         assert_eq!(def.name, "fwd");
+    }
+
+    #[test]
+    fn parse_tools_claude_code_json_array() {
+        // Quoted JSON array, as written by ~/.claude/agents/*.md.
+        let text =
+            "---\nname: cc\ndescription: d\ntools: [\"Read\", \"Grep\", \"Bash\"]\n---\nbody\n";
+        let def = parse(text, &fake("cc")).unwrap();
+        assert_eq!(def.tools, vec!["Read", "Grep", "Bash"]);
+    }
+
+    #[test]
+    fn parse_tools_unquoted_array_and_comma_forms() {
+        let unquoted = parse(
+            "---\nname: a\ndescription: d\ntools: [Read, Grep]\n---\nx\n",
+            &fake("a"),
+        )
+        .unwrap();
+        assert_eq!(unquoted.tools, vec!["Read", "Grep"]);
+
+        let comma = parse(
+            "---\nname: b\ndescription: d\ntools: read_file, grep\n---\nx\n",
+            &fake("b"),
+        )
+        .unwrap();
+        assert_eq!(comma.tools, vec!["read_file", "grep"]);
+    }
+
+    #[test]
+    fn resolve_model_alias_maps_claude_aliases() {
+        assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6");
+        assert_eq!(resolve_model_alias("opus"), "claude-opus-4-8");
+        assert_eq!(resolve_model_alias("haiku"), "claude-haiku-4-5");
+        // Concrete ids and OpenAI ids pass through unchanged.
+        assert_eq!(resolve_model_alias("claude-opus-4-8"), "claude-opus-4-8");
+        assert_eq!(resolve_model_alias("gpt-5.5"), "gpt-5.5");
     }
 }

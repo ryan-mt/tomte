@@ -1,5 +1,4 @@
 mod commands;
-mod server;
 mod tui;
 
 use anyhow::Result;
@@ -9,15 +8,11 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "opencli",
     version,
-    about = "CLI coding agent using the OpenAI Responses API (Rust + React UI)"
+    about = "Terminal coding agent in Rust (OpenAI Responses + Anthropic Messages)"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
-
-    /// Port for the web UI (default 7777)
-    #[arg(long, global = true, default_value_t = 7777)]
-    port: u16,
 }
 
 #[derive(Subcommand)]
@@ -55,12 +50,6 @@ enum Command {
     },
     /// Open the TUI with the resume-session picker open
     Resume,
-    /// Start the Web UI (React) in the browser
-    Web {
-        /// Do not open the browser automatically
-        #[arg(long)]
-        no_open: bool,
-    },
     /// Inspect or update configuration
     Config {
         /// Show the current config
@@ -75,7 +64,7 @@ enum Command {
     },
 }
 
-fn init_tracing() {
+fn init_tracing(tui_mode: bool) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -94,7 +83,12 @@ fn init_tracing() {
         .append(true)
         .open(&log_path)
         .ok();
-    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    // The full-screen TUI owns the terminal (alternate screen + raw mode);
+    // writing logs to stderr there scribbles over the ratatui display and
+    // desyncs its diff renderer (stale, overlapping text). In TUI mode log to
+    // the file only; keep stderr for one-shot commands.
+    let stderr_layer =
+        (!tui_mode).then(|| tracing_subscriber::fmt::layer().with_writer(std::io::stderr));
     let registry = tracing_subscriber::registry()
         .with(env_filter)
         .with(stderr_layer);
@@ -110,9 +104,12 @@ fn init_tracing() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
-
     let cli = Cli::parse();
+
+    // `opencli` and `opencli resume` launch the full-screen TUI, which owns the
+    // terminal — logs must go to the file only there, not stderr.
+    let tui_mode = matches!(cli.command, None | Some(Command::Resume));
+    init_tracing(tui_mode);
 
     match cli.command {
         None => tui::run().await,
@@ -130,7 +127,6 @@ async fn main() -> Result<()> {
             output_format,
         }) => commands::chat::run(prompt.join(" "), model, reasoning, output_format).await,
         Some(Command::Resume) => tui::run_resume().await,
-        Some(Command::Web { no_open }) => commands::ui::run(cli.port, !no_open).await,
         Some(Command::Config {
             show,
             set_model,

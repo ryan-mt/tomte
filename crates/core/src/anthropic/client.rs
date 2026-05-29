@@ -133,12 +133,13 @@ impl AnthropicClient {
         use super::models::SystemBlock;
         let identity = SystemBlock::Text {
             text: OAUTH_IDENTITY_PROMPT.to_string(),
+            cache_control: None,
         };
         match body.system.as_mut() {
             Some(blocks) => {
                 let already_present = matches!(
                     blocks.first(),
-                    Some(SystemBlock::Text { text }) if text.starts_with(OAUTH_IDENTITY_PROMPT)
+                    Some(SystemBlock::Text { text, .. }) if text.starts_with(OAUTH_IDENTITY_PROMPT)
                 );
                 if !already_present {
                     blocks.insert(0, identity);

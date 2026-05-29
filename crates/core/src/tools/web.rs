@@ -27,7 +27,7 @@ impl BuiltinTool for WebFetch {
     fn description(&self) -> &'static str {
         "Fetch a URL via HTTP(S) GET and return the response body as text, along with the status line and Content-Type header.\n\
 \n\
-Use this when you need the contents of a web page or a public API response — for example, fetching upstream documentation, a raw GitHub file, or an RFC. For HTML, the body is returned verbatim; read the meaningful parts out of it. For large responses, pass `max_bytes` to cap the size; the hard ceiling is 10 MiB.\n\
+Use this when you need the contents of a web page or a public API response — for example, fetching upstream documentation, a raw GitHub file, or an RFC. HTML responses are stripped to readable plain text (scripts, styles and tags removed) to keep the context lean; non-HTML (JSON, plain text, source) is returned as-is. For large responses, pass `max_bytes` to cap the size; the hard ceiling is 10 MiB.\n\
 \n\
 Constraints:\n\
 - Only `http://` and `https://` URLs are accepted.\n\
@@ -145,19 +145,46 @@ Parameters:\n\
         }
         let total = buf.len();
         let body = String::from_utf8_lossy(&buf);
+        // HTML pages are mostly markup, scripts and inline styles — returning
+        // them verbatim buries the useful text and can dump 250k+ tokens of
+        // noise into the context from a single fetch. Convert to plain text
+        // (like Claude Code's web fetch) so only the readable content lands in
+        // the model's context.
+        let ct = content_type.to_ascii_lowercase();
+        let head: String = body
+            .chars()
+            .take(1024)
+            .collect::<String>()
+            .to_ascii_lowercase();
+        // When the Content-Type is missing/generic, sniff — but only treat the
+        // body as HTML if it *starts* with the markup (after leading
+        // whitespace/BOM). Matching "<html" anywhere in the first 1KB
+        // false-positives on non-HTML that merely mentions it (a Markdown doc, a
+        // source file), which html_to_text would then mangle.
+        let is_html = ct.contains("html")
+            || (!ct.contains("json") && !ct.contains("text/plain") && {
+                let h = head.trim_start();
+                h.starts_with("<!doctype html") || h.starts_with("<html")
+            });
+        let (rendered, note) = if is_html {
+            (html_to_text(&body), " (HTML converted to text)")
+        } else {
+            (body.into_owned(), "")
+        };
         let location_line = match (&location, status.is_redirection()) {
             (Some(loc), true) => format!("Location: {loc}\n"),
             _ => String::new(),
         };
         Ok(format!(
-            "HTTP {} {}\nContent-Type: {}\n{}Bytes: {}{}\n---\n{}",
+            "HTTP {} {}\nContent-Type: {}{}\n{}Bytes: {}{}\n---\n{}",
             status.as_u16(),
             status.canonical_reason().unwrap_or(""),
             content_type,
+            note,
             location_line,
             total,
             if truncated { " (truncated)" } else { "" },
-            body
+            rendered
         ))
     }
 }
@@ -169,6 +196,68 @@ fn backoff(attempt: u32) -> Duration {
         2 => Duration::from_millis(500),
         _ => Duration::from_secs(1),
     }
+}
+
+/// Strip an HTML document down to readable plain text: drop script/style/head
+/// and comments outright, turn block-closing tags into newlines, remove the
+/// remaining tags, decode the common entities, and collapse whitespace. Not a
+/// full HTML→Markdown renderer — the goal is to keep the model's context lean,
+/// not to preserve layout. (`regex` has no backreferences, so each noise block
+/// is matched by its own alternative.)
+fn html_to_text(html: &str) -> String {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static DROP: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?is)<!--.*?-->|<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<head\b[^>]*>.*?</head>|<noscript\b[^>]*>.*?</noscript>|<svg\b[^>]*>.*?</svg>",
+        )
+        .unwrap()
+    });
+    // A truncated page (web_fetch caps bytes mid-document) leaves an UNCLOSED
+    // <script>/<style>/etc. that DROP's close-tag alternatives never match — the
+    // per-tag TAG pass would then strip only `<script>` and leak the raw JS/CSS
+    // (and `<b>`-looking fragments inside it) into the output. Drop an
+    // unterminated noise block and everything after it; truncated tail content
+    // is garbage anyway.
+    static DROP_UNCLOSED: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?is)<!--.*$|<(?:script|style|svg|noscript|head)\b[^>]*>.*$").unwrap()
+    });
+    static BLOCK: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)</(p|div|li|tr|h[1-6]|section|article|header|footer|blockquote|ul|ol|table)>|<br\s*/?>")
+            .unwrap()
+    });
+    static TAG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<[^>]+>").unwrap());
+    static HSPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[ \t]{2,}").unwrap());
+    static BLANK: Lazy<Regex> = Lazy::new(|| Regex::new(r"\n{3,}").unwrap());
+
+    let s = DROP.replace_all(html, " ");
+    let s = DROP_UNCLOSED.replace_all(&s, " ");
+    let s = BLOCK.replace_all(&s, "\n");
+    let s = TAG.replace_all(&s, "");
+    let s = decode_entities(&s);
+    let s = HSPACE.replace_all(&s, " ");
+    let s = BLANK.replace_all(&s, "\n\n");
+    s.lines()
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// Decode the handful of HTML entities common in body text. `&amp;` is decoded
+/// last so an encoded entity like `&amp;lt;` doesn't get double-decoded.
+fn decode_entities(s: &str) -> String {
+    s.replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&mdash;", "—")
+        .replace("&ndash;", "–")
+        .replace("&hellip;", "…")
+        .replace("&amp;", "&")
 }
 
 /// A network error is retryable when it's a connect/timeout/IO failure rather
@@ -253,5 +342,482 @@ fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
             }
             false
         }
+    }
+}
+
+pub struct WebSearch;
+
+#[derive(Deserialize)]
+struct WebSearchArgs {
+    query: String,
+    #[serde(default)]
+    max_results: Option<u64>,
+    #[serde(default)]
+    allowed_domains: Option<Vec<String>>,
+    #[serde(default)]
+    blocked_domains: Option<Vec<String>>,
+}
+
+const DEFAULT_MAX_RESULTS: usize = 10;
+const HARD_MAX_RESULTS: usize = 25;
+
+/// Keyless search backends, tried in order; the first to return any results
+/// wins. Each scrapes a no-login HTML endpoint, so a block or markup change on
+/// one engine transparently falls through to the next.
+#[derive(Clone, Copy)]
+enum Backend {
+    DuckDuckGo,
+    Mojeek,
+}
+
+impl Backend {
+    const ALL: [Backend; 2] = [Backend::DuckDuckGo, Backend::Mojeek];
+
+    fn label(self) -> &'static str {
+        match self {
+            Backend::DuckDuckGo => "duckduckgo",
+            Backend::Mojeek => "mojeek",
+        }
+    }
+
+    async fn fetch(self, client: &reqwest::Client, query: &str) -> Result<String> {
+        let enc = urlencoding::encode(query);
+        let resp = match self {
+            // DuckDuckGo's HTML endpoint expects a POST form; a GET is often
+            // answered with a 202 bot-challenge page that carries no results.
+            Backend::DuckDuckGo => {
+                client
+                    .post("https://html.duckduckgo.com/html/")
+                    .form(&[("q", query)])
+                    .send()
+                    .await?
+            }
+            Backend::Mojeek => {
+                client
+                    .get(format!("https://www.mojeek.com/search?q={enc}"))
+                    .send()
+                    .await?
+            }
+        };
+        if !resp.status().is_success() {
+            return Err(anyhow!(
+                "{} returned HTTP {}",
+                self.label(),
+                resp.status().as_u16()
+            ));
+        }
+        resp.text().await.context("read search response body")
+    }
+
+    fn parse(self, html: &str) -> Vec<SearchResult> {
+        match self {
+            Backend::DuckDuckGo => parse_ddg(html),
+            Backend::Mojeek => parse_mojeek(html),
+        }
+    }
+}
+
+/// Drop empty/duplicate results, apply domain allow/block lists, then cap to
+/// `max`. Shared by every backend so filtering behaves identically.
+fn apply_filters(
+    raw: Vec<SearchResult>,
+    max: usize,
+    allowed: Option<&[String]>,
+    blocked: Option<&[String]>,
+) -> Vec<SearchResult> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for r in raw {
+        if r.title.is_empty() || r.url.is_empty() {
+            continue;
+        }
+        if !seen.insert(r.url.clone()) {
+            continue;
+        }
+        let host = host_of(&r.url);
+        if let Some(allow) = allowed {
+            if !allow.iter().any(|d| host_matches(&host, d)) {
+                continue;
+            }
+        }
+        if let Some(block) = blocked {
+            if block.iter().any(|d| host_matches(&host, d)) {
+                continue;
+            }
+        }
+        out.push(r);
+        if out.len() >= max {
+            break;
+        }
+    }
+    out
+}
+
+fn format_results(query: &str, results: &[SearchResult]) -> String {
+    let mut out = format!("Search results for: {query}\n\n");
+    for (i, r) in results.iter().enumerate() {
+        out.push_str(&format!("{}. {}\n   {}\n", i + 1, r.title, r.url));
+        if !r.snippet.is_empty() {
+            out.push_str(&format!("   {}\n", r.snippet));
+        }
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
+
+#[async_trait]
+impl BuiltinTool for WebSearch {
+    fn name(&self) -> &'static str {
+        "web_search"
+    }
+    fn description(&self) -> &'static str {
+        "Search the web and return ranked results (title, URL, snippet). Keyless — tries DuckDuckGo first and falls back to Mojeek, so a block or outage on one engine transparently uses another.\n\
+\n\
+When to use:\n\
+- You need current information beyond your training cutoff (releases, news, recent docs).\n\
+- You don't know the exact URL — search first, then `web_fetch` the most promising result to read it in full.\n\
+- Verifying a fact, finding the canonical source, discovering library/API documentation.\n\
+\n\
+When NOT to use:\n\
+- You already know the URL — call `web_fetch` directly.\n\
+- The answer is in the codebase — use `grep` / `read_file`.\n\
+\n\
+Workflow: `web_search` to find candidates → pick the best URL → `web_fetch` to read its full contents.\n\
+\n\
+Parameters:\n\
+- `query`: The search query.\n\
+- `max_results`: Cap on results returned (default 10, max 25); pass `null` for the default.\n\
+- `allowed_domains`: If set, only return results whose host matches one of these domains; `null` for no allow-list.\n\
+- `blocked_domains`: If set, drop results whose host matches one of these domains; `null` for no block-list."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query."},
+                "max_results": {"type": ["integer", "null"], "description": "Cap on results (default 10, max 25); null for the default."},
+                "allowed_domains": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Only include results from these domains; null for no allow-list."},
+                "blocked_domains": {"type": ["array", "null"], "items": {"type": "string"}, "description": "Exclude results from these domains; null for no block-list."}
+            },
+            "required": ["query", "max_results", "allowed_domains", "blocked_domains"],
+            "additionalProperties": false
+        })
+    }
+    fn is_read_only(&self) -> bool {
+        true
+    }
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<String> {
+        let a: WebSearchArgs = super::parse_args("web_search", args)?;
+        let query = a.query.trim();
+        if query.is_empty() {
+            return Err(anyhow!("query must not be empty"));
+        }
+        let max = (a.max_results.unwrap_or(DEFAULT_MAX_RESULTS as u64) as usize)
+            .clamp(1, HARD_MAX_RESULTS);
+        // A plain Chrome UA: search HTML endpoints answer obvious bots (or
+        // exotic UA strings) with empty challenge pages.
+        let client = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .timeout(Duration::from_secs(20))
+            .build()?;
+        let mut last_err: Option<String> = None;
+        for backend in Backend::ALL {
+            match backend.fetch(&client, query).await {
+                Ok(html) => {
+                    let results = apply_filters(
+                        backend.parse(&html),
+                        max,
+                        a.allowed_domains.as_deref(),
+                        a.blocked_domains.as_deref(),
+                    );
+                    if !results.is_empty() {
+                        return Ok(format_results(query, &results));
+                    }
+                    tracing::info!(
+                        backend = backend.label(),
+                        "web_search: backend returned no results, trying next"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(backend = backend.label(), error = %e, "web_search backend failed");
+                    last_err = Some(e.to_string());
+                }
+            }
+        }
+        match last_err {
+            Some(e) => Ok(format!(
+                "No results for {query:?}. Every search backend failed or returned nothing (last error: {e})."
+            )),
+            None => Ok(format!("No results found for: {query}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SearchResult {
+    title: String,
+    url: String,
+    snippet: String,
+}
+
+/// Attach each snippet to the result that most immediately precedes it in the
+/// document. Results and snippets are captured by separate regex passes; pairing
+/// them by list index silently mis-aligns every later snippet as soon as one
+/// result lacks a snippet (ad/markup-variant rows). Positional assignment — each
+/// snippet belongs to the last result whose tag starts before it — is robust to
+/// such gaps. `results`/`snippets` carry each match's byte offset.
+fn attach_snippets(
+    mut results: Vec<(usize, SearchResult)>,
+    snippets: Vec<(usize, String)>,
+) -> Vec<SearchResult> {
+    for (spos, text) in snippets {
+        if let Some((_, r)) = results
+            .iter_mut()
+            .rev()
+            .find(|(rpos, r)| *rpos < spos && r.snippet.is_empty())
+        {
+            r.snippet = text;
+        }
+    }
+    results.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Parse DuckDuckGo's HTML results into raw results (no filtering). Pure and
+/// network-free so it can be unit-tested against a fixture.
+fn parse_ddg(html: &str) -> Vec<SearchResult> {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static RESULT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?s)<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#).unwrap()
+    });
+    static SNIPPET_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r#"(?s)<a[^>]*class="result__snippet"[^>]*>(.*?)</a>"#).unwrap());
+
+    let results: Vec<(usize, SearchResult)> = RESULT_RE
+        .captures_iter(html)
+        .map(|cap| {
+            (
+                cap.get(0).map(|m| m.start()).unwrap_or(0),
+                SearchResult {
+                    title: clean_html(&cap[2]),
+                    url: extract_real_url(&cap[1]),
+                    snippet: String::new(),
+                },
+            )
+        })
+        .collect();
+    let snippets: Vec<(usize, String)> = SNIPPET_RE
+        .captures_iter(html)
+        .map(|c| (c.get(0).map(|m| m.start()).unwrap_or(0), clean_html(&c[1])))
+        .collect();
+    attach_snippets(results, snippets)
+}
+
+/// Parse Mojeek's HTML results. Mojeek hrefs are already absolute, and each
+/// result is `<a class="title" … href="URL">Title</a>` followed by a
+/// `<p class="s">snippet</p>`.
+fn parse_mojeek(html: &str) -> Vec<SearchResult> {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static RESULT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r#"(?s)<a class="title"[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#).unwrap()
+    });
+    static SNIPPET_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r#"(?s)<p class="s">(.*?)</p>"#).unwrap());
+
+    let results: Vec<(usize, SearchResult)> = RESULT_RE
+        .captures_iter(html)
+        .map(|cap| {
+            (
+                cap.get(0).map(|m| m.start()).unwrap_or(0),
+                SearchResult {
+                    title: clean_html(&cap[2]),
+                    url: cap[1].trim().to_string(),
+                    snippet: String::new(),
+                },
+            )
+        })
+        .collect();
+    let snippets: Vec<(usize, String)> = SNIPPET_RE
+        .captures_iter(html)
+        .map(|c| (c.get(0).map(|m| m.start()).unwrap_or(0), clean_html(&c[1])))
+        .collect();
+    attach_snippets(results, snippets)
+}
+
+/// DuckDuckGo wraps each target in `//duckduckgo.com/l/?uddg=<encoded>&rut=…`.
+/// Pull the `uddg` param out and URL-decode it; fall back to the raw href
+/// (adding a scheme for protocol-relative links) when there's no wrapper.
+fn extract_real_url(href: &str) -> String {
+    if let Some(pos) = href.find("uddg=") {
+        let rest = &href[pos + "uddg=".len()..];
+        let enc = rest.split('&').next().unwrap_or(rest);
+        return urlencoding::decode(enc)
+            .map(|c| c.into_owned())
+            .unwrap_or_else(|_| enc.to_string());
+    }
+    if let Some(stripped) = href.strip_prefix("//") {
+        return format!("https://{stripped}");
+    }
+    href.to_string()
+}
+
+fn host_of(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .unwrap_or_default()
+}
+
+/// Domain match: exact host or any subdomain, ignoring a leading `www.`.
+fn host_matches(host: &str, domain: &str) -> bool {
+    let domain = domain.trim().to_ascii_lowercase();
+    let d = domain.strip_prefix("www.").unwrap_or(&domain);
+    let h = host.strip_prefix("www.").unwrap_or(host);
+    h == d || h.ends_with(&format!(".{d}"))
+}
+
+/// Strip HTML tags and decode the handful of entities DuckDuckGo emits, then
+/// collapse whitespace. Good enough for titles and snippets.
+fn clean_html(s: &str) -> String {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+    static TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]+>").unwrap());
+    TAG_RE
+        .replace_all(s, "")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+        .replace("&#x2F;", "/")
+        // `&amp;` LAST so an encoded entity like `&amp;lt;` decodes to the literal
+        // `&lt;`, not double-decoded into `<`.
+        .replace("&amp;", "&")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod web_search_tests {
+    use super::*;
+
+    #[test]
+    fn html_to_text_strips_markup_scripts_and_entities() {
+        let html = r#"<!doctype html><html><head><title>T</title><style>.a{color:red}</style></head>
+<body><script>var a = 1 < 2;</script><h1>Hello</h1><p>World &amp; <b>friends</b></p><!-- hidden --></body></html>"#;
+        let out = html_to_text(html);
+        assert!(out.contains("Hello"), "kept heading text: {out:?}");
+        assert!(
+            out.contains("World & friends"),
+            "decoded entity + inline tag: {out:?}"
+        );
+        assert!(!out.contains("color:red"), "dropped <style>: {out:?}");
+        assert!(!out.contains("var a"), "dropped <script>: {out:?}");
+        assert!(!out.contains("hidden"), "dropped comment: {out:?}");
+        assert!(!out.contains('<'), "all tags stripped: {out:?}");
+    }
+
+    const SAMPLE: &str = r#"<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Ftokio.rs%2F&amp;rut=abc">Tokio <b>runtime</b></a><a class="result__snippet" href="//x">An async <b>runtime</b> for Rust.</a><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgithub.com%2Ftokio-rs%2Ftokio&amp;rut=def">GitHub tokio-rs</a><a class="result__snippet" href="//y">The source repository.</a>"#;
+
+    const MOJEEK_SAMPLE: &str = r#"<a class="title" title="https://tokio.rs/" href="https://tokio.rs/">Tokio - async <b>runtime</b></a></h2><p class="s"><strong>Tokio</strong> is an async runtime.</p><a class="title" title="https://github.com/tokio-rs/tokio" href="https://github.com/tokio-rs/tokio">GitHub tokio-rs</a></h2><p class="s">The source repo.</p>"#;
+
+    #[test]
+    fn ddg_parses_title_url_and_snippet() {
+        let r = parse_ddg(SAMPLE);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].title, "Tokio runtime");
+        assert_eq!(r[0].url, "https://tokio.rs/");
+        assert_eq!(r[0].snippet, "An async runtime for Rust.");
+        assert_eq!(r[1].url, "https://github.com/tokio-rs/tokio");
+    }
+
+    #[test]
+    fn mojeek_parses_title_url_and_snippet() {
+        let r = parse_mojeek(MOJEEK_SAMPLE);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].title, "Tokio - async runtime");
+        assert_eq!(r[0].url, "https://tokio.rs/");
+        assert_eq!(r[0].snippet, "Tokio is an async runtime.");
+        assert_eq!(r[1].url, "https://github.com/tokio-rs/tokio");
+    }
+
+    #[test]
+    fn respects_max_results() {
+        assert_eq!(apply_filters(parse_ddg(SAMPLE), 1, None, None).len(), 1);
+    }
+
+    #[test]
+    fn allowed_domains_keeps_only_matches() {
+        let r = apply_filters(
+            parse_ddg(SAMPLE),
+            10,
+            Some(&["github.com".to_string()]),
+            None,
+        );
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].url, "https://github.com/tokio-rs/tokio");
+    }
+
+    #[test]
+    fn blocked_domains_drops_matches() {
+        let r = apply_filters(parse_ddg(SAMPLE), 10, None, Some(&["tokio.rs".to_string()]));
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].url, "https://github.com/tokio-rs/tokio");
+    }
+
+    #[test]
+    fn dedups_repeated_urls() {
+        let mut raw = parse_ddg(SAMPLE);
+        raw.push(raw[0].clone());
+        assert_eq!(apply_filters(raw, 10, None, None).len(), 2);
+    }
+
+    #[test]
+    fn host_matches_handles_subdomains_and_www() {
+        assert!(host_matches("docs.rs", "docs.rs"));
+        assert!(host_matches("www.github.com", "github.com"));
+        assert!(host_matches("api.github.com", "github.com"));
+        assert!(!host_matches("notgithub.com", "github.com"));
+    }
+
+    #[test]
+    fn html_to_text_drops_unclosed_script() {
+        // A truncated page (byte cap mid-document) leaves an unclosed <script>;
+        // it must not leak the raw JS into the output.
+        let html = "<body>visible text<script>var x = 1; if (a < b) { leak() }";
+        let out = html_to_text(html);
+        assert!(out.contains("visible text"), "kept body text: {out:?}");
+        assert!(
+            !out.contains("leak"),
+            "dropped unclosed script body: {out:?}"
+        );
+        assert!(
+            !out.contains("var x"),
+            "dropped unclosed script body: {out:?}"
+        );
+    }
+
+    #[test]
+    fn ddg_pairs_snippets_by_position_when_one_missing() {
+        // Result A has NO snippet; result B does. Index pairing would mislabel A
+        // with B's snippet — positional pairing keeps A empty and B correct.
+        let html = r#"<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.com%2F&amp;rut=x">Result A</a><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fb.com%2F&amp;rut=y">Result B</a><a class="result__snippet" href="//y">Snippet for B.</a>"#;
+        let r = parse_ddg(html);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].url, "https://a.com/");
+        assert_eq!(r[0].snippet, "", "A must not steal B's snippet: {r:?}");
+        assert_eq!(r[1].url, "https://b.com/");
+        assert_eq!(r[1].snippet, "Snippet for B.");
+    }
+
+    #[test]
+    fn clean_html_does_not_double_decode_amp() {
+        // `&amp;lt;` is an encoded `&lt;`; it must decode to the literal `&lt;`,
+        // not be double-decoded into `<`.
+        assert_eq!(clean_html("&amp;lt;script&amp;gt;"), "&lt;script&gt;");
+        // A bare `&amp;` still decodes normally.
+        assert_eq!(clean_html("A &amp; B"), "A & B");
     }
 }

@@ -541,7 +541,13 @@ impl BuiltinTool for UndoLastEdit {
         "undo_last_edit"
     }
     fn description(&self) -> &'static str {
-        "Roll back the most recent file edit. If that write created a new file, undo removes it.\n\nParameters: none."
+        "Roll back the most recent file edit you made via `edit_file`, `write_file`, or `multi_edit`. Undo is a stack: each call reverts one edit, most-recent first. If the edit created a new file, undo deletes it; otherwise it restores the previous contents.\n\
+\n\
+Refuses to undo when the file changed since your edit (the user, their editor, or another tool touched it) so it can't silently destroy work you didn't make — restore manually in that case.\n\
+\n\
+Use it to recover from a bad edit right after you notice. It does not undo `run_shell` side effects or anything outside the file-edit stack.\n\
+\n\
+Parameters: none."
     }
     fn parameters_schema(&self) -> Value {
         json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })

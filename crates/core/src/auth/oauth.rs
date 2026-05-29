@@ -122,7 +122,11 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
             .expires_in
             .map(|sec| Utc::now() + chrono::Duration::seconds(sec));
 
-        let mut record = load_auth()?;
+        // Start from a default record if auth.json is missing OR unreadable: a
+        // fresh login is meant to overwrite whatever is there, so propagating a
+        // parse error (`?`) on a corrupt file would needlessly lock the user out
+        // of the self-healing re-login path.
+        let mut record = load_auth().unwrap_or_default();
         record.mode = AuthMode::OpenaiOauth;
         record.api_key = None;
         record.tokens = Some(StoredTokens {

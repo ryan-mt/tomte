@@ -102,20 +102,43 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 const ALWAYS_AUTO_TOOLS: &[&str] = &["todo_write"];
 
 /// File-mutation tools auto-approved in "accept edits" mode.
-const EDIT_TOOLS: &[&str] = &["write_file", "edit_file", "multi_edit", "undo_last_edit"];
+const EDIT_TOOLS: &[&str] = &[
+    "write_file",
+    "edit_file",
+    "multi_edit",
+    "undo_last_edit",
+    "notebook_edit",
+];
 
+/// Context-window size (tokens) per model, used to warn before a turn
+/// overflows. Verified against published model docs (May 2026):
+///   - Anthropic: Opus 4.6 / 4.7 / 4.8 and Sonnet 4.6 ship a 1M window. Opus
+///     4.5, Sonnet 4.5 / 4 and all Haiku are 200K. (Sonnet 4.5's 1M is a
+///     header-gated beta we don't request, so 200K is the effective limit.)
+///   - OpenAI: gpt-5.5 → 1.05M, gpt-5.4 → 1M, mini → 400K, nano → 200K;
+///     everything else (gpt-5 / 5.2 / 5.3 / -pro / -codex) → 400K.
 pub fn model_context_limit(model: &str) -> u64 {
     let m = model.to_ascii_lowercase();
     if m.starts_with("claude") {
-        return 200_000;
+        let one_million = m.contains("opus-4-8")
+            || m.contains("opus-4-7")
+            || m.contains("opus-4-6")
+            || m.contains("sonnet-4-6");
+        return if one_million { 1_000_000 } else { 200_000 };
     }
     if m.contains("nano") {
-        200_000
-    } else if m.contains("mini") {
-        400_000
-    } else {
-        1_000_000
+        return 200_000;
     }
+    if m.contains("mini") {
+        return 400_000;
+    }
+    if m.contains("gpt-5.5") {
+        return 1_050_000;
+    }
+    if m.contains("gpt-5.4") {
+        return 1_000_000;
+    }
+    400_000
 }
 
 pub struct Agent {
@@ -280,6 +303,30 @@ impl Agent {
         if !additions.is_empty() {
             self.system_prompt.push_str(&additions);
         }
+    }
+
+    /// Discover every installed skill (opencli + Claude Code + Codex + project)
+    /// and append a compact manifest to the system prompt so the model knows
+    /// what playbooks exist and can load any one on demand via the `skill`
+    /// tool. Only `name: description` lines go in — bodies are loaded lazily —
+    /// and the whole block rides the prompt cache, so even hundreds of skills
+    /// cost roughly one line each after the first turn. Idempotent-ish: call
+    /// once during setup, after `cwd` is set. No-ops when nothing is installed.
+    pub fn apply_skill_manifest(&mut self) {
+        let entries = crate::skill::discover(&self.cwd);
+        if entries.is_empty() {
+            return;
+        }
+        let count = entries.len();
+        let manifest = crate::skill::manifest(&entries);
+        self.system_prompt.push_str(&format!(
+            "\n\n# Available skills ({count})\n\n\
+             These curated playbooks are installed and available. Each is the distilled \
+             approach for one kind of task. When a request clearly matches a skill's \
+             description, call the `skill` tool with its exact name to load the full \
+             instructions, then follow them. Load at most what you need — do not pull in \
+             skills speculatively.\n\n{manifest}"
+        ));
     }
 
     /// Build a `SessionRecord` snapshot of the current conversation. Cheap
@@ -492,10 +539,21 @@ impl Agent {
                             .await;
                     }
                     ResponseStreamEvent::OutputTextDone { text, .. } => {
+                        // `text` is only THIS block's text. Anthropic emits one
+                        // OutputTextDone per text block, so overwriting would drop
+                        // earlier blocks (e.g. text before AND after a tool_use in
+                        // one response). `final_text` already holds the full
+                        // accumulation from the deltas for both providers; keep it,
+                        // falling back to `text` only if no deltas arrived. Emit the
+                        // cumulative text so the UI's "done" replace stays complete.
+                        if final_text.is_empty() {
+                            final_text = text;
+                        }
                         let _ = tx
-                            .send(AgentEvent::AssistantTextDone { text: text.clone() })
+                            .send(AgentEvent::AssistantTextDone {
+                                text: final_text.clone(),
+                            })
                             .await;
-                        final_text = text;
                     }
                     ResponseStreamEvent::FunctionCallArgsDelta { item_id, delta } => {
                         // Stream delta event references the output-item id, which
@@ -864,14 +922,16 @@ struct PendingCall {
 
 async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, model: &str) {
     if let Some(usage) = response.get("usage") {
-        let i = usage
-            .get("input_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let o = usage
-            .get("output_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let get = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+        // With prompt caching on, Anthropic reports the cached prompt tokens
+        // separately from `input_tokens`. The true context occupancy (what the
+        // window limit applies to) is the sum of all three; folding them in
+        // keeps the /compact warning accurate. OpenAI omits the cache fields,
+        // so this is a no-op there.
+        let i = get("input_tokens")
+            + get("cache_read_input_tokens")
+            + get("cache_creation_input_tokens");
+        let o = get("output_tokens");
         let t = usage
             .get("total_tokens")
             .and_then(|v| v.as_u64())
@@ -932,12 +992,21 @@ fn default_system_prompt() -> String {
   - `glob` — "which files match this pattern", path discovery
   - `read_file` — "what does this file actually say"
   - `list_dir` — only when you need a directory snapshot
-  - `run_shell` — builds, tests, formatters, git status, one-shot commands
-- Read before you edit. `edit_file` requires the exact existing bytes; guessing wastes a turn and corrodes the user's trust.
+  - `run_shell` — builds, tests, formatters, git, one-shot commands (use `run_in_background: true` for dev servers/watchers)
+  - `web_search` — find pages by query when you don't know the URL; pair with `web_fetch` to read the best hit
+  - `web_fetch` — fetch a known URL's contents (upstream docs, a raw file, a public API)
+  - `notebook_edit` — edit a Jupyter notebook (`.ipynb`) cell: replace, insert, or delete
+  - `skill` — load a curated playbook by exact name when the task matches one listed under "Available skills"
+  - `dispatch_agent` — hand a large, self-contained sub-task to a child agent (see Subagents)
+  - `ask_user_question` — surface multiple-choice options when only the user can decide
+- Read before you edit. `edit_file`/`multi_edit` require the exact existing bytes; guessing wastes a turn and corrodes the user's trust.
 
 # Editing code
 - `edit_file` for surgical changes in existing files. Include enough surrounding context in `old_string` so the match is unambiguous.
 - `write_file` ONLY when creating a new file or doing a full rewrite. Never as a substitute for `edit_file` — it silently destroys unrelated content.
+- `multi_edit` when you have several edits to the SAME file: they apply in order and roll back atomically if any one fails. Prefer it over a sequence of `edit_file` calls on one file.
+- `undo_last_edit` reverts your most recent file write if you got it wrong. It refuses if the file changed underneath you, so don't rely on it to paper over a destructive mistake.
+- `read_file` prefixes each line with `<lineno>\t` for display only. NEVER include that prefix in `old_string` — match the real file bytes.
 - Match the existing style (indentation, naming, error handling, comment density). Do NOT "improve" surrounding code, reformat unrelated lines, or refactor things that aren't broken.
 - Do not add comments unless they explain non-obvious WHY. Never explain WHAT well-named code already says. Never write multi-paragraph docstrings unless asked.
 - Touch only what the task requires. If you spot unrelated bugs, mention them in your reply — don't silently fix.
@@ -945,8 +1014,42 @@ fn default_system_prompt() -> String {
 
 # Running commands
 - `run_shell` for builds, tests, formatters, version checks, one-shot scripts. Default timeout is 120s; raise `timeout_ms` for slow builds.
+- For long-lived processes (dev servers, watchers, log tails) pass `run_in_background: true` — it returns a `bash_id`. Poll new output with `bash_output {bash_id}` and stop it with `kill_shell {bash_id}`. A foreground command that never exits will block until timeout.
 - The shell sandbox strips secret-like env vars (TOKEN, SECRET, KEY, …). Don't rely on those being present in the child process.
-- Never run destructive commands (`rm -rf`, force push, dropping tables, `git reset --hard`, etc.) unless the user explicitly asked. When in doubt, ask first.
+- Destructive commands (`rm -rf` on broad targets, force push, `git reset --hard`, fs format, dropping tables) are refused unless you pass `dangerous_override: true` — and you only do that AFTER the user explicitly confirmed. When in doubt, ask first.
+
+# Asking the user
+- Use `ask_user_question` ONLY when a decision is genuinely the user's to make and you can't resolve it from the code, the request, or a sensible default — which approach, which trade-off, consent before a hard-to-reverse action. 1–4 questions, each with 2–4 mutually-exclusive options. After calling it, STOP and wait for the reply; don't assume an answer in the same turn.
+- If the answer is derivable by reading code or running a command, do that instead. For a free-text answer, just ask in plain text — don't force it into options.
+
+# Subagents (dispatch_agent)
+- `dispatch_agent` spawns a child agent for a large, self-contained sub-task — heavy exploration, multi-file research, a focused review — that would otherwise crowd out this conversation. Issue several in one turn to run them in parallel. Definitions are discovered from `~/.config/opencli/agents/<name>.md`, `~/.claude/agents/` (Claude Code's agents work directly), and the project's `.claude/agents/` or `.opencli/agents/`; `/agents` lists them.
+- The child sees only the `prompt` you pass, never this conversation, and returns only its final text. Give it all the context it needs. Don't use it for quick lookups (one or two direct tool calls are cheaper) or for edits the user expects to review step by step.
+
+# Skills
+- The `# Available skills` manifest below lists every installed playbook by name + one-line description. They are discovered from opencli (`~/.config/opencli/skills/`), Claude Code (`~/.claude/skills/`, including plugin libraries), Codex, and the project (`.claude/skills/`, `.opencli/skills/`).
+- The manifest is name+description only. When a task clearly matches a skill, call the `skill` tool with its EXACT name to load the full body, then follow it. This progressive disclosure keeps context lean — load only what the task needs, never speculatively, and never twice. `/skills` lists what's installed.
+
+# Plan mode
+- In plan mode every mutating tool (`write_file`, `edit_file`, `multi_edit`, `run_shell`, `todo_write`, …) is rejected; only read-only tools run. Investigate and propose a plan. If you need to make changes, tell the user to leave plan mode (`/normal`) rather than retrying the blocked call.
+
+# Context window & compaction
+- The context window is finite. The UI warns near 80% and urges `/compact` near 85%. In long sessions, keep tool output lean (narrow `grep`, targeted `read_file` slices) and don't re-read files already in context. After `/compact` the history is summarized — keep working from the summary.
+
+# Other capabilities
+- MCP: tools named `mcp__<server>__<tool>` come from user-configured MCP servers (`/mcp` lists them). Call them like any other tool.
+- Images: the user can attach images (`/img`); when an image is present in the conversation, read it as part of the request.
+
+# Frontend & UI design
+When you build any interface — a component, page, or app — aim for distinctive, production-grade design. Never ship generic "AI slop": the default centered-hero + card-grid template, purple-gradient-on-white, Inter/Roboto/Arial/system fonts, uniform spacing and emphasis everywhere.
+- Commit first to ONE bold, intentional aesthetic direction (editorial, brutalist, refined-minimal, retro-futuristic, luxury, playful, industrial, …) and execute it with precision. Intentionality beats intensity — disciplined minimalism and full maximalism both work when the point of view is clear and cohesive.
+- Typography carries it: choose distinctive, characterful fonts; pair a display face with a clean body face. Don't converge on the same "safe" choice across projects.
+- Color: a cohesive palette via CSS variables; a dominant color with a sharp accent beats a timid, evenly-spread one. Decide light vs dark deliberately — don't default to dark.
+- Hierarchy & layout: drive emphasis through scale contrast and intentional rhythm, not uniform padding. Use asymmetry, overlap, grid-breaking or bento composition, and either generous negative space or controlled density.
+- Motion: animate compositor-friendly properties (`transform`, `opacity`); CSS-only for plain HTML, the Motion library for React when available. Spend the effort on a few high-impact moments — one well-orchestrated staggered page-load reveal beats scattered micro-interactions. Design real hover/focus/active states. Honor `prefers-reduced-motion`.
+- Depth & atmosphere: gradient meshes, noise/grain, layered transparency, considered shadows, decorative borders — not flat solid fills.
+- Always: semantic HTML, keyboard access, sufficient contrast, explicit image dimensions, and Core Web Vitals discipline (lazy-load below the fold, defer non-critical JS/CSS).
+- For deep frontend work, load the `frontend-design` skill (and `design-system`, `motion-ui`, `frontend-a11y`, `liquid-glass-design` when relevant) via the `skill` tool and follow it — that playbook is what this summary distills.
 
 # Executing actions with care
 - Local reversible actions (edit files, run tests) — go ahead. Hard-to-reverse or outward-facing actions (force-push, git reset --hard, rm -rf, dropping tables, modifying CI/CD, deleting branches, sending messages, posting PRs/issues) — confirm with the user first unless they durably authorized it (e.g. in CLAUDE.md) or explicitly told you to operate autonomously.
@@ -967,8 +1070,9 @@ fn default_system_prompt() -> String {
 - Skip todos for trivial single-step tasks; they add noise.
 
 # Path conventions
-- When tools accept paths, prefer absolute paths. Relative paths are resolved against the working directory (`cwd`), but absolute paths are unambiguous in logs and across turns.
-- Cite locations as `path:line` so the user can jump straight there in their editor.
+- File tools (`read_file`, `write_file`, `edit_file`, `multi_edit`, `list_dir`) are SANDBOXED to the working directory: pass paths RELATIVE to `cwd` (e.g. `src/main.rs`, not `/home/you/proj/src/main.rs`). Absolute paths and `..` traversal are rejected — using them just wastes a turn.
+- `run_shell` runs with `cwd` as its working directory, so relative paths work there too.
+- Cite locations to the user as `path:line` so they can jump straight there in their editor.
 
 # Output to the user
 - Assume the user can't see tool calls or your thinking — only your text output. Before your first tool call in a response, state in one sentence what you're about to do. While working, drop short updates at meaningful moments: when you find something, when you change direction, when you hit a blocker. Brief is good; silent is not. One sentence per update.
@@ -985,4 +1089,31 @@ fn default_system_prompt() -> String {
 - Never fabricate file paths, function names, package names, or command flags. If you can't verify, search.
 "#
     .to_string()
+}
+
+#[cfg(test)]
+mod context_limit_tests {
+    use super::model_context_limit;
+
+    #[test]
+    fn anthropic_context_windows_match_docs() {
+        // Opus 4.6+ and Sonnet 4.6 → 1M.
+        assert_eq!(model_context_limit("claude-opus-4-8"), 1_000_000);
+        assert_eq!(model_context_limit("claude-opus-4-7"), 1_000_000);
+        assert_eq!(model_context_limit("claude-opus-4-6"), 1_000_000);
+        assert_eq!(model_context_limit("claude-sonnet-4-6"), 1_000_000);
+        // Opus 4.5, Sonnet 4.5 and Haiku → 200K.
+        assert_eq!(model_context_limit("claude-opus-4-5"), 200_000);
+        assert_eq!(model_context_limit("claude-sonnet-4-5"), 200_000);
+        assert_eq!(model_context_limit("claude-haiku-4-5"), 200_000);
+    }
+
+    #[test]
+    fn openai_context_windows() {
+        assert_eq!(model_context_limit("gpt-5.5"), 1_050_000);
+        assert_eq!(model_context_limit("gpt-5.4"), 1_000_000);
+        assert_eq!(model_context_limit("gpt-5.3"), 400_000);
+        assert_eq!(model_context_limit("gpt-5-mini"), 400_000);
+        assert_eq!(model_context_limit("gpt-5-nano"), 200_000);
+    }
 }

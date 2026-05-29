@@ -21,7 +21,7 @@ use crate::auth::resolve_credential;
 use crate::client::LlmClient;
 use crate::config;
 use crate::provider::Provider;
-use crate::subagent::{load_all, load_by_name};
+use crate::subagent::{load_all, load_by_name, resolve_model_alias};
 
 pub struct DispatchAgent;
 
@@ -90,8 +90,8 @@ Behaviour:\n\
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: DispatchArgs = super::parse_args("dispatch_agent", args)?;
-        let def = load_by_name(&a.subagent_type).map_err(|e| {
-            let available = load_all()
+        let def = load_by_name(&ctx.cwd, &a.subagent_type).map_err(|e| {
+            let available = load_all(&ctx.cwd)
                 .into_iter()
                 .map(|d| d.name)
                 .collect::<Vec<_>>();
@@ -109,7 +109,7 @@ Behaviour:\n\
 
         let mut cfg = config::load();
         if let Some(ref m) = def.model {
-            cfg.model = m.clone();
+            cfg.model = resolve_model_alias(m);
         }
         let provider = Provider::from_model(&cfg.model);
         let credential = resolve_credential(provider).await?;

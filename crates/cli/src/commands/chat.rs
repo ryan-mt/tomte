@@ -36,6 +36,11 @@ pub async fn run(
     let credential = resolve_credential(provider).await?;
     let client = LlmClient::new(credential)?;
     let mut agent = Agent::new(client, cfg);
+    // Match the interactive TUI: load project/global memory and the skill
+    // manifest so a one-shot `chat` sees the same context an interactive
+    // session would (skills become loadable via the `skill` tool).
+    agent.apply_project_memory();
+    agent.apply_skill_manifest();
     // Best-effort: spawn MCP servers configured in settings.json. A
     // misconfigured server logs a warning but does not abort the turn.
     agent.load_mcp().await.ok();

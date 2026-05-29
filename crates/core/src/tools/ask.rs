@@ -33,7 +33,7 @@ impl BuiltinTool for AskUserQuestion {
         "ask_user_question"
     }
     fn description(&self) -> &'static str {
-        "Ask the user one or more multiple-choice questions when a decision is needed and you can't make it yourself. The CLI / Web UI renders each question with its options; the user's selections come back in the next turn as a normal user message.\n\
+        "Ask the user one or more multiple-choice questions when a decision is needed and you can't make it yourself. The CLI renders each question with its options; the user's selections come back in the next turn as a normal user message.\n\
 \n\
 When to use:\n\
 - You need a real decision the user must own (which approach, which file, which trade-off).\n\
@@ -51,7 +51,7 @@ Mechanics:\n\
 - Keep options mutually exclusive (single-select) or non-overlapping (multi-select). Never include an \"Other\" — the UI provides it automatically.\n\
 - After you call this tool, STOP and wait for the user's reply. Do not pre-emptively assume an answer in the same turn.\n\
 \n\
-Output: a JSON envelope the CLI/Web UI can render. Do not reformat the response — just emit the structure and stop.\n\
+Output: a JSON envelope the CLI can render. Do not reformat the response — just emit the structure and stop.\n\
 \n\
 Parameters:\n\
 - `questions`: Array of 1–4 questions. Each `{question, header, options, multi_select}`.\n\

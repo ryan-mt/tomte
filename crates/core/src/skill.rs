@@ -1,32 +1,42 @@
-//! Skills: reusable reference material that auto-loads into the system
-//! prompt when a configured trigger matches the user message.
+//! Skills: curated, reusable playbooks that opencli can load on demand.
 //!
-//! Layout (Claude Code-compatible):
+//! Model — progressive disclosure, exactly like Claude Code:
+//!   1. At session start we *discover* every installed skill across all
+//!      known sources and inject a compact manifest (one `name: description`
+//!      line each) into the system prompt. That manifest is part of the
+//!      prompt-cache prefix, so after the first turn it is re-read at ~10%
+//!      cost — owning hundreds of skills stays cheap.
+//!   2. The model loads a skill's full body ON DEMAND via the `skill` tool
+//!      (see `tools/skill.rs`) only when a task matches it. Bodies never sit
+//!      in context speculatively.
 //!
-//! ```text
-//! ~/.config/opencli/skills/
-//! └── git-workflow/
-//!     └── SKILL.md
-//! ```
+//! Sources (most-specific first; first occurrence of a `name` wins):
+//!   - `<cwd>/.opencli/skills/`         project, opencli-native
+//!   - `<cwd>/.claude/skills/`          project, Claude Code
+//!   - `~/.config/opencli/skills/`      opencli global
+//!   - `~/.claude/skills/`              Claude Code global (+ plugin libraries)
+//!   - `~/.codex/skills/`               Codex, if present
 //!
-//! `SKILL.md` format:
+//! Each skill lives at `<root>/…/<skill>/SKILL.md`; we search recursively so
+//! namespaced layouts like `~/.claude/skills/ecc/<skill>/SKILL.md` are found.
+//!
+//! `SKILL.md` frontmatter (Claude Code-compatible):
 //!
 //! ```markdown
 //! ---
 //! name: git-workflow
 //! description: Conventional commits + safe push patterns
-//! triggers: commit, pull request, git workflow
 //! ---
-//! <body — appended to the system prompt when triggered>
+//! <body — returned by the `skill` tool when the model loads it>
 //! ```
 //!
-//! Triggers are case-insensitive substring matches against the user's
-//! incoming text. Empty `triggers` means "always available, never auto
-//! injected" — only used by `/skills` listing or explicit invocation.
+//! `triggers:` (comma-separated) is an optional opencli-native extension kept
+//! for backward compatibility; the manifest+tool model does not require it.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,35 +51,174 @@ pub fn skills_dir() -> PathBuf {
     crate::config::config_dir().join("skills")
 }
 
-/// Walk every immediate sub-directory of `skills_dir()` and load each
-/// `SKILL.md`. Errors are logged and skipped, never abort.
-pub fn load_all() -> Vec<Skill> {
-    let dir = skills_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+/// Lightweight skill descriptor: just enough to list in the manifest and
+/// locate the full body on demand. The body is deliberately NOT held — that
+/// is what keeps owning hundreds of skills cheap.
+#[derive(Debug, Clone)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+    /// Absolute path to the skill's `SKILL.md`.
+    pub path: PathBuf,
+}
+
+/// Recursion cap when walking a skill root. Deep enough for namespaced and
+/// plugin layouts (`skills/<ns>/<skill>/SKILL.md`), shallow enough to avoid
+/// wandering into large unrelated trees.
+const MAX_SKILL_DEPTH: usize = 6;
+
+/// Hard ceiling on how many skills the manifest will list, so a pathological
+/// install can't blow out the system prompt. 192 real skills today; the cap
+/// is a backstop, not a target.
+pub const MANIFEST_MAX: usize = 600;
+
+/// Ordered skill root directories, most-specific first. The first directory
+/// that defines a given skill `name` wins, so a project or opencli-native
+/// skill can shadow a global one. Includes the skill libraries of other
+/// agents (Claude Code, Codex) so opencli can use them directly.
+pub fn skill_roots(cwd: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![
+        cwd.join(".opencli").join("skills"),
+        cwd.join(".claude").join("skills"),
+        skills_dir(),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".claude").join("skills"));
+        roots.push(home.join(".codex").join("skills"));
+    }
+    roots
+}
+
+/// Recursively collect every `SKILL.md` under `root`, depth-capped and
+/// skipping noisy directories. Missing roots are silently ignored.
+fn collect_skill_files(root: &Path, out: &mut Vec<PathBuf>) {
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
-        }
-        let skill_md = path.join("SKILL.md");
-        if !skill_md.exists() {
-            continue;
-        }
-        match std::fs::read_to_string(&skill_md) {
-            Ok(text) => match parse(&text, &skill_md) {
-                Ok(skill) => out.push(skill),
-                Err(e) => {
-                    tracing::warn!(path = %skill_md.display(), error = %e, "skill parse failed")
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                if depth + 1 > MAX_SKILL_DEPTH {
+                    continue;
                 }
-            },
-            Err(e) => tracing::warn!(path = %skill_md.display(), error = %e, "skill read failed"),
+                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if matches!(name, "node_modules" | ".git" | "target") {
+                    continue;
+                }
+                stack.push((path, depth + 1));
+            } else if path.file_name().and_then(|s| s.to_str()) == Some("SKILL.md") {
+                out.push(path);
+            }
+        }
+    }
+}
+
+/// Discover every installed skill across all sources, deduplicated by `name`
+/// (first root in precedence order wins) and sorted by name. Cheap: parses
+/// only frontmatter and never retains bodies. Never aborts — unreadable or
+/// malformed `SKILL.md`s are logged and skipped.
+pub fn discover(cwd: &Path) -> Vec<SkillEntry> {
+    discover_in(&skill_roots(cwd))
+}
+
+/// Discovery against an explicit, ordered root list. Crate-visible so tests
+/// can run hermetically against a temp directory without reading the real
+/// global skill libraries.
+pub(crate) fn discover_in(roots: &[PathBuf]) -> Vec<SkillEntry> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out: Vec<SkillEntry> = Vec::new();
+    for root in roots {
+        let mut files = Vec::new();
+        collect_skill_files(root, &mut files);
+        files.sort();
+        for path in files {
+            let text = match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "skill read failed");
+                    continue;
+                }
+            };
+            match parse(&text, &path) {
+                Ok(skill) => {
+                    if seen.insert(skill.name.clone()) {
+                        out.push(SkillEntry {
+                            name: skill.name,
+                            description: skill.description,
+                            path,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "skill parse failed")
+                }
+            }
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// Render discovered skills as a compact manifest for the system prompt: one
+/// `- name: description` line each, description collapsed to a single line.
+pub fn manifest(entries: &[SkillEntry]) -> String {
+    let mut s = String::new();
+    for e in entries.iter().take(MANIFEST_MAX) {
+        s.push_str("- ");
+        s.push_str(&e.name);
+        let desc = one_line(&e.description, 200);
+        if !desc.is_empty() {
+            s.push_str(": ");
+            s.push_str(&desc);
+        }
+        s.push('\n');
+    }
+    if entries.len() > MANIFEST_MAX {
+        s.push_str(&format!(
+            "… and {} more (not listed; raise the manifest cap to see them)\n",
+            entries.len() - MANIFEST_MAX
+        ));
+    }
+    s
+}
+
+/// Load a skill's full body by name. Returns the skill's directory (so the
+/// model can resolve files the skill references) and its markdown body.
+pub fn load_body(cwd: &Path, name: &str) -> Result<(PathBuf, String)> {
+    load_body_from(&skill_roots(cwd), name)
+}
+
+/// Body-load against an explicit root list. Crate-visible for hermetic tests.
+pub(crate) fn load_body_from(roots: &[PathBuf], name: &str) -> Result<(PathBuf, String)> {
+    let entry = discover_in(roots)
+        .into_iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| anyhow!("skill `{name}` not found"))?;
+    let text = std::fs::read_to_string(&entry.path)
+        .with_context(|| format!("read skill {}", entry.path.display()))?;
+    let skill = parse(&text, &entry.path)?;
+    let dir = entry
+        .path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    Ok((dir, skill.body))
+}
+
+/// Collapse all whitespace runs to single spaces, trim, and truncate to
+/// `max` chars (appending `…` if cut) so a multi-line description renders as
+/// one compact manifest line.
+fn one_line(s: &str, max: usize) -> String {
+    let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > max {
+        let head: String = collapsed.chars().take(max).collect();
+        format!("{head}…")
+    } else {
+        collapsed
+    }
 }
 
 /// Select skills whose any trigger appears (case-insensitive substring) in
@@ -223,5 +372,69 @@ mod tests {
     fn parse_rejects_missing_frontmatter() {
         let err = parse("no frontmatter\n", &fake_path("bad")).unwrap_err();
         assert!(err.to_string().contains("missing `---` frontmatter opener"));
+    }
+
+    fn write_skill(root: &std::path::Path, rel_dir: &str, name: &str, desc: &str, body: &str) {
+        let dir = root.join(rel_dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {desc}\n---\n{body}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn discover_finds_nested_skills_and_loads_body_on_demand() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        let roots = vec![root.clone()];
+        // Namespaced layout like ~/.claude/skills/ecc/<skill>/SKILL.md.
+        write_skill(
+            &root,
+            "ecc/git-workflow",
+            "git-workflow",
+            "Conventional commits + safe push",
+            "Step 1: branch. Step 2: commit.",
+        );
+        let entries = discover_in(&roots);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "git-workflow");
+
+        let (dir, body) = load_body_from(&roots, "git-workflow").unwrap();
+        assert!(body.contains("Step 1: branch"));
+        assert!(dir.ends_with("git-workflow"));
+        assert!(load_body_from(&roots, "does-not-exist").is_err());
+    }
+
+    #[test]
+    fn discover_dedupes_by_name_first_root_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Same name in two roots; the first root in the list wins.
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        write_skill(&a, "dup", "dup", "first version", "from a");
+        write_skill(&b, "dup", "dup", "second version", "from b");
+        let entries = discover_in(&[a, b]);
+        assert_eq!(entries.len(), 1, "duplicate name must collapse to one");
+        assert_eq!(entries[0].description, "first version");
+    }
+
+    #[test]
+    fn manifest_is_one_line_per_skill() {
+        let entries = vec![
+            SkillEntry {
+                name: "a".into(),
+                description: "first\nskill   with   spaces".into(),
+                path: PathBuf::from("/x/a/SKILL.md"),
+            },
+            SkillEntry {
+                name: "b".into(),
+                description: String::new(),
+                path: PathBuf::from("/x/b/SKILL.md"),
+            },
+        ];
+        let m = manifest(&entries);
+        assert_eq!(m, "- a: first skill with spaces\n- b\n");
     }
 }

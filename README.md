@@ -1,6 +1,6 @@
 # opencli
 
-A coding-agent CLI written in **Rust** with a **React** web UI — built to be a drop-in replacement for Claude Code.
+A coding-agent CLI written in **Rust** — built to be a drop-in replacement for Claude Code.
 
 Backed by the OpenAI Responses API (latest GPT-5.x family) with two authentication modes:
 
@@ -13,30 +13,28 @@ Full **tool calling** surface: `read_file`, `write_file`, `edit_file`, `multi_ed
 
 ```
 opencli/
-├── crates/
-│   ├── core/     # Library: OpenAI client, OAuth (PKCE), agent loop, tools
-│   └── cli/      # `opencli` binary: CLI commands + Axum web server + WebSocket
-└── ui/           # React + Vite — Web UI (auto-launches when you run `opencli`)
+└── crates/
+    ├── core/     # Library: OpenAI + Anthropic clients, OAuth (PKCE), agent loop, tools
+    └── cli/      # `opencli` binary: CLI commands + interactive terminal UI (TUI)
 ```
 
-The `opencli` binary plays two roles:
+The `opencli` binary:
 
-- CLI subcommands: `login`, `chat`, `status`, `config`, `web`, …
-- When called with no subcommand (or `opencli web`): starts an Axum server on `:7777` and opens the browser. The Web UI is a React SPA prebuilt into `ui/dist` and served directly by the binary.
+- CLI subcommands: `login`, `chat`, `status`, `config`, `resume`, …
+- When called with no subcommand: launches the interactive terminal UI (TUI).
 
 ## Install
 
 ### 1. System dependencies
 
 - Rust ≥ 1.75
-- Node ≥ 18 + npm (for building the UI)
 - `ripgrep` (recommended; used by the `grep` tool)
 
 ### 2. Build + link
 
 ```bash
 git clone <repo> opencli && cd opencli
-make install           # build release + build UI + link to ~/.local/bin/opencli
+make install           # build release + link to ~/.local/bin/opencli
 ```
 
 Or dev mode (wrapper runs `cargo run` on each invocation, no manual rebuild):
@@ -74,11 +72,11 @@ opencli chat --model gpt-5-pro --reasoning high "refactor module X"
 echo "read CLAUDE.md and summarize" | opencli chat
 ```
 
-### Web UI (default)
+### Interactive TUI (default)
 
 ```bash
-opencli              # = opencli web — opens http://127.0.0.1:7777
-opencli web --no-open
+opencli              # launches the interactive terminal UI
+opencli resume       # open the TUI with the session picker
 ```
 
 ### Configuration
@@ -103,12 +101,9 @@ Config lives at `$XDG_CONFIG_HOME/opencli/config.json`:
 ## Development
 
 ```bash
-# Backend (terminal 1)
-cargo run -- web --no-open
-
-# Frontend dev with HMR (terminal 2)
-cd ui && npm install && npm run dev
-# Open http://127.0.0.1:5173 — Vite proxies /api to :7777
+cargo run -- chat "hello"     # headless one-shot
+cargo run                     # interactive TUI
+cargo test --workspace        # run the test suite
 ```
 
 ## Supported models

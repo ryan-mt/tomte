@@ -11,8 +11,8 @@ use serde_json::Value;
 use crate::openai::models::{InputItem, MessageContent, ResponsesRequest, Tool};
 
 use super::models::{
-    AnthropicMessage, ContentBlock, ImageSource, MessagesRequest, OutputConfig, SystemBlock,
-    ThinkingConfig, ToolDef,
+    AnthropicMessage, CacheControl, ContentBlock, ImageSource, MessagesRequest, OutputConfig,
+    SystemBlock, ThinkingConfig, ToolDef,
 };
 
 /// Default cap when no extended thinking is requested. Anthropic requires
@@ -142,6 +142,7 @@ pub fn to_messages_request(req: &ResponsesRequest) -> MessagesRequest {
                     id: call_id.clone(),
                     name: name.clone(),
                     input,
+                    cache_control: None,
                 });
             }
             InputItem::FunctionCallOutput { call_id, output } => {
@@ -153,6 +154,7 @@ pub fn to_messages_request(req: &ResponsesRequest) -> MessagesRequest {
                     tool_use_id: call_id.clone(),
                     content: Value::String(output.clone()),
                     is_error: None,
+                    cache_control: None,
                 });
             }
             InputItem::Reasoning { .. } => {
@@ -166,14 +168,19 @@ pub fn to_messages_request(req: &ResponsesRequest) -> MessagesRequest {
         .instructions
         .as_ref()
         .filter(|s| !s.is_empty())
-        .map(|s| vec![SystemBlock::Text { text: s.clone() }]);
+        .map(|s| {
+            vec![SystemBlock::Text {
+                text: s.clone(),
+                cache_control: None,
+            }]
+        });
 
     let tools = req.tools.iter().filter_map(tool_to_anthropic).collect();
 
     let effort = req.reasoning.as_ref().and_then(|r| r.effort.as_deref());
     let plan = map_effort(&req.model, effort);
 
-    MessagesRequest {
+    let mut request = MessagesRequest {
         model: req.model.clone(),
         max_tokens: plan.max_tokens,
         messages,
@@ -184,6 +191,44 @@ pub fn to_messages_request(req: &ResponsesRequest) -> MessagesRequest {
         top_p: None,
         thinking: plan.thinking,
         output_config: plan.output_config,
+    };
+    apply_cache_breakpoints(&mut request);
+    request
+}
+
+/// Add Anthropic prompt-cache breakpoints so the stable request prefix isn't
+/// re-billed at full price every turn. Two ephemeral breakpoints:
+///   1. the last system block — caches the system prompt and (since the cache
+///      prefix is tools → system → messages) the tool definitions before it;
+///   2. the last block of the last message — caches the conversation history,
+///      so each subsequent turn only pays full price for the newest content.
+///
+/// Below the per-model minimum cacheable size Anthropic silently ignores the
+/// markers, so setting them unconditionally is safe for short conversations.
+fn apply_cache_breakpoints(request: &mut MessagesRequest) {
+    match request.system.as_mut().and_then(|s| s.last_mut()) {
+        Some(SystemBlock::Text { cache_control, .. }) => {
+            *cache_control = Some(CacheControl::ephemeral());
+        }
+        None => {
+            // No system prompt — cache the tool definitions directly instead.
+            if let Some(last_tool) = request.tools.last_mut() {
+                last_tool.cache_control = Some(CacheControl::ephemeral());
+            }
+        }
+    }
+    if let Some(block) = request
+        .messages
+        .last_mut()
+        .and_then(|m| m.content.last_mut())
+    {
+        let cc = Some(CacheControl::ephemeral());
+        match block {
+            ContentBlock::Text { cache_control, .. }
+            | ContentBlock::Image { cache_control, .. }
+            | ContentBlock::ToolUse { cache_control, .. }
+            | ContentBlock::ToolResult { cache_control, .. } => *cache_control = cc,
+        }
     }
 }
 
@@ -193,7 +238,10 @@ fn message_content_to_block(c: &MessageContent) -> Option<ContentBlock> {
             if text.is_empty() {
                 None
             } else {
-                Some(ContentBlock::Text { text: text.clone() })
+                Some(ContentBlock::Text {
+                    text: text.clone(),
+                    cache_control: None,
+                })
             }
         }
         MessageContent::InputImage { image_url, .. } => {
@@ -204,6 +252,7 @@ fn message_content_to_block(c: &MessageContent) -> Option<ContentBlock> {
                             media_type: media.to_string(),
                             data: data.to_string(),
                         },
+                        cache_control: None,
                     });
                 }
             }
@@ -211,6 +260,7 @@ fn message_content_to_block(c: &MessageContent) -> Option<ContentBlock> {
                 source: ImageSource::Url {
                     url: image_url.clone(),
                 },
+                cache_control: None,
             })
         }
     }
@@ -222,6 +272,7 @@ fn tool_to_anthropic(t: &Tool) -> Option<ToolDef> {
             name: f.name.clone(),
             description: f.description.clone(),
             input_schema: f.parameters.clone(),
+            cache_control: None,
         }),
         Tool::WebSearch | Tool::CodeInterpreter => None,
     }
@@ -231,6 +282,48 @@ fn tool_to_anthropic(t: &Tool) -> Option<ToolDef> {
 mod tests {
     use super::*;
     use crate::openai::models::{InputItem, MessageContent, ToolFunctionDef};
+
+    #[test]
+    fn cache_breakpoints_set_on_system_and_last_message() {
+        let req = ResponsesRequest::new(
+            "claude-opus-4-8",
+            vec![InputItem::Message {
+                role: "user".into(),
+                content: vec![MessageContent::InputText { text: "hi".into() }],
+            }],
+        )
+        .with_instructions("you are a helpful agent");
+        let out = to_messages_request(&req);
+
+        // The system prompt carries a cache breakpoint (which also caches the
+        // tool definitions, since tools precede system in the cache prefix).
+        let sys_cc = match &out.system.as_ref().expect("system present")[0] {
+            SystemBlock::Text { cache_control, .. } => cache_control,
+        };
+        assert!(
+            sys_cc.is_some(),
+            "system block should be a cache breakpoint"
+        );
+
+        // The last block of the last message carries a breakpoint too, so the
+        // conversation history is cached and not re-billed in full next turn.
+        let last = out.messages.last().unwrap().content.last().unwrap();
+        let msg_cc = match last {
+            ContentBlock::Text { cache_control, .. } => cache_control,
+            other => panic!("expected text block, got {other:?}"),
+        };
+        assert!(
+            msg_cc.is_some(),
+            "last message block should be a breakpoint"
+        );
+
+        // And it serializes in the Anthropic wire shape.
+        let json = serde_json::to_string(&out).unwrap();
+        assert!(
+            json.contains(r#""cache_control":{"type":"ephemeral"}"#),
+            "serialized request should carry cache_control: {json}"
+        );
+    }
 
     #[test]
     fn translates_simple_user_message() {
@@ -281,7 +374,9 @@ mod tests {
         assert_eq!(out.messages.len(), 1);
         assert_eq!(out.messages[0].role, "assistant");
         match &out.messages[0].content[0] {
-            ContentBlock::ToolUse { id, name, input } => {
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
                 assert_eq!(id, "call_1");
                 assert_eq!(name, "echo");
                 assert_eq!(input["x"], 1);
@@ -422,7 +517,7 @@ mod tests {
         assert!(out.system.is_some());
         let s = out.system.unwrap();
         match &s[0] {
-            SystemBlock::Text { text } => assert_eq!(text, "you are claude"),
+            SystemBlock::Text { text, .. } => assert_eq!(text, "you are claude"),
         }
     }
 }

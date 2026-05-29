@@ -113,7 +113,11 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
             .expires_in
             .map(|sec| Utc::now() + chrono::Duration::seconds(sec));
 
-        let mut record = load_auth()?;
+        // Start from a default record if auth.json is missing OR unreadable: a
+        // fresh login is meant to overwrite whatever is there, so propagating a
+        // parse error (`?`) on a corrupt file would needlessly lock the user out
+        // of the self-healing re-login path.
+        let mut record = load_auth().unwrap_or_default();
         record.mode = AuthMode::AnthropicOauth;
         record.anthropic_tokens = Some(StoredTokens {
             access_token: tokens.access_token,
@@ -158,6 +162,7 @@ async fn spawn_callback_server(
     #[derive(Clone)]
     struct AppState {
         tx: Arc<tokio::sync::Mutex<Option<oneshot::Sender<Result<String>>>>>,
+        shutdown_tx: Arc<tokio::sync::Mutex<Option<oneshot::Sender<()>>>>,
         expected_state: String,
     }
 
@@ -190,12 +195,22 @@ async fn spawn_callback_server(
         } else {
             include_str!("../assets/error.html")
         };
+        // Signal shutdown *after* the response body is ready; axum finishes
+        // sending this response before the server stops. Without this the
+        // callback server runs until process exit, leaking the bound port (a
+        // second in-process login then falls back to FALLBACK_PORT, a third
+        // fails to bind). Mirrors the OpenAI flow in oauth.rs.
+        if let Some(stx) = st.shutdown_tx.lock().await.take() {
+            let _ = stx.send(());
+        }
         Html(body.to_string())
     }
 
     let (tx, rx) = oneshot::channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let state = AppState {
         tx: Arc::new(tokio::sync::Mutex::new(Some(tx))),
+        shutdown_tx: Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),
         expected_state: expected_state.to_string(),
     };
     let app = Router::new()
@@ -209,7 +224,13 @@ async fn spawn_callback_server(
             .context("Failed to bind Anthropic callback port")?,
     };
     tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                // A closed shutdown channel (sender dropped on login timeout)
+                // also releases the port even if no callback ever arrived.
+                let _ = shutdown_rx.await;
+            })
+            .await;
     });
 
     let redirect_uri = format!("http://localhost:{port}/callback");

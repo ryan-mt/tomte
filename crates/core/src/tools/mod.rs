@@ -1,8 +1,10 @@
 pub mod ask;
 pub mod dispatch;
 pub mod fs;
+pub mod notebook;
 pub mod search;
 pub mod shell;
+pub mod skill;
 pub mod todo;
 pub mod web;
 
@@ -209,6 +211,9 @@ impl Registry {
                 Box::new(shell::KillShell),
                 Box::new(todo::TodoWrite),
                 Box::new(web::WebFetch),
+                Box::new(web::WebSearch),
+                Box::new(notebook::NotebookEdit),
+                Box::new(skill::LoadSkill),
                 Box::new(ask::AskUserQuestion),
                 Box::new(dispatch::DispatchAgent),
             ],
@@ -244,33 +249,37 @@ impl Registry {
         }
         let mut tools: Vec<Box<dyn BuiltinTool>> = Vec::new();
         for name in allowed {
-            let n = name.as_str();
-            if n == "dispatch_agent" {
+            let Some(canon) = canonical_tool_name(name) else {
+                tracing::warn!(tool = %name, "subagent referenced unknown tool; skipping");
+                continue;
+            };
+            // `dispatch_agent` (and its Claude Code alias `Task`) canonicalise
+            // to the dispatch tool, which is always stripped so sub-agents
+            // cannot recurse.
+            if canon == "dispatch_agent" {
                 continue;
             }
-            let tool: Option<Box<dyn BuiltinTool>> = match n {
-                "read_file" => Some(Box::new(fs::ReadFile)),
-                "write_file" => Some(Box::new(fs::WriteFile)),
-                "edit_file" => Some(Box::new(fs::EditFile)),
-                "multi_edit" => Some(Box::new(fs::MultiEdit)),
-                "undo_last_edit" => Some(Box::new(fs::UndoLastEdit)),
-                "list_dir" => Some(Box::new(fs::ListDir)),
-                "grep" => Some(Box::new(search::Grep)),
-                "glob" => Some(Box::new(search::Glob)),
-                "run_shell" => Some(Box::new(shell::RunShell)),
-                "bash_output" => Some(Box::new(shell::BashOutput)),
-                "kill_shell" => Some(Box::new(shell::KillShell)),
-                "todo_write" => Some(Box::new(todo::TodoWrite)),
-                "web_fetch" => Some(Box::new(web::WebFetch)),
-                "ask_user_question" => Some(Box::new(ask::AskUserQuestion)),
-                _ => {
-                    tracing::warn!(tool = %n, "subagent referenced unknown tool; skipping");
-                    None
-                }
+            let tool: Box<dyn BuiltinTool> = match canon {
+                "read_file" => Box::new(fs::ReadFile),
+                "write_file" => Box::new(fs::WriteFile),
+                "edit_file" => Box::new(fs::EditFile),
+                "multi_edit" => Box::new(fs::MultiEdit),
+                "undo_last_edit" => Box::new(fs::UndoLastEdit),
+                "list_dir" => Box::new(fs::ListDir),
+                "grep" => Box::new(search::Grep),
+                "glob" => Box::new(search::Glob),
+                "run_shell" => Box::new(shell::RunShell),
+                "bash_output" => Box::new(shell::BashOutput),
+                "kill_shell" => Box::new(shell::KillShell),
+                "todo_write" => Box::new(todo::TodoWrite),
+                "web_fetch" => Box::new(web::WebFetch),
+                "web_search" => Box::new(web::WebSearch),
+                "notebook_edit" => Box::new(notebook::NotebookEdit),
+                "skill" => Box::new(skill::LoadSkill),
+                "ask_user_question" => Box::new(ask::AskUserQuestion),
+                _ => continue,
             };
-            if let Some(t) = tool {
-                tools.push(t);
-            }
+            tools.push(tool);
         }
         Self { tools }
     }
@@ -279,5 +288,78 @@ impl Registry {
     /// tools discovered from MCP servers after the standard built-ins.
     pub fn add(&mut self, tool: Box<dyn BuiltinTool>) {
         self.tools.push(tool);
+    }
+}
+
+/// Canonicalise a tool name from a sub-agent's `tools:` whitelist to an
+/// opencli built-in name. Accepts both opencli's snake_case names and Claude
+/// Code's PascalCase names (so a `~/.claude/agents/*.md` file with
+/// `tools: ["Read", "Grep", "Bash"]` resolves correctly). Returns `None` for
+/// names with no opencli equivalent. `Task` maps to `dispatch_agent`, which
+/// the caller always strips.
+fn canonical_tool_name(name: &str) -> Option<&'static str> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "read_file" | "read" => Some("read_file"),
+        "write_file" | "write" => Some("write_file"),
+        "edit_file" | "edit" => Some("edit_file"),
+        "multi_edit" | "multiedit" => Some("multi_edit"),
+        "undo_last_edit" => Some("undo_last_edit"),
+        "list_dir" | "ls" => Some("list_dir"),
+        "grep" => Some("grep"),
+        "glob" => Some("glob"),
+        "run_shell" | "bash" | "shell" => Some("run_shell"),
+        "bash_output" => Some("bash_output"),
+        "kill_shell" => Some("kill_shell"),
+        "todo_write" | "todowrite" => Some("todo_write"),
+        "web_fetch" | "webfetch" => Some("web_fetch"),
+        "web_search" | "websearch" => Some("web_search"),
+        "notebook_edit" | "notebookedit" => Some("notebook_edit"),
+        "skill" => Some("skill"),
+        "ask_user_question" | "askuserquestion" => Some("ask_user_question"),
+        "dispatch_agent" | "task" => Some("dispatch_agent"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    fn names(reg: &Registry) -> Vec<&'static str> {
+        reg.tools.iter().map(|t| t.name()).collect()
+    }
+
+    #[test]
+    fn filtered_maps_claude_code_tool_names() {
+        // A Claude Code agent whitelist: PascalCase names + `Task`.
+        let reg = Registry::filtered(&["Read".into(), "Grep".into(), "Bash".into(), "Task".into()]);
+        let n = names(&reg);
+        assert!(n.contains(&"read_file"));
+        assert!(n.contains(&"grep"));
+        assert!(n.contains(&"run_shell"));
+        // Task → dispatch_agent, which is always stripped.
+        assert!(!n.contains(&"dispatch_agent"));
+        assert_eq!(n.len(), 3);
+    }
+
+    #[test]
+    fn filtered_skips_unknown_names() {
+        let reg = Registry::filtered(&["Read".into(), "TotallyMadeUp".into()]);
+        assert_eq!(names(&reg), vec!["read_file"]);
+    }
+
+    #[test]
+    fn wildcard_includes_skill_but_not_dispatch() {
+        let reg = Registry::filtered(&[]);
+        let n = names(&reg);
+        assert!(n.contains(&"skill"));
+        assert!(!n.contains(&"dispatch_agent"));
+    }
+
+    #[test]
+    fn standard_includes_skill_and_dispatch() {
+        let n = names(&Registry::standard());
+        assert!(n.contains(&"skill"));
+        assert!(n.contains(&"dispatch_agent"));
     }
 }
