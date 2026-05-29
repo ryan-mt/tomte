@@ -130,21 +130,35 @@ const COMPACT_PROMPT: &str =
                               where we left off. Keep it under 30 lines. After this, treat the \
                               summary as the canonical context — earlier messages are gone.";
 
+/// Whether an Anthropic model has a 1M-token context window. Single source of
+/// truth shared by `model_context_limit` (the local warn/compact threshold) and
+/// the Anthropic client (which gates the `context-1m-2025-08-07` beta header on
+/// it). Per the Claude API docs (May 2026): Opus 4.6 / 4.7 / 4.8, Sonnet 4.6 and
+/// the Mythos preview ship 1M; Sonnet 4.5 / 4, Opus 4.5 and Haiku are 200K.
+pub fn model_supports_1m(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("opus-4-8")
+        || m.contains("opus-4-7")
+        || m.contains("opus-4-6")
+        || m.contains("sonnet-4-6")
+        || m.contains("mythos")
+}
+
 /// Context-window size (tokens) per model, used to warn before a turn
 /// overflows. Verified against published model docs (May 2026):
-///   - Anthropic: Opus 4.6 / 4.7 / 4.8 and Sonnet 4.6 ship a 1M window. Opus
-///     4.5, Sonnet 4.5 / 4 and all Haiku are 200K. (Sonnet 4.5's 1M is a
-///     header-gated beta we don't request, so 200K is the effective limit.)
+///   - Anthropic: see `model_supports_1m` for the 1M-window set; everything
+///     else (Opus 4.5, Sonnet 4.5 / 4, all Haiku) is 200K. We never request the
+///     1M beta for the 200K models, so 200K is their effective limit.
 ///   - OpenAI: gpt-5.5 → 1.05M, gpt-5.4 → 1M, mini → 400K, nano → 200K;
 ///     everything else (gpt-5 / 5.2 / 5.3 / -pro / -codex) → 400K.
 pub fn model_context_limit(model: &str) -> u64 {
     let m = model.to_ascii_lowercase();
-    if m.starts_with("claude") {
-        let one_million = m.contains("opus-4-8")
-            || m.contains("opus-4-7")
-            || m.contains("opus-4-6")
-            || m.contains("sonnet-4-6");
-        return if one_million { 1_000_000 } else { 200_000 };
+    if m.starts_with("claude") || m.contains("mythos") {
+        return if model_supports_1m(&m) {
+            1_000_000
+        } else {
+            200_000
+        };
     }
     if m.contains("nano") {
         return 200_000;
@@ -159,6 +173,21 @@ pub fn model_context_limit(model: &str) -> u64 {
         return 1_000_000;
     }
     400_000
+}
+
+/// Human-readable context-window label for a model (e.g. "1M", "1.05M",
+/// "200K"), derived from `model_context_limit`. Used in the model catalogue so
+/// users can see at a glance which models have the 1M window and which don't.
+pub fn context_window_label(model: &str) -> String {
+    let n = model_context_limit(model);
+    if n.is_multiple_of(1_000_000) {
+        format!("{}M", n / 1_000_000)
+    } else if n >= 1_000_000 {
+        let s = format!("{:.2}", n as f64 / 1_000_000.0);
+        format!("{}M", s.trim_end_matches('0').trim_end_matches('.'))
+    } else {
+        format!("{}K", n / 1_000)
+    }
 }
 
 /// Build the post-compaction history: a single user message carrying the
@@ -1251,7 +1280,39 @@ When you build any interface — a component, page, or app — aim for distincti
 
 #[cfg(test)]
 mod context_limit_tests {
-    use super::model_context_limit;
+    use super::{context_window_label, model_context_limit, model_supports_1m};
+
+    #[test]
+    fn context_window_labels_are_human_readable() {
+        assert_eq!(context_window_label("claude-opus-4-8"), "1M");
+        assert_eq!(context_window_label("claude-sonnet-4-5"), "200K");
+        assert_eq!(context_window_label("gpt-5.5"), "1.05M");
+        assert_eq!(context_window_label("gpt-5-mini"), "400K");
+    }
+
+    #[test]
+    fn model_supports_1m_matches_docs() {
+        // 1M-window models (gates both the limit table and the context-1m beta).
+        for m in [
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-mythos-preview",
+        ] {
+            assert!(model_supports_1m(m), "{m} should support 1M");
+        }
+        // 200K models must NOT trigger the 1M beta.
+        for m in [
+            "claude-opus-4-5",
+            "claude-sonnet-4-5",
+            "claude-sonnet-4",
+            "claude-haiku-4-5",
+            "gpt-5.5",
+        ] {
+            assert!(!model_supports_1m(m), "{m} should not support 1M");
+        }
+    }
 
     #[test]
     fn anthropic_context_windows_match_docs() {
@@ -1260,6 +1321,7 @@ mod context_limit_tests {
         assert_eq!(model_context_limit("claude-opus-4-7"), 1_000_000);
         assert_eq!(model_context_limit("claude-opus-4-6"), 1_000_000);
         assert_eq!(model_context_limit("claude-sonnet-4-6"), 1_000_000);
+        assert_eq!(model_context_limit("claude-mythos-preview"), 1_000_000);
         // Opus 4.5, Sonnet 4.5 and Haiku → 200K.
         assert_eq!(model_context_limit("claude-opus-4-5"), 200_000);
         assert_eq!(model_context_limit("claude-sonnet-4-5"), 200_000);

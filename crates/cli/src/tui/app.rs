@@ -67,6 +67,7 @@ pub enum OverlayKind {
     EffortPicker,
     VerbosityPicker,
     ResumePicker,
+    LogoutPicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -599,6 +600,9 @@ impl App {
             OverlayKind::ResumePicker => {
                 let metas = opencli_core::session::list(&self.cwd);
                 Picker::new("resume session", picker::sessions(&metas))
+            }
+            OverlayKind::LogoutPicker => {
+                Picker::new("log out — pick a credential", picker::logout_targets())
             }
         };
         self.overlay = Some((kind, picker));
@@ -1156,6 +1160,21 @@ async fn handle_overlay_select(app: &mut App, kind: OverlayKind, key_sel: &str) 
                 app.pending_resume_id = Some(key_sel.to_string());
             }
         }
+        OverlayKind::LogoutPicker => {
+            if let Some(target) = opencli_core::auth::LogoutTarget::from_key(key_sel) {
+                let mut record = auth::load_auth().unwrap_or_default();
+                opencli_core::auth::clear_credential(&mut record, target);
+                match auth::save_auth(&record) {
+                    Ok(_) => {
+                        app.auth_mode = record.mode;
+                        app.blocks.push(Block::System("✅ Logged out.".into()));
+                    }
+                    Err(e) => app
+                        .blocks
+                        .push(Block::System(format!("logout failed: {e}"))),
+                }
+            }
+        }
     }
 }
 
@@ -1407,7 +1426,10 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                         let models = Provider::OpenAi
                             .available_models()
                             .iter()
-                            .map(|m| format!("  · {m}"))
+                            .map(|m| {
+                                let win = opencli_core::agent::context_window_label(m);
+                                format!("  · {m:<20} ({win} context)")
+                            })
                             .collect::<Vec<_>>()
                             .join("\n");
                         app.blocks
@@ -1418,9 +1440,17 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             }
         }
         "logout" => {
-            let _ = std::fs::remove_file(config::config_dir().join("auth.json"));
-            app.auth_mode = AuthMode::None;
-            app.blocks.push(Block::System("Signed out.".into()));
+            // Open a picker so the user chooses WHICH stored credential to
+            // remove (a session can hold several at once) instead of nuking all
+            // of auth.json. Env-var credentials aren't listed — they can't be
+            // cleared by logging out.
+            if picker::logout_targets().is_empty() {
+                app.blocks.push(Block::System(
+                    "Nothing to log out — no stored credentials.".into(),
+                ));
+            } else {
+                app.open_overlay(OverlayKind::LogoutPicker);
+            }
         }
         "status" => {
             let record = auth::load_auth().unwrap_or_default();
@@ -1445,7 +1475,8 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 for p in providers {
                     text.push_str(&format!("\n  {} ({}):", p.display_name(), p));
                     for m in p.available_models() {
-                        text.push_str(&format!("\n    · {m}"));
+                        let win = opencli_core::agent::context_window_label(m);
+                        text.push_str(&format!("\n    · {m:<20} ({win} context)"));
                     }
                 }
                 app.blocks.push(Block::System(text));

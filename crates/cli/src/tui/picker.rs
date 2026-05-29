@@ -99,10 +99,22 @@ impl Picker {
     }
 }
 
+/// Half-open range `[start, end)` of the visible item list to draw, scrolled so
+/// position `sel_pos` stays on screen. Stays at the top until the selection
+/// passes the last row, then scrolls one row at a time. Clamped to `len`.
+fn scroll_window(sel_pos: usize, len: usize, max_rows: usize) -> (usize, usize) {
+    let start = sel_pos.saturating_sub(max_rows.saturating_sub(1));
+    let end = (start + max_rows).min(len);
+    (start, end)
+}
+
 pub fn render(f: &mut Frame, anchor_area: Rect, picker: &Picker) {
     let visible = picker.filtered_indices();
+    // Cap the popup at MAX_ROWS rows; a longer list scrolls (see the window
+    // math below) so the selected row always stays on screen.
+    const MAX_ROWS: usize = 10;
     let item_count = visible.len().max(1);
-    let height = (item_count as u16).min(10) + 2; // borders
+    let height = (item_count as u16).min(MAX_ROWS as u16) + 2; // borders
     let width = 60u16.min(anchor_area.width.saturating_sub(4));
     // Anchor above the input area: bottom-left of popup just above anchor_area.
     let x = anchor_area.x + 1;
@@ -145,7 +157,18 @@ pub fn render(f: &mut Frame, anchor_area: Rect, picker: &Picker) {
     if visible.is_empty() {
         lines.push(Line::from(Span::styled("  (no matches)", dim)));
     } else {
-        for &idx in visible.iter().take(10) {
+        // Scroll so the selected row is always on screen. render() is stateless,
+        // so derive the window start from `selected` each frame: stay at the top
+        // until the selection passes the last visible row, then scroll one row at
+        // a time (selected pinned to the bottom row). Previously this always drew
+        // the first MAX_ROWS items, so the highlight vanished below the fold when
+        // scrolling down a list longer than MAX_ROWS.
+        let sel_pos = visible
+            .iter()
+            .position(|&i| i == picker.selected)
+            .unwrap_or(0);
+        let (start, end) = scroll_window(sel_pos, visible.len(), MAX_ROWS);
+        for &idx in &visible[start..end] {
             let it = &picker.items[idx];
             let is_sel = idx == picker.selected
                 || (!visible.contains(&picker.selected) && Some(&idx) == visible.first());
@@ -332,12 +355,76 @@ pub fn models() -> Vec<PickerItem> {
             }
         }
     }
+    // Tag every model with its context window so 1M vs 200K is visible at a
+    // glance in the picker (mirrors the textual catalogue). Done before the
+    // not-signed-in placeholder below so that placeholder stays untagged.
+    for it in &mut items {
+        let win = opencli_core::agent::context_window_label(&it.key);
+        it.description = format!("{win} ctx · {}", it.description);
+    }
     if items.is_empty() {
         items.push(PickerItem {
             key: "gpt-5.5".into(),
             title: "(not signed in)".into(),
             description: "run `/login` to choose a provider".into(),
         });
+    }
+    items
+}
+
+/// Build the logout picker from the credentials actually stored in auth.json.
+/// Env-var credentials are intentionally omitted — they aren't stored here and
+/// can't be cleared by logging out. An "all" entry appears only when more than
+/// one credential is stored.
+pub fn logout_targets() -> Vec<PickerItem> {
+    use opencli_core::auth::{load_auth, LogoutTarget};
+    let r = load_auth().unwrap_or_default();
+    let mut items = Vec::new();
+    let item = |t: LogoutTarget, title: &str, desc: &str| PickerItem {
+        key: t.key().into(),
+        title: title.into(),
+        description: desc.into(),
+    };
+    if r.tokens
+        .as_ref()
+        .is_some_and(|t| !t.access_token.is_empty())
+    {
+        items.push(item(
+            LogoutTarget::OpenAiOauth,
+            "OpenAI — ChatGPT OAuth",
+            "sign out of the ChatGPT subscription token",
+        ));
+    }
+    if r.api_key.as_ref().is_some_and(|k| !k.is_empty()) {
+        items.push(item(
+            LogoutTarget::OpenAiApiKey,
+            "OpenAI — API key",
+            "remove the stored OpenAI API key",
+        ));
+    }
+    if r.anthropic_tokens
+        .as_ref()
+        .is_some_and(|t| !t.access_token.is_empty())
+    {
+        items.push(item(
+            LogoutTarget::AnthropicOauth,
+            "Anthropic — Claude Pro/Max OAuth",
+            "sign out of the Claude subscription token",
+        ));
+    }
+    if r.anthropic_api_key.as_ref().is_some_and(|k| !k.is_empty()) {
+        items.push(item(
+            LogoutTarget::AnthropicApiKey,
+            "Anthropic — API key",
+            "remove the stored Anthropic API key",
+        ));
+    }
+    if items.len() > 1 {
+        items.push(item(
+            LogoutTarget::All,
+            "All credentials",
+            "clear every stored credential",
+        ));
     }
     items
 }
@@ -433,4 +520,30 @@ pub fn verbosities() -> Vec<PickerItem> {
             description: "verbose output".into(),
         },
     ]
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::scroll_window;
+
+    #[test]
+    fn short_list_shows_everything() {
+        assert_eq!(scroll_window(0, 5, 10), (0, 5));
+        assert_eq!(scroll_window(4, 5, 10), (0, 5));
+    }
+
+    #[test]
+    fn window_stays_at_top_until_selection_passes_last_row() {
+        // 14 items, 10 rows: selecting within the first window keeps start at 0.
+        assert_eq!(scroll_window(0, 14, 10), (0, 10));
+        assert_eq!(scroll_window(9, 14, 10), (0, 10));
+    }
+
+    #[test]
+    fn window_scrolls_to_follow_selection() {
+        // Regression: scrolling past the last visible row must move the window so
+        // the highlighted row stays on screen (it used to fall below the fold).
+        assert_eq!(scroll_window(10, 14, 10), (1, 11));
+        assert_eq!(scroll_window(13, 14, 10), (4, 14));
+    }
 }

@@ -174,7 +174,8 @@ fn print_available_models() {
     for p in providers {
         println!("    {} ({}):", p.display_name(), p);
         for m in p.available_models() {
-            println!("      · {m}");
+            let win = opencli_core::agent::context_window_label(m);
+            println!("      · {m:<20} ({win} context)");
         }
     }
     println!();

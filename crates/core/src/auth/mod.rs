@@ -7,7 +7,7 @@ pub use oauth::{
     login_with_browser, refresh_access_token, start_browser_login, OauthClient, PendingLogin,
     TokenSet,
 };
-pub use storage::{load_auth, save_auth, AuthMode, AuthRecord};
+pub use storage::{clear_credential, load_auth, save_auth, AuthMode, AuthRecord, LogoutTarget};
 
 use anyhow::Result;
 

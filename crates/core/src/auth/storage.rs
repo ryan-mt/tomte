@@ -98,3 +98,147 @@ pub fn save_auth(record: &AuthRecord) -> Result<()> {
     std::fs::rename(&tmp, &path)?;
     Ok(())
 }
+
+/// A specific stored credential to clear on logout, or `All` to clear every
+/// stored credential at once. Maps 1:1 onto the four `AuthRecord` slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogoutTarget {
+    OpenAiOauth,
+    OpenAiApiKey,
+    AnthropicOauth,
+    AnthropicApiKey,
+    All,
+}
+
+impl LogoutTarget {
+    /// Stable string key used to round-trip through the TUI picker.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::OpenAiOauth => "openai_oauth",
+            Self::OpenAiApiKey => "openai_apikey",
+            Self::AnthropicOauth => "anthropic_oauth",
+            Self::AnthropicApiKey => "anthropic_apikey",
+            Self::All => "all",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "openai_oauth" => Self::OpenAiOauth,
+            "openai_apikey" => Self::OpenAiApiKey,
+            "anthropic_oauth" => Self::AnthropicOauth,
+            "anthropic_apikey" => Self::AnthropicApiKey,
+            "all" => Self::All,
+            _ => return None,
+        })
+    }
+}
+
+fn tokens_filled(slot: &Option<StoredTokens>) -> bool {
+    slot.as_ref().is_some_and(|t| !t.access_token.is_empty())
+}
+fn key_filled(slot: &Option<String>) -> bool {
+    slot.as_ref().is_some_and(|k| !k.is_empty())
+}
+
+/// Whether `record.mode` still points at a credential that is actually stored.
+fn mode_is_backed(r: &AuthRecord) -> bool {
+    match r.mode {
+        AuthMode::None => true,
+        AuthMode::OpenaiOauth => tokens_filled(&r.tokens),
+        AuthMode::OpenaiApiKey => key_filled(&r.api_key),
+        AuthMode::AnthropicOauth => tokens_filled(&r.anthropic_tokens),
+        AuthMode::AnthropicApiKey => key_filled(&r.anthropic_api_key),
+    }
+}
+
+/// First remaining stored credential as a coherent active mode. OAuth before
+/// API key, OpenAI before Anthropic (arbitrary but deterministic); `None` when
+/// nothing is stored.
+fn infer_mode(r: &AuthRecord) -> AuthMode {
+    if tokens_filled(&r.tokens) {
+        AuthMode::OpenaiOauth
+    } else if key_filled(&r.api_key) {
+        AuthMode::OpenaiApiKey
+    } else if tokens_filled(&r.anthropic_tokens) {
+        AuthMode::AnthropicOauth
+    } else if key_filled(&r.anthropic_api_key) {
+        AuthMode::AnthropicApiKey
+    } else {
+        AuthMode::None
+    }
+}
+
+/// Clear one stored credential (or all). If the removal leaves `mode` pointing
+/// at a now-empty slot, fall back to another stored credential (or `None`) so
+/// the status line never claims a credential that was just removed. Only
+/// rewrites `mode` when the active credential was the one removed — clearing an
+/// inactive credential leaves the active mode untouched. Credentials supplied
+/// via env vars are not stored here and are unaffected.
+pub fn clear_credential(record: &mut AuthRecord, target: LogoutTarget) {
+    match target {
+        LogoutTarget::OpenAiOauth => record.tokens = None,
+        LogoutTarget::OpenAiApiKey => record.api_key = None,
+        LogoutTarget::AnthropicOauth => record.anthropic_tokens = None,
+        LogoutTarget::AnthropicApiKey => record.anthropic_api_key = None,
+        LogoutTarget::All => {
+            record.tokens = None;
+            record.api_key = None;
+            record.anthropic_tokens = None;
+            record.anthropic_api_key = None;
+        }
+    }
+    if !mode_is_backed(record) {
+        record.mode = infer_mode(record);
+    }
+}
+
+#[cfg(test)]
+mod logout_tests {
+    use super::*;
+
+    fn tok() -> StoredTokens {
+        StoredTokens {
+            access_token: "x".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn clearing_active_credential_falls_back_to_remaining() {
+        let mut r = AuthRecord {
+            mode: AuthMode::OpenaiApiKey,
+            api_key: Some("k".into()),
+            anthropic_tokens: Some(tok()),
+            ..Default::default()
+        };
+        clear_credential(&mut r, LogoutTarget::OpenAiApiKey);
+        assert!(r.api_key.is_none());
+        assert_eq!(r.mode, AuthMode::AnthropicOauth);
+    }
+
+    #[test]
+    fn clearing_inactive_credential_keeps_active_mode() {
+        let mut r = AuthRecord {
+            mode: AuthMode::AnthropicOauth,
+            anthropic_tokens: Some(tok()),
+            api_key: Some("k".into()),
+            ..Default::default()
+        };
+        clear_credential(&mut r, LogoutTarget::OpenAiApiKey);
+        assert_eq!(r.mode, AuthMode::AnthropicOauth);
+    }
+
+    #[test]
+    fn clearing_all_resets_to_none() {
+        let mut r = AuthRecord {
+            mode: AuthMode::OpenaiOauth,
+            tokens: Some(tok()),
+            anthropic_api_key: Some("k".into()),
+            ..Default::default()
+        };
+        clear_credential(&mut r, LogoutTarget::All);
+        assert_eq!(r.mode, AuthMode::None);
+        assert!(r.tokens.is_none() && r.anthropic_api_key.is_none());
+    }
+}
