@@ -108,7 +108,13 @@ Behaviour:\n\
 
         let mut cfg = ctx.config.clone();
         if let Some(ref m) = def.model {
-            cfg.model = resolve_model_alias(m);
+            // `inherit`/`default` (a Claude Code convention) mean "use the parent
+            // agent's model" — keep cfg.model instead of sending a bogus model id
+            // that 404s and breaks every tool call in the subagent turn.
+            let alias = m.trim().to_ascii_lowercase();
+            if alias != "inherit" && alias != "default" {
+                cfg.model = resolve_model_alias(m);
+            }
         }
         let provider = Provider::from_model(&cfg.model);
         let credential = resolve_credential(provider).await?;

@@ -1006,10 +1006,19 @@ impl Agent {
             // Each tool call is also wrapped in `TOOL_HARD_TIMEOUT` so a
             // hanging tool (MCP server that stops responding, stuck reqwest
             // due to DNS) can't wedge the entire turn forever.
+            // File-mutation tools must not run concurrently with each other: two
+            // edits to the SAME file would each read the same original and
+            // last-writer-wins, silently dropping one edit and leaving the undo
+            // stack's mtime/size snapshots racing the other rename. Serialize all
+            // edit tools through one lock; read-only tools and run_shell stay
+            // concurrent (they do no tracked read-modify-write).
+            let edit_lock = Arc::new(Mutex::new(()));
             let futures = runnable.into_iter().map(|(call_id, args, tool)| {
                 let ctx = ctx.clone();
                 let tx = tx.clone();
                 let tool_name = tool.name().to_string();
+                let is_edit = EDIT_TOOLS.contains(&tool_name.as_str());
+                let edit_lock = edit_lock.clone();
                 let hooks_for_post = self.hooks.clone();
                 let post_args = args.clone();
                 async move {
@@ -1019,8 +1028,16 @@ impl Agent {
                         call_id = %call_id,
                         "tool.start"
                     );
-                    let res =
-                        tokio::time::timeout(TOOL_HARD_TIMEOUT, tool.execute(args, &ctx)).await;
+                    // Hold the edit lock only around execute() so edits serialize
+                    // while reads/shell keep running concurrently.
+                    let res = {
+                        let _edit_guard = if is_edit {
+                            Some(edit_lock.lock().await)
+                        } else {
+                            None
+                        };
+                        tokio::time::timeout(TOOL_HARD_TIMEOUT, tool.execute(args, &ctx)).await
+                    };
                     let (output, is_err) = match res {
                         Ok(Ok(s)) => (s, false),
                         Ok(Err(e)) => (format!("Error: {e}"), true),

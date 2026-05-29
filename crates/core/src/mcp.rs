@@ -270,6 +270,23 @@ fn flatten_tool_content(content: Option<&Value>, is_error: bool) -> String {
     buf
 }
 
+/// Coerce an MCP-advertised `inputSchema` into something usable as function
+/// `parameters`. Providers require a top-level JSON-Schema object; a server that
+/// advertises a non-object schema (or omits `type`) would otherwise 400 the
+/// whole request — taking down every tool in the turn, not just this one. Absent
+/// or non-object schemas fall back to an empty object schema; the model then
+/// gets per-arg errors it can self-correct instead of a request-level rejection.
+fn normalize_mcp_schema(schema: Option<Value>) -> Value {
+    let Some(Value::Object(mut map)) = schema else {
+        return json!({"type": "object", "properties": {}});
+    };
+    let is_object_type = matches!(map.get("type"), Some(Value::String(t)) if t == "object");
+    if !is_object_type {
+        map.insert("type".to_string(), Value::String("object".to_string()));
+    }
+    Value::Object(map)
+}
+
 fn parse_tools(resp: &Value) -> Vec<McpToolInfo> {
     let Some(arr) = resp.get("tools").and_then(|v| v.as_array()) else {
         return Vec::new();
@@ -282,10 +299,7 @@ fn parse_tools(resp: &Value) -> Vec<McpToolInfo> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let input_schema = t
-                .get("inputSchema")
-                .cloned()
-                .unwrap_or_else(|| json!({"type":"object","properties":{}}));
+            let input_schema = normalize_mcp_schema(t.get("inputSchema").cloned());
             Some(McpToolInfo {
                 name,
                 description,
@@ -556,6 +570,23 @@ mod tests {
             !marker.exists(),
             "MCP timeout killed only the server process; a background descendant survived"
         );
+    }
+
+    #[test]
+    fn normalize_mcp_schema_coerces_unusable_shapes() {
+        // A valid object schema is preserved untouched.
+        let s = json!({"type": "object", "properties": {"x": {"type": "string"}}});
+        assert_eq!(normalize_mcp_schema(Some(s.clone())), s);
+        // An object missing `type` gets `type: object`.
+        assert_eq!(
+            normalize_mcp_schema(Some(json!({"properties": {}})))["type"],
+            "object"
+        );
+        // Absent or non-object schemas fall back to an empty object schema.
+        let fallback = json!({"type": "object", "properties": {}});
+        assert_eq!(normalize_mcp_schema(None), fallback);
+        assert_eq!(normalize_mcp_schema(Some(json!("nope"))), fallback);
+        assert_eq!(normalize_mcp_schema(Some(json!([1, 2]))), fallback);
     }
 
     #[test]

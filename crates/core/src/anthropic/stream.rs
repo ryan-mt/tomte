@@ -284,6 +284,11 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 let _ = tx
                                     .send(Ok(ResponseStreamEvent::Error { message: msg }))
                                     .await;
+                                // Terminal, like `message_stop`: stop reading so a
+                                // mid-stream error can't leave the pump looping on a
+                                // half-streamed tool call. `had_error` then suppresses
+                                // the redundant "ended before message_stop" error.
+                                break;
                             }
                             _ => {
                                 let _ = tx.send(Ok(ResponseStreamEvent::Other { kind })).await;
