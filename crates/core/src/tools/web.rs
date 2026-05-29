@@ -552,9 +552,15 @@ Parameters:\n\
             }
         }
         match last_err {
-            Some(e) => Ok(format!(
-                "No results for {query:?}. Every search backend failed or returned nothing (last error: {e})."
+            // At least one backend errored and none produced results: an
+            // infrastructure failure, not a genuine empty result set. Surface it
+            // as a tool error so the model can tell "the web has nothing" apart
+            // from "search was blocked/offline" and retry, instead of concluding
+            // the fact doesn't exist.
+            Some(e) => Err(anyhow!(
+                "web_search failed: every backend errored or returned nothing (last error: {e})"
             )),
+            // Every backend responded but matched nothing — a real empty result.
             None => Ok(format!("No results found for: {query}")),
         }
     }

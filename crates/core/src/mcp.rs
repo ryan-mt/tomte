@@ -228,23 +228,46 @@ impl McpClient {
             .get("isError")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let mut buf = String::new();
-        if let Some(arr) = resp.get("content").and_then(|v| v.as_array()) {
-            for item in arr {
-                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                    if !buf.is_empty() {
-                        buf.push('\n');
-                    }
-                    buf.push_str(text);
-                }
-            }
-        }
+        let buf = flatten_tool_content(resp.get("content"), is_error);
         if is_error {
             Err(anyhow!(buf))
         } else {
             Ok(buf)
         }
     }
+}
+
+/// Join an MCP `tools/call` result's `content` array into one string for the
+/// model. Text blocks are concatenated; any non-text block (image, audio,
+/// resource, …) becomes a `[<type> content omitted]` placeholder so a result
+/// made only of non-text content is not delivered as an invisible empty string
+/// the model can't act on. Falls back to a descriptive message when there is no
+/// content at all, so an `isError` result never surfaces as a contentless error.
+fn flatten_tool_content(content: Option<&Value>, is_error: bool) -> String {
+    let mut buf = String::new();
+    if let Some(arr) = content.and_then(|v| v.as_array()) {
+        for item in arr {
+            let piece = match item.get("text").and_then(|v| v.as_str()) {
+                Some(text) => text.to_string(),
+                None => {
+                    let kind = item.get("type").and_then(|v| v.as_str()).unwrap_or("non-text");
+                    format!("[{kind} content omitted]")
+                }
+            };
+            if !buf.is_empty() {
+                buf.push('\n');
+            }
+            buf.push_str(&piece);
+        }
+    }
+    if buf.is_empty() {
+        buf = if is_error {
+            "MCP tool reported an error with no message".to_string()
+        } else {
+            "(MCP tool returned no content)".to_string()
+        };
+    }
+    buf
 }
 
 fn parse_tools(resp: &Value) -> Vec<McpToolInfo> {
@@ -532,6 +555,34 @@ mod tests {
         assert!(
             !marker.exists(),
             "MCP timeout killed only the server process; a background descendant survived"
+        );
+    }
+
+    #[test]
+    fn flatten_tool_content_surfaces_non_text_and_empty() {
+        // Text blocks join with newlines.
+        let c = json!([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]);
+        assert_eq!(flatten_tool_content(Some(&c), false), "a\nb");
+        // A non-text block becomes a visible placeholder, never an empty string.
+        let c = json!([{"type": "image", "data": "…"}]);
+        assert_eq!(
+            flatten_tool_content(Some(&c), false),
+            "[image content omitted]"
+        );
+        // Text mixed with non-text keeps the text and flags the rest.
+        let c = json!([{"type": "text", "text": "ok"}, {"type": "resource", "uri": "x"}]);
+        assert_eq!(
+            flatten_tool_content(Some(&c), false),
+            "ok\n[resource content omitted]"
+        );
+        // No content at all is never an invisible empty success/error.
+        assert_eq!(
+            flatten_tool_content(None, false),
+            "(MCP tool returned no content)"
+        );
+        assert_eq!(
+            flatten_tool_content(None, true),
+            "MCP tool reported an error with no message"
         );
     }
 }

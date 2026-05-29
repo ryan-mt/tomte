@@ -95,7 +95,7 @@ Parameters:\n\
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| anyhow!("edit_mode `replace` requires cell_id"))?;
-                let idx = find_cell_index(cells, cid)
+                let (idx, by_id) = find_cell_index(cells, cid)
                     .ok_or_else(|| anyhow!("cell `{cid}` not found in notebook"))?;
                 let cell = cells[idx]
                     .as_object_mut()
@@ -113,7 +113,11 @@ Parameters:\n\
                     cell.remove("outputs");
                     cell.remove("execution_count");
                 }
-                format!("Replaced cell `{cid}` (index {idx}) in {}", a.notebook_path)
+                format!(
+                    "Replaced cell `{cid}` (index {idx}){} in {}",
+                    index_fallback_note(by_id),
+                    a.notebook_path
+                )
             }
             "insert" => {
                 let ct = a
@@ -124,7 +128,7 @@ Parameters:\n\
                 let at = match a.cell_id.as_deref().filter(|s| !s.is_empty()) {
                     None => 0,
                     Some(cid) => find_cell_index(cells, cid)
-                        .map(|i| i + 1)
+                        .map(|(i, _)| i + 1)
                         .ok_or_else(|| anyhow!("cell `{cid}` not found in notebook"))?,
                 };
                 cells.insert(at, make_cell(ct, &a.new_source));
@@ -136,11 +140,12 @@ Parameters:\n\
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| anyhow!("edit_mode `delete` requires cell_id"))?;
-                let idx = find_cell_index(cells, cid)
+                let (idx, by_id) = find_cell_index(cells, cid)
                     .ok_or_else(|| anyhow!("cell `{cid}` not found in notebook"))?;
                 cells.remove(idx);
                 format!(
-                    "Deleted cell `{cid}` (index {idx}) from {}",
+                    "Deleted cell `{cid}` (index {idx}){} from {}",
+                    index_fallback_note(by_id),
                     a.notebook_path
                 )
             }
@@ -175,14 +180,32 @@ Parameters:\n\
 }
 
 /// Find a cell by its `id` field, falling back to a 0-based numeric index.
-fn find_cell_index(cells: &[Value], cell_id: &str) -> Option<usize> {
+/// Returns the index plus whether the match was by `id` (`true`) or via the
+/// numeric-index fallback (`false`); callers flag the fallback in their result
+/// so an index match on what the model meant as an id can't silently edit or
+/// delete the wrong cell while still reporting success.
+fn find_cell_index(cells: &[Value], cell_id: &str) -> Option<(usize, bool)> {
     if let Some(i) = cells
         .iter()
         .position(|c| c.get("id").and_then(|v| v.as_str()) == Some(cell_id))
     {
-        return Some(i);
+        return Some((i, true));
     }
-    cell_id.parse::<usize>().ok().filter(|&i| i < cells.len())
+    cell_id
+        .parse::<usize>()
+        .ok()
+        .filter(|&i| i < cells.len())
+        .map(|i| (i, false))
+}
+
+/// Suffix appended to a result message when a cell was located via the
+/// numeric-index fallback rather than a real `id` match.
+fn index_fallback_note(by_id: bool) -> &'static str {
+    if by_id {
+        ""
+    } else {
+        " — matched by index, no cell has that id"
+    }
 }
 
 /// nbformat stores `source` as an array of line-strings, each keeping its
@@ -394,5 +417,36 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("nb.ipynb")).unwrap())
                 .unwrap();
         assert_eq!(nb["cells"][0]["cell_type"], "code");
+    }
+
+    #[tokio::test]
+    async fn numeric_index_fallback_is_flagged_in_message() {
+        // cell_id "0" matches no cell `id`, so it resolves via the numeric
+        // fallback. The result must say so, otherwise a wrong-cell edit looks
+        // identical to a real id match.
+        let dir = tempfile::tempdir().unwrap();
+        write_nb(dir.path()).await;
+        let out = NotebookEdit
+            .execute(
+                json!({"notebook_path": "nb.ipynb", "new_source": "y = 2\n", "cell_id": "0", "cell_type": null, "edit_mode": "replace"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("matched by index"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn id_match_has_no_index_note() {
+        let dir = tempfile::tempdir().unwrap();
+        write_nb(dir.path()).await;
+        let out = NotebookEdit
+            .execute(
+                json!({"notebook_path": "nb.ipynb", "new_source": "z\n", "cell_id": "aaa", "cell_type": null, "edit_mode": "replace"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+        assert!(!out.contains("matched by index"), "got: {out}");
     }
 }
