@@ -201,6 +201,21 @@ impl AnthropicClient {
     }
 }
 
+#[async_trait::async_trait]
+impl crate::client::ProviderClient for AnthropicClient {
+    fn provider(&self) -> Provider {
+        Provider::Anthropic
+    }
+    // Inherent methods take priority over trait methods of the same name, so
+    // these delegate to `AnthropicClient::{stream,create}` without recursing.
+    async fn stream(&self, req: ResponsesRequest) -> Result<StreamHandle> {
+        self.stream(req).await
+    }
+    async fn create(&self, req: ResponsesRequest) -> Result<serde_json::Value> {
+        self.create(req).await
+    }
+}
+
 #[cfg(test)]
 mod beta_header_tests {
     use super::{anthropic_beta_value, redact_auth_in, CONTEXT_1M_BETA, OAUTH_BETA};

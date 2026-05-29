@@ -201,3 +201,18 @@ pub async fn raw_post<B: Serialize>(
     }
     serde_json::from_str(&text).with_context(|| format!("parse: {text}"))
 }
+
+#[async_trait::async_trait]
+impl crate::client::ProviderClient for OpenAiClient {
+    fn provider(&self) -> crate::provider::Provider {
+        crate::provider::Provider::OpenAi
+    }
+    // Inherent methods take priority over trait methods of the same name, so
+    // these delegate to `OpenAiClient::{stream,create}` without recursing.
+    async fn stream(&self, req: ResponsesRequest) -> Result<StreamHandle> {
+        self.stream(req).await
+    }
+    async fn create(&self, req: ResponsesRequest) -> Result<serde_json::Value> {
+        self.create(req).await
+    }
+}
