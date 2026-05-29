@@ -329,35 +329,41 @@ impl McpState {
         });
         self.write_message(&req).await?;
 
-        // Read until we see a response with our id. Skip unrelated
-        // notifications and other responses (the server may interleave).
-        loop {
-            let next = tokio::time::timeout(self.request_timeout, self.lines.next_line())
-                .await
-                .map_err(|_| {
-                    anyhow!(
-                        "MCP `{method}` timed out after {}s",
-                        self.request_timeout.as_secs()
-                    )
-                })??;
-            let Some(line) = next else {
-                return Err(anyhow!(
-                    "MCP server closed stdout while awaiting `{method}`"
-                ));
-            };
-            let Ok(v): std::result::Result<Value, _> = serde_json::from_str(&line) else {
-                tracing::debug!(line = %line, "non-JSON line on MCP stdout");
-                continue;
-            };
-            if v.get("id").is_some_and(|i| {
-                i.as_u64() == Some(id) || i.as_str().and_then(|s| s.parse::<u64>().ok()) == Some(id)
-            }) {
-                if let Some(err) = v.get("error") {
-                    return Err(anyhow!("MCP `{method}` error: {err}"));
+        // Bound the WHOLE request, not each line read. A server that interleaves
+        // a steady stream of unrelated notifications (more often than the
+        // timeout) would otherwise reset a per-line timeout indefinitely and
+        // stall the turn. Inside, read until we see a response with our id,
+        // skipping unrelated notifications and other responses.
+        let request_timeout = self.request_timeout;
+        let lines = &mut self.lines;
+        let read = async {
+            loop {
+                let Some(line) = lines.next_line().await? else {
+                    return Err(anyhow!(
+                        "MCP server closed stdout while awaiting `{method}`"
+                    ));
+                };
+                let Ok(v): std::result::Result<Value, _> = serde_json::from_str(&line) else {
+                    tracing::debug!(line = %line, "non-JSON line on MCP stdout");
+                    continue;
+                };
+                if v.get("id").is_some_and(|i| {
+                    i.as_u64() == Some(id)
+                        || i.as_str().and_then(|s| s.parse::<u64>().ok()) == Some(id)
+                }) {
+                    if let Some(err) = v.get("error") {
+                        return Err(anyhow!("MCP `{method}` error: {err}"));
+                    }
+                    return Ok(v.get("result").cloned().unwrap_or(Value::Null));
                 }
-                return Ok(v.get("result").cloned().unwrap_or(Value::Null));
             }
-        }
+        };
+        tokio::time::timeout(request_timeout, read).await.map_err(|_| {
+            anyhow!(
+                "MCP `{method}` timed out after {}s",
+                request_timeout.as_secs()
+            )
+        })?
     }
 
     async fn notify(&mut self, method: &str, params: Value) -> Result<()> {
@@ -570,6 +576,34 @@ mod tests {
             !marker.exists(),
             "MCP timeout killed only the server process; a background descendant survived"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn request_timeout_bounds_whole_request_not_each_line() {
+        // Regression: a server that streams unrelated notifications faster than
+        // the timeout must not keep the request alive forever. The old per-line
+        // timeout reset on every notification; the request now has one deadline.
+        let cfg = McpServerConfig {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "while true; do printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"noise\",\"params\":{}}'; sleep 0.02; done".to_string(),
+            ],
+            env: HashMap::new(),
+        };
+        // Outer guard so a regression (unbounded request) fails fast instead of
+        // hanging the test: with the bug the inner spawn never resolves.
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            McpClient::spawn_with_timeout("chatty".to_string(), cfg, Duration::from_millis(150)),
+        )
+        .await;
+        match result {
+            Ok(Ok(_)) => panic!("handshake must not succeed against a noise-only server"),
+            Ok(Err(err)) => assert!(err.to_string().contains("timed out"), "got: {err}"),
+            Err(_) => panic!("request was not bounded by the timeout (per-line reset regression)"),
+        }
     }
 
     #[test]
