@@ -373,23 +373,19 @@ Parameters:\n\
         let files: Vec<String> = if let Some(r) = raw {
             r
         } else {
-            // Fallback to find. Strip any `**/` so the trailing basename
-            // pattern works with `-name`; coarse but never returns 0 falsely.
-            let mut pat = a.pattern.clone();
-            while let Some(rest) = pat.strip_prefix("**/") {
-                pat = rest.to_string();
-            }
-            if let Some(idx) = pat.rfind("**/") {
-                pat = pat[idx + 3..].to_string();
-            }
+            // No ripgrep: enumerate files with `find`, then filter in-process
+            // with a matcher that respects path structure. The previous
+            // `-name <basename>` degraded `src/**/*.rs` to matching `*.rs` in
+            // every directory and dropped any pattern containing a slash
+            // (`-name` never matches a `/`).
             let find_out = Command::new("find")
                 .arg(".")
                 .arg("-path")
                 .arg("./.git")
                 .arg("-prune")
                 .arg("-o")
-                .arg("-name")
-                .arg(&pat)
+                .arg("-type")
+                .arg("f")
                 .arg("-print")
                 .current_dir(&cwd)
                 .output()
@@ -397,6 +393,7 @@ Parameters:\n\
             String::from_utf8_lossy(&find_out.stdout)
                 .lines()
                 .filter(|l| !l.is_empty())
+                .filter(|l| glob_fallback_matches(&a.pattern, l.strip_prefix("./").unwrap_or(l)))
                 .map(|s| s.to_string())
                 .collect()
         };
@@ -440,6 +437,20 @@ fn relativize_glob_results(
                 .unwrap_or_else(|_| rel.to_string())
         })
         .collect()
+}
+
+/// Match a glob against a relative path for the no-ripgrep `find` fallback,
+/// approximating ripgrep's `--glob` semantics: a pattern containing no `/`
+/// matches the file's basename at any depth (gitignore-style), while a pattern
+/// with a `/` matches the full relative path. Built on the shared
+/// [`crate::hooks::glob_match`] so `**`/`*`/`?` behave consistently.
+fn glob_fallback_matches(pattern: &str, rel_path: &str) -> bool {
+    if pattern.contains('/') {
+        crate::hooks::glob_match(pattern, rel_path)
+    } else {
+        let base = rel_path.rsplit('/').next().unwrap_or(rel_path);
+        crate::hooks::glob_match(pattern, base)
+    }
 }
 
 /// Cap an output string by both lines (`head_limit`) and bytes (`byte_cap`).
@@ -934,5 +945,20 @@ mod tests {
             out.trim().is_empty(),
             "non-matching glob must return empty, not all .rs files; got: {out}"
         );
+    }
+
+    #[test]
+    fn glob_fallback_respects_path_structure() {
+        // Regression for the no-rg fallback: a directory-scoped pattern must
+        // not match files outside that directory (old `-name` matched the
+        // basename everywhere), and a slashed pattern must still match (old
+        // `-name 'src/foo*.rs'` matched nothing because `-name` ignores `/`).
+        assert!(glob_fallback_matches("src/**/*.tsx", "src/a/b.tsx"));
+        assert!(!glob_fallback_matches("src/**/*.tsx", "other/b.tsx"));
+        assert!(glob_fallback_matches("src/foo*.rs", "src/foobar.rs"));
+        assert!(!glob_fallback_matches("src/foo*.rs", "src/sub/foo.rs"));
+        // A pattern without a slash matches the basename at any depth.
+        assert!(glob_fallback_matches("*.rs", "a/b/c.rs"));
+        assert!(!glob_fallback_matches("*.rs", "a/b/c.tsx"));
     }
 }
