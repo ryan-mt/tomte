@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod anthropic;
 pub mod auth;
+pub mod catalog;
 pub mod client;
 pub mod command;
 pub mod config;

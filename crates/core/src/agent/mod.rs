@@ -138,49 +138,17 @@ const COMPACT_PROMPT: &str =
                               where we left off. Keep it under 30 lines. After this, treat the \
                               summary as the canonical context — earlier messages are gone.";
 
-/// Whether an Anthropic model has a 1M-token context window. Single source of
-/// truth shared by `model_context_limit` (the local warn/compact threshold) and
-/// the Anthropic client (which gates the `context-1m-2025-08-07` beta header on
-/// it). Per the Claude API docs (May 2026): Opus 4.6 / 4.7 / 4.8, Sonnet 4.6 and
-/// the Mythos preview ship 1M; Sonnet 4.5 / 4, Opus 4.5 and Haiku are 200K.
+/// Whether an Anthropic model is eligible for the `context-1m-2025-08-07` beta
+/// header. Thin delegator to the model catalogue (the single source of truth);
+/// see [`crate::catalog`].
 pub fn model_supports_1m(model: &str) -> bool {
-    let m = model.to_ascii_lowercase();
-    m.contains("opus-4-8")
-        || m.contains("opus-4-7")
-        || m.contains("opus-4-6")
-        || m.contains("sonnet-4-6")
-        || m.contains("mythos")
+    crate::catalog::supports_1m(model)
 }
 
 /// Context-window size (tokens) per model, used to warn before a turn
-/// overflows. Verified against published model docs (May 2026):
-///   - Anthropic: see `model_supports_1m` for the 1M-window set; everything
-///     else (Opus 4.5, Sonnet 4.5 / 4, all Haiku) is 200K. We never request the
-///     1M beta for the 200K models, so 200K is their effective limit.
-///   - OpenAI: gpt-5.5 → 1.05M, gpt-5.4 → 1M, mini → 400K, nano → 200K;
-///     everything else (gpt-5 / 5.2 / 5.3 / -pro / -codex) → 400K.
+/// overflows. Thin delegator to the model catalogue; see [`crate::catalog`].
 pub fn model_context_limit(model: &str) -> u64 {
-    let m = model.to_ascii_lowercase();
-    if m.starts_with("claude") || m.contains("mythos") {
-        return if model_supports_1m(&m) {
-            1_000_000
-        } else {
-            200_000
-        };
-    }
-    if m.contains("nano") {
-        return 200_000;
-    }
-    if m.contains("mini") {
-        return 400_000;
-    }
-    if m.contains("gpt-5.5") {
-        return 1_050_000;
-    }
-    if m.contains("gpt-5.4") {
-        return 1_000_000;
-    }
-    400_000
+    crate::catalog::context_limit(model)
 }
 
 /// Human-readable context-window label for a model (e.g. "1M", "1.05M",

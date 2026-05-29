@@ -40,27 +40,11 @@ impl Provider {
 
     /// Catalogue of model ids known to be available for this provider, in
     /// the recommended display order (best general default first). The CLI
-    /// surfaces this list after sign-in so the user knows what to pick.
+    /// surfaces this list after sign-in so the user knows what to pick. Backed
+    /// by the model catalogue (the single source of truth); see
+    /// [`crate::catalog`].
     pub fn available_models(&self) -> &'static [&'static str] {
-        match self {
-            Self::OpenAi => &[
-                "gpt-5.5",
-                "gpt-5.4",
-                "gpt-5.3",
-                "gpt-5-pro",
-                "gpt-5-mini",
-                "gpt-5-nano",
-            ],
-            Self::Anthropic => &[
-                "claude-opus-4-8",
-                "claude-opus-4-7",
-                "claude-opus-4-6",
-                "claude-opus-4-5",
-                "claude-sonnet-4-6",
-                "claude-sonnet-4-5",
-                "claude-haiku-4-5",
-            ],
-        }
+        crate::catalog::available_models(*self)
     }
 }
 

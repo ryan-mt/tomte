@@ -52,11 +52,7 @@ fn map_effort(model: &str, effort: Option<&str>) -> EffortPlan {
     if model_lc.contains("haiku") {
         return EffortPlan::no_thinking();
     }
-    let is_adaptive_capable = model_lc.contains("opus-4-8")
-        || model_lc.contains("opus-4-7")
-        || model_lc.contains("opus-4-6")
-        || model_lc.contains("sonnet-4-6")
-        || model_lc.contains("mythos");
+    let is_adaptive_capable = crate::catalog::supports_adaptive_thinking(model);
     if !is_adaptive_capable {
         return EffortPlan::no_thinking();
     }
