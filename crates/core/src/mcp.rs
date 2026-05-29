@@ -30,7 +30,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
@@ -39,6 +39,32 @@ use crate::tools::{BuiltinTool, ToolContext};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(unix)]
+fn isolate_process_group(cmd: &mut Command) {
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_cmd: &mut Command) {}
+
+#[cfg(unix)]
+fn kill_process_group(pid: Option<u32>) {
+    const SIGKILL: i32 = 9;
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+
+    let Some(pid) = pid.and_then(|p| i32::try_from(p).ok()) else {
+        return;
+    };
+    unsafe {
+        let _ = kill(-pid, SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: Option<u32>) {}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpServerConfig {
@@ -87,29 +113,49 @@ struct McpState {
     stdin: ChildStdin,
     lines: Lines<BufReader<ChildStdout>>,
     next_id: u64,
+    request_timeout: Duration,
+    child_pid: Option<u32>,
     // Keep the child alive for the lifetime of the client; kill_on_drop
-    // ensures we don't leak processes if the client itself is dropped.
-    _child: Child,
+    // handles the direct child, while Drop below also kills descendants in
+    // the process group.
+    child: Child,
+}
+
+impl Drop for McpState {
+    fn drop(&mut self) {
+        kill_process_group(self.child_pid);
+        let _ = self.child.start_kill();
+    }
 }
 
 impl McpClient {
     /// Spawn a new server, perform the `initialize` handshake, and list its
     /// tools. Returns a ready-to-use client.
     pub async fn spawn(name: String, config: McpServerConfig) -> Result<Self> {
-        let mut child = Command::new(&config.command)
-            .args(&config.args)
+        Self::spawn_with_timeout(name, config, REQUEST_TIMEOUT).await
+    }
+
+    async fn spawn_with_timeout(
+        name: String,
+        config: McpServerConfig,
+        request_timeout: Duration,
+    ) -> Result<Self> {
+        let mut cmd = Command::new(&config.command);
+        cmd.args(&config.args)
             .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| {
-                anyhow!(
-                    "failed to spawn MCP server `{name}` ({}): {e}",
-                    config.command
-                )
-            })?;
+            .kill_on_drop(true);
+        isolate_process_group(&mut cmd);
+
+        let mut child = cmd.spawn().map_err(|e| {
+            anyhow!(
+                "failed to spawn MCP server `{name}` ({}): {e}",
+                config.command
+            )
+        })?;
+        let child_pid = child.id();
         let stdin = child
             .stdin
             .take()
@@ -118,12 +164,33 @@ impl McpClient {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("MCP server `{name}` has no stdout"))?;
+        if let Some(mut stderr) = child.stderr.take() {
+            let stderr_name = name.clone();
+            let _stderr_task = tokio::spawn(async move {
+                let mut buf = [0u8; 8192];
+                loop {
+                    match stderr.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = String::from_utf8_lossy(&buf[..n]);
+                            tracing::debug!(server = %stderr_name, stderr = %chunk, "MCP server stderr");
+                        }
+                        Err(e) => {
+                            tracing::debug!(server = %stderr_name, error = %e, "failed to read MCP stderr");
+                            break;
+                        }
+                    }
+                }
+            });
+        }
         let lines = BufReader::new(stdout).lines();
         let mut state = McpState {
             stdin,
             lines,
             next_id: 1,
-            _child: child,
+            request_timeout,
+            child_pid,
+            child,
         };
 
         // Handshake.
@@ -228,12 +295,12 @@ impl McpState {
         // Read until we see a response with our id. Skip unrelated
         // notifications and other responses (the server may interleave).
         loop {
-            let next = tokio::time::timeout(REQUEST_TIMEOUT, self.lines.next_line())
+            let next = tokio::time::timeout(self.request_timeout, self.lines.next_line())
                 .await
                 .map_err(|_| {
                     anyhow!(
                         "MCP `{method}` timed out after {}s",
-                        REQUEST_TIMEOUT.as_secs()
+                        self.request_timeout.as_secs()
                     )
                 })??;
             let Some(line) = next else {
@@ -280,7 +347,7 @@ pub struct McpToolAdapter {
 
 impl McpToolAdapter {
     pub fn new(client: Arc<McpClient>, info: McpToolInfo) -> Self {
-        let qualified = format!("mcp__{}__{}", client.name, info.name);
+        let qualified = portable_mcp_tool_name(&client.name, &info.name);
         // Leak the strings so they live for `'static`, satisfying the
         // BuiltinTool trait. We expect a small, bounded number of MCP tools
         // per process.
@@ -294,6 +361,56 @@ impl McpToolAdapter {
             original_name: info.name,
         }
     }
+}
+
+fn portable_mcp_tool_name(server: &str, tool: &str) -> String {
+    const MAX_NAME_LEN: usize = 64;
+    let raw = format!("mcp__{server}__{tool}");
+    let mut name = format!(
+        "mcp__{}__{}",
+        portable_name_part(server),
+        portable_name_part(tool)
+    );
+    if name == raw && name.len() <= MAX_NAME_LEN {
+        return name;
+    }
+
+    let suffix = format!("__{:08x}", fnv1a32(raw.as_bytes()));
+    let max_base = MAX_NAME_LEN - suffix.len();
+    if name.len() > max_base {
+        name.truncate(max_base);
+        while !name.is_char_boundary(name.len()) {
+            name.pop();
+        }
+    }
+    name.push_str(&suffix);
+    name
+}
+
+fn portable_name_part(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    if trimmed.is_empty() {
+        "tool".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn fnv1a32(bytes: &[u8]) -> u32 {
+    let mut hash = 0x811c9dc5u32;
+    for b in bytes {
+        hash ^= *b as u32;
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    hash
 }
 
 #[async_trait]
@@ -343,4 +460,78 @@ pub async fn spawn_all() -> Vec<Arc<McpClient>> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_portable_tool_name(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= 64
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+    }
+
+    #[test]
+    fn portable_mcp_tool_name_preserves_valid_names() {
+        assert_eq!(
+            portable_mcp_tool_name("filesystem", "read_file"),
+            "mcp__filesystem__read_file"
+        );
+    }
+
+    #[test]
+    fn portable_mcp_tool_name_sanitizes_invalid_names() {
+        let name = portable_mcp_tool_name("team server", "read/file 😬");
+        assert!(is_portable_tool_name(&name), "{name}");
+        assert!(name.starts_with("mcp__team_server__read_file"));
+    }
+
+    #[test]
+    fn portable_mcp_tool_name_caps_long_names() {
+        let name = portable_mcp_tool_name(&"s".repeat(80), &"t".repeat(80));
+        assert!(is_portable_tool_name(&name), "{name}");
+        assert_eq!(name.len(), 64);
+    }
+
+    #[cfg(unix)]
+    fn sh_quote(path: &std::path::Path) -> String {
+        format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_timeout_kills_mcp_server_descendants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("survived-mcp-timeout");
+        let script = format!(
+            "(sleep 0.5; printf survived > {}) & sleep 30",
+            sh_quote(&marker)
+        );
+        let cfg = McpServerConfig {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            env: HashMap::new(),
+        };
+
+        let err = match McpClient::spawn_with_timeout(
+            "leaky".to_string(),
+            cfg,
+            Duration::from_millis(80),
+        )
+        .await
+        {
+            Ok(_) => panic!("spawn should time out"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("timed out"), "got: {err}");
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        assert!(
+            !marker.exists(),
+            "MCP timeout killed only the server process; a background descendant survived"
+        );
+    }
 }

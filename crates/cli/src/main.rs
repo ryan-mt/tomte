@@ -40,7 +40,7 @@ enum Command {
         /// Model (defaults to the configured model)
         #[arg(long)]
         model: Option<String>,
-        /// Reasoning effort: low | medium | high | xhigh
+        /// Reasoning effort: none | minimal | low | medium | high | xhigh | max
         #[arg(long)]
         reasoning: Option<String>,
         /// Output format: `text` (default, human readable) or `json`

@@ -36,6 +36,24 @@ const CONTEXT_1M_BETA: &str = "context-1m-2025-08-07";
 /// this server-side; missing it produces a generic 400.
 const OAUTH_IDENTITY_PROMPT: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
+/// Best-effort scrub for API keys or bearer tokens in upstream error bodies
+/// before they are logged or shown to the model.
+fn redact_auth_in(body: &str) -> String {
+    let mut out = body.to_string();
+    for token in ["sk-ant-", "sk-", "Bearer "] {
+        while let Some(i) = out.find(token) {
+            let tail = &out[i + token.len()..];
+            let end = tail
+                .char_indices()
+                .find(|(_, c)| c.is_whitespace() || *c == '"' || *c == '}')
+                .map(|(j, _)| i + token.len() + j)
+                .unwrap_or(out.len());
+            out.replace_range(i..end, "<redacted>");
+        }
+    }
+    out
+}
+
 /// Compute the `anthropic-beta` header value, or `None` when no betas apply.
 /// OAuth always carries the claude-code/oauth betas; the 1M context beta is
 /// appended on top for any 1M-window model. On the API-key path the only beta
@@ -130,7 +148,7 @@ impl AnthropicClient {
                 Ok(t) => t,
                 Err(e) => format!("(failed to read error body: {e})"),
             };
-            return Err(anyhow!("Anthropic {} {}", status, text));
+            return Err(anyhow!("Anthropic {} {}", status, redact_auth_in(&text)));
         }
         Ok(handle_from_response(resp))
     }
@@ -149,7 +167,7 @@ impl AnthropicClient {
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
-            return Err(anyhow!("Anthropic {} {}", status, text));
+            return Err(anyhow!("Anthropic {} {}", status, redact_auth_in(&text)));
         }
         serde_json::from_str(&text).map_err(|e| anyhow!("parse Anthropic response: {e}: {text}"))
     }
@@ -185,7 +203,16 @@ impl AnthropicClient {
 
 #[cfg(test)]
 mod beta_header_tests {
-    use super::{anthropic_beta_value, CONTEXT_1M_BETA, OAUTH_BETA};
+    use super::{anthropic_beta_value, redact_auth_in, CONTEXT_1M_BETA, OAUTH_BETA};
+
+    #[test]
+    fn redacts_auth_values_from_error_bodies() {
+        let body = r#"{"error":"bad key sk-ant-api03-secret","auth":"Bearer oauth-secret"}"#;
+        let redacted = redact_auth_in(body);
+        assert!(!redacted.contains("sk-ant-api03-secret"), "{redacted}");
+        assert!(!redacted.contains("oauth-secret"), "{redacted}");
+        assert!(redacted.contains("<redacted>"), "{redacted}");
+    }
 
     #[test]
     fn oauth_1m_model_appends_context_1m_beta() {

@@ -19,11 +19,13 @@ use super::storage::{load_auth, save_auth, AuthMode, AuthRecord, StoredTokens};
 /// Holding this lock for the duration of the network round-trip is fine
 /// because token refreshes are rare (every ~hour) and short (sub-second).
 static REFRESH_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
+type ShutdownHandle = Arc<AsyncMutex<Option<oneshot::Sender<()>>>>;
 
 pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const ISSUER: &str = "https://auth.openai.com";
 pub const DEFAULT_PORT: u16 = 1455;
 pub const FALLBACK_PORT: u16 = 1457;
+const CALLBACK_HOST: &str = "127.0.0.1";
 pub const SCOPES: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
 
@@ -95,7 +97,7 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
     let state = random_state();
     let client = OauthClient::default();
 
-    let (_port, redirect_uri, code_rx) = spawn_callback_server(&state).await?;
+    let (_port, redirect_uri, code_rx, shutdown) = spawn_callback_server(&state).await?;
     let auth_url = build_authorize_url(
         &client.client_id,
         &client.issuer,
@@ -111,10 +113,17 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
     let redirect = redirect_uri.clone();
     let url = auth_url.clone();
     let completion = tokio::spawn(async move {
-        let code = tokio::time::timeout(Duration::from_secs(600), code_rx)
-            .await
-            .map_err(|_| anyhow!("login timed out after 10 minutes"))?
-            .map_err(|_| anyhow!("callback channel closed"))??;
+        let code = match tokio::time::timeout(Duration::from_secs(600), code_rx).await {
+            Ok(Ok(result)) => result?,
+            Ok(Err(_)) => {
+                signal_shutdown(&shutdown).await;
+                return Err(anyhow!("callback channel closed"));
+            }
+            Err(_) => {
+                signal_shutdown(&shutdown).await;
+                return Err(anyhow!("login timed out after 10 minutes"));
+            }
+        };
 
         let tokens = exchange_code_for_tokens(&client, &redirect, &pkce, &code).await?;
         let account_id = extract_account_id(tokens.id_token.as_deref());
@@ -168,7 +177,12 @@ pub async fn login_with_browser(open_browser: bool) -> Result<AuthRecord> {
 
 async fn spawn_callback_server(
     expected_state: &str,
-) -> Result<(u16, String, oneshot::Receiver<Result<String>>)> {
+) -> Result<(
+    u16,
+    String,
+    oneshot::Receiver<Result<String>>,
+    ShutdownHandle,
+)> {
     use axum::extract::{Query, State};
     use axum::response::Html;
     use axum::routing::get;
@@ -177,7 +191,7 @@ async fn spawn_callback_server(
     #[derive(Clone)]
     struct AppState {
         tx: Arc<tokio::sync::Mutex<Option<oneshot::Sender<Result<String>>>>>,
-        shutdown_tx: Arc<tokio::sync::Mutex<Option<oneshot::Sender<()>>>>,
+        shutdown_tx: ShutdownHandle,
         expected_state: String,
     }
 
@@ -221,9 +235,10 @@ async fn spawn_callback_server(
 
     let (tx, rx) = oneshot::channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let shutdown_handle = Arc::new(AsyncMutex::new(Some(shutdown_tx)));
     let state = AppState {
         tx: Arc::new(tokio::sync::Mutex::new(Some(tx))),
-        shutdown_tx: Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),
+        shutdown_tx: shutdown_handle.clone(),
         expected_state: expected_state.to_string(),
     };
     let app = Router::new()
@@ -247,15 +262,25 @@ async fn spawn_callback_server(
             .await;
     });
 
-    let redirect_uri = format!("http://localhost:{port}/auth/callback");
-    Ok((port, redirect_uri, rx))
+    let redirect_uri = callback_redirect_uri(port);
+    Ok((port, redirect_uri, rx, shutdown_handle))
+}
+
+async fn signal_shutdown(handle: &ShutdownHandle) {
+    if let Some(tx) = handle.lock().await.take() {
+        let _ = tx.send(());
+    }
 }
 
 async fn try_bind(port: u16) -> Result<(u16, tokio::net::TcpListener)> {
-    let addr: SocketAddr = format!("127.0.0.1:{port}").parse()?;
+    let addr: SocketAddr = format!("{CALLBACK_HOST}:{port}").parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let port = listener.local_addr()?.port();
     Ok((port, listener))
+}
+
+fn callback_redirect_uri(port: u16) -> String {
+    format!("http://{CALLBACK_HOST}:{port}/auth/callback")
 }
 
 /// Build a reqwest client with a sane timeout and a strict no-redirect
@@ -431,4 +456,17 @@ fn extract_account_id(id_token: Option<&str>) -> Option<String> {
         .and_then(|v| v.get("chatgpt_account_id"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::callback_redirect_uri;
+
+    #[test]
+    fn callback_redirect_uri_uses_same_ipv4_host_as_listener() {
+        assert_eq!(
+            callback_redirect_uri(1455),
+            "http://127.0.0.1:1455/auth/callback"
+        );
+    }
 }

@@ -56,13 +56,15 @@ Parameters:\n\
     }
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<String> {
         let a: WebFetchArgs = super::parse_args("web_fetch", args)?;
-        if !(a.url.starts_with("http://") || a.url.starts_with("https://")) {
+        let parsed = url::Url::parse(&a.url).with_context(|| format!("parse URL: {}", a.url))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
             return Err(anyhow!("URL must start with http:// or https://"));
         }
+        let url = parsed.to_string();
         // SSRF guard: resolve the host and reject loopback / RFC1918 / link-local
         // ranges so the model can't be coaxed into hitting cloud metadata
         // (169.254.169.254) or internal admin endpoints (127.0.0.1, 10.x).
-        validate_ssrf_safe(&a.url).await?;
+        validate_ssrf_safe(&url).await?;
         let cap = a.max_bytes.unwrap_or(DEFAULT_MAX_BYTES).min(HARD_CAP_BYTES) as usize;
         let client = reqwest::Client::builder()
             .user_agent(concat!("opencli/", env!("CARGO_PKG_VERSION")))
@@ -80,12 +82,12 @@ Parameters:\n\
         let mut attempt: u32 = 0;
         let resp = loop {
             attempt += 1;
-            match client.get(&a.url).send().await {
+            match client.get(&url).send().await {
                 Ok(r) => {
                     if r.status().is_server_error() && attempt < MAX_ATTEMPTS {
                         let code = r.status().as_u16();
                         tracing::warn!(
-                            url = %a.url,
+                            url = %url,
                             attempt,
                             status = code,
                             "web_fetch: server error, will retry"
@@ -98,7 +100,7 @@ Parameters:\n\
                 Err(e) => {
                     if attempt < MAX_ATTEMPTS && is_transient(&e) {
                         tracing::warn!(
-                            url = %a.url,
+                            url = %url,
                             attempt,
                             error = %e,
                             "web_fetch: transient network error, will retry"
@@ -106,7 +108,7 @@ Parameters:\n\
                         tokio::time::sleep(backoff(attempt)).await;
                         continue;
                     }
-                    return Err(anyhow::Error::from(e).context(format!("GET {}", a.url)));
+                    return Err(anyhow::Error::from(e).context(format!("GET {url}")));
                 }
             }
         };
@@ -130,7 +132,7 @@ Parameters:\n\
         let mut buf: Vec<u8> = Vec::with_capacity(cap.min(65_536));
         let mut truncated = false;
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.with_context(|| format!("read body from {}", a.url))?;
+            let chunk = chunk.with_context(|| format!("read body from {url}"))?;
             let remaining = cap.saturating_sub(buf.len());
             if remaining == 0 {
                 truncated = true;
@@ -433,6 +435,9 @@ fn apply_filters(
         if r.title.is_empty() || r.url.is_empty() {
             continue;
         }
+        if is_search_ad_or_tracking_url(&r.url) {
+            continue;
+        }
         if !seen.insert(r.url.clone()) {
             continue;
         }
@@ -655,17 +660,21 @@ fn parse_mojeek(html: &str) -> Vec<SearchResult> {
 /// Pull the `uddg` param out and URL-decode it; fall back to the raw href
 /// (adding a scheme for protocol-relative links) when there's no wrapper.
 fn extract_real_url(href: &str) -> String {
-    if let Some(pos) = href.find("uddg=") {
-        let rest = &href[pos + "uddg=".len()..];
-        let enc = rest.split('&').next().unwrap_or(rest);
-        return urlencoding::decode(enc)
-            .map(|c| c.into_owned())
-            .unwrap_or_else(|_| enc.to_string());
+    let href = href.trim().replace("&amp;", "&");
+    let normalized = if let Some(stripped) = href.strip_prefix("//") {
+        format!("https://{stripped}")
+    } else {
+        href
+    };
+    if let Ok(url) = url::Url::parse(&normalized) {
+        let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+        if host_matches(&host, "duckduckgo.com") && url.path().starts_with("/l/") {
+            if let Some((_, target)) = url.query_pairs().find(|(k, _)| k == "uddg") {
+                return target.into_owned();
+            }
+        }
     }
-    if let Some(stripped) = href.strip_prefix("//") {
-        return format!("https://{stripped}");
-    }
-    href.to_string()
+    normalized
 }
 
 fn host_of(url: &str) -> String {
@@ -673,6 +682,19 @@ fn host_of(url: &str) -> String {
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
         .unwrap_or_default()
+}
+
+fn is_search_ad_or_tracking_url(raw: &str) -> bool {
+    let Ok(url) = url::Url::parse(raw) else {
+        return false;
+    };
+    let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+    let path = url.path().to_ascii_lowercase();
+    let query = url.query().unwrap_or("").to_ascii_lowercase();
+    (host_matches(&host, "duckduckgo.com") && path.ends_with("/y.js"))
+        || (host_matches(&host, "bing.com") && path.contains("/aclick"))
+        || query.contains("ad_provider=")
+        || query.contains("ad_domain=")
 }
 
 /// Domain match: exact host or any subdomain, ignoring a leading `www.`.
@@ -745,6 +767,34 @@ mod web_search_tests {
     }
 
     #[test]
+    fn ddg_extracts_uddg_only_from_duckduckgo_wrappers() {
+        assert_eq!(
+            extract_real_url(
+                "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdoc%3Fx%3D1&amp;rut=abc"
+            ),
+            "https://example.com/doc?x=1"
+        );
+        assert_eq!(
+            extract_real_url("https://example.com/doc?next=uddg%3Dhttps%253A%252F%252Fevil.test"),
+            "https://example.com/doc?next=uddg%3Dhttps%253A%252F%252Fevil.test"
+        );
+        assert_eq!(
+            extract_real_url("https://evilduckduckgo.com/l/?uddg=https%3A%2F%2Fevil.test"),
+            "https://evilduckduckgo.com/l/?uddg=https%3A%2F%2Fevil.test"
+        );
+    }
+
+    #[test]
+    fn ddg_extracts_uddg_after_html_escaped_param_separator() {
+        assert_eq!(
+            extract_real_url(
+                "//duckduckgo.com/l/?rut=abc&amp;uddg=https%3A%2F%2Fexample.com%2Fdoc"
+            ),
+            "https://example.com/doc"
+        );
+    }
+
+    #[test]
     fn mojeek_parses_title_url_and_snippet() {
         let r = parse_mojeek(MOJEEK_SAMPLE);
         assert_eq!(r.len(), 2);
@@ -783,6 +833,26 @@ mod web_search_tests {
         let mut raw = parse_ddg(SAMPLE);
         raw.push(raw[0].clone());
         assert_eq!(apply_filters(raw, 10, None, None).len(), 2);
+    }
+
+    #[test]
+    fn drops_duckduckgo_ad_tracking_results() {
+        let raw = vec![
+            SearchResult {
+                title: "Official".into(),
+                url: "https://openai.com/".into(),
+                snippet: String::new(),
+            },
+            SearchResult {
+                title: "Sponsored".into(),
+                url: "https://duckduckgo.com/y.js?ad_domain=example.com&ad_provider=bingv7aa"
+                    .into(),
+                snippet: String::new(),
+            },
+        ];
+        let r = apply_filters(raw, 10, None, None);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].url, "https://openai.com/");
     }
 
     #[test]

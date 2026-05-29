@@ -66,6 +66,7 @@ fn slug_for(cwd: &Path) -> String {
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
+static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn new_session_id() -> String {
     let now = SystemTime::now()
@@ -117,17 +118,64 @@ pub fn derive_preview(history: &[InputItem]) -> String {
 }
 
 pub fn save(record: &SessionRecord) -> std::io::Result<()> {
+    validate_session_id(&record.meta.id)?;
     let dir = sessions_dir_for(&record.meta.cwd);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.json", record.meta.id));
-    let tmp = path.with_extension("tmp");
+    let tmp = unique_tmp_path(&path);
     let text = serde_json::to_string(record)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&tmp, text)?;
+    write_session_file(&tmp, text.as_bytes())?;
     std::fs::rename(&tmp, &path)
 }
 
+#[cfg(unix)]
+fn write_session_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_session_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+fn validate_session_id(id: &str) -> std::io::Result<()> {
+    let is_valid = !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if is_valid {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid session id",
+        ))
+    }
+}
+
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = SAVE_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("tmp.{}.{}.{}", std::process::id(), now, seq))
+}
+
 pub fn load(cwd: &Path, id: &str) -> std::io::Result<SessionRecord> {
+    validate_session_id(id)?;
     let path = sessions_dir_for(cwd).join(format!("{id}.json"));
     let text = std::fs::read_to_string(&path)?;
     serde_json::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
@@ -149,9 +197,25 @@ pub fn list(cwd: &Path) -> Vec<SessionMeta> {
             continue;
         };
         if let Ok(rec) = serde_json::from_str::<SessionRecord>(&text) {
+            let file_id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if validate_session_id(&rec.meta.id).is_err() || rec.meta.id != file_id {
+                continue;
+            }
             out.push(rec.meta);
         }
     }
     out.sort_by_key(|m| std::cmp::Reverse(m.updated_at_ms));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unique_tmp_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn save_temp_paths_are_unique() {
+        let path = PathBuf::from("session.json");
+        assert_ne!(unique_tmp_path(&path), unique_tmp_path(&path));
+    }
 }

@@ -141,14 +141,37 @@ fn key_filled(slot: &Option<String>) -> bool {
     slot.as_ref().is_some_and(|k| !k.is_empty())
 }
 
+pub fn has_openai_oauth(r: &AuthRecord) -> bool {
+    tokens_filled(&r.tokens)
+}
+
+pub fn has_openai_api_key(r: &AuthRecord) -> bool {
+    key_filled(&r.api_key)
+}
+
+pub fn has_anthropic_oauth(r: &AuthRecord) -> bool {
+    tokens_filled(&r.anthropic_tokens)
+}
+
+pub fn has_anthropic_api_key(r: &AuthRecord) -> bool {
+    key_filled(&r.anthropic_api_key)
+}
+
+fn has_any_credential(r: &AuthRecord) -> bool {
+    has_openai_oauth(r)
+        || has_openai_api_key(r)
+        || has_anthropic_oauth(r)
+        || has_anthropic_api_key(r)
+}
+
 /// Whether `record.mode` still points at a credential that is actually stored.
 fn mode_is_backed(r: &AuthRecord) -> bool {
     match r.mode {
-        AuthMode::None => true,
-        AuthMode::OpenaiOauth => tokens_filled(&r.tokens),
-        AuthMode::OpenaiApiKey => key_filled(&r.api_key),
-        AuthMode::AnthropicOauth => tokens_filled(&r.anthropic_tokens),
-        AuthMode::AnthropicApiKey => key_filled(&r.anthropic_api_key),
+        AuthMode::None => !has_any_credential(r),
+        AuthMode::OpenaiOauth => has_openai_oauth(r),
+        AuthMode::OpenaiApiKey => has_openai_api_key(r),
+        AuthMode::AnthropicOauth => has_anthropic_oauth(r),
+        AuthMode::AnthropicApiKey => has_anthropic_api_key(r),
     }
 }
 
@@ -156,16 +179,25 @@ fn mode_is_backed(r: &AuthRecord) -> bool {
 /// API key, OpenAI before Anthropic (arbitrary but deterministic); `None` when
 /// nothing is stored.
 fn infer_mode(r: &AuthRecord) -> AuthMode {
-    if tokens_filled(&r.tokens) {
+    if has_openai_oauth(r) {
         AuthMode::OpenaiOauth
-    } else if key_filled(&r.api_key) {
+    } else if has_openai_api_key(r) {
         AuthMode::OpenaiApiKey
-    } else if tokens_filled(&r.anthropic_tokens) {
+    } else if has_anthropic_oauth(r) {
         AuthMode::AnthropicOauth
-    } else if key_filled(&r.anthropic_api_key) {
+    } else if has_anthropic_api_key(r) {
         AuthMode::AnthropicApiKey
     } else {
         AuthMode::None
+    }
+}
+
+/// Active mode after repairing stale or legacy records in-memory.
+pub fn effective_mode(r: &AuthRecord) -> AuthMode {
+    if mode_is_backed(r) {
+        r.mode
+    } else {
+        infer_mode(r)
     }
 }
 
@@ -189,7 +221,7 @@ pub fn clear_credential(record: &mut AuthRecord, target: LogoutTarget) {
         }
     }
     if !mode_is_backed(record) {
-        record.mode = infer_mode(record);
+        record.mode = effective_mode(record);
     }
 }
 
@@ -240,5 +272,26 @@ mod logout_tests {
         clear_credential(&mut r, LogoutTarget::All);
         assert_eq!(r.mode, AuthMode::None);
         assert!(r.tokens.is_none() && r.anthropic_api_key.is_none());
+    }
+
+    #[test]
+    fn effective_mode_recovers_legacy_record_with_missing_mode() {
+        let r = AuthRecord {
+            mode: AuthMode::None,
+            api_key: Some("k".into()),
+            ..Default::default()
+        };
+        assert_eq!(effective_mode(&r), AuthMode::OpenaiApiKey);
+    }
+
+    #[test]
+    fn effective_mode_ignores_empty_credential_slots() {
+        let r = AuthRecord {
+            mode: AuthMode::OpenaiApiKey,
+            api_key: Some(String::new()),
+            anthropic_api_key: Some("ak".into()),
+            ..Default::default()
+        };
+        assert_eq!(effective_mode(&r), AuthMode::AnthropicApiKey);
     }
 }

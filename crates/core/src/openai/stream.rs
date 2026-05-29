@@ -74,14 +74,19 @@ impl StreamHandle {
         tokio::spawn(async move {
             let pump = tokio::spawn(async move {
                 let mut stream = resp.bytes_stream().eventsource();
+                let mut saw_terminal = false;
                 while let Some(item) = stream.next().await {
                     match item {
                         Ok(ev) => {
                             if ev.data == "[DONE]" {
+                                saw_terminal = true;
                                 break;
                             }
                             match parse_event(&ev.data) {
                                 Ok(parsed) => {
+                                    if is_terminal_event(&parsed) {
+                                        saw_terminal = true;
+                                    }
                                     if tx.send(Ok(parsed)).await.is_err() {
                                         return;
                                     }
@@ -99,6 +104,13 @@ impl StreamHandle {
                             return;
                         }
                     }
+                }
+                if !saw_terminal {
+                    let _ = tx
+                        .send(Err(anyhow::anyhow!(
+                            "SSE stream ended before a terminal event"
+                        )))
+                        .await;
                 }
             });
             if let Err(e) = pump.await {
@@ -207,4 +219,77 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         other => ResponseStreamEvent::Other { kind: other.into() },
     };
     Ok(ev)
+}
+
+fn is_terminal_event(ev: &ResponseStreamEvent) -> bool {
+    matches!(
+        ev,
+        ResponseStreamEvent::Completed { .. }
+            | ResponseStreamEvent::Failed { .. }
+            | ResponseStreamEvent::Error { .. }
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{routing::get, Router};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn stream_reports_eof_before_terminal_event() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                (
+                    [("content-type", "text/event-stream")],
+                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = StreamHandle::from_response(resp);
+        let first = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            first,
+            ResponseStreamEvent::OutputTextDelta { ref delta, .. } if delta == "hi"
+        ));
+
+        let err = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(err.to_string().contains("terminal event"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn stream_done_marker_closes_without_error() {
+        let app = Router::new().route(
+            "/",
+            get(|| async { ([("content-type", "text/event-stream")], "data: [DONE]\n\n") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = StreamHandle::from_response(resp);
+        let next = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap();
+        assert!(next.is_none(), "got: {next:?}");
+    }
 }

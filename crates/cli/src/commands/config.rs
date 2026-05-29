@@ -13,6 +13,12 @@ pub async fn run(
         changed = true;
     }
     if let Some(r) = set_reasoning {
+        let Some(r) = config::normalize_reasoning_effort(&r) else {
+            anyhow::bail!(
+                "invalid reasoning effort `{r}`; expected one of: {}",
+                config::VALID_REASONING_EFFORTS.join(", ")
+            );
+        };
         cfg.reasoning_effort = r;
         changed = true;
     }

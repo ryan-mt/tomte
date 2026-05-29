@@ -48,7 +48,6 @@ impl Provider {
                 "gpt-5.4",
                 "gpt-5.3",
                 "gpt-5-pro",
-                "gpt-5-codex",
                 "gpt-5-mini",
                 "gpt-5-nano",
             ],
@@ -91,7 +90,6 @@ mod tests {
     #[test]
     fn detects_openai_otherwise() {
         assert_eq!(Provider::from_model("gpt-5"), Provider::OpenAi);
-        assert_eq!(Provider::from_model("gpt-5-codex"), Provider::OpenAi);
         assert_eq!(Provider::from_model("o3"), Provider::OpenAi);
         assert_eq!(Provider::from_model(""), Provider::OpenAi);
     }

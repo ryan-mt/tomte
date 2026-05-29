@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::ffi::OsString;
 
 use super::{BuiltinTool, ToolContext};
 
@@ -52,7 +53,7 @@ Common mistakes:\n\
 Parameters:\n\
 - `path`: Relative path inside the working directory. Absolute paths and `..` traversal are rejected.\n\
 - `offset`: Zero-indexed line to start reading from, or `null` to start at the top.\n\
-- `limit`: Maximum number of lines to return, or `null` to use the default cap.\n\
+- `limit`: Maximum number of lines to return (1..=2000), or `null` to use the default cap.\n\
 \n\
 Output rules:\n\
 - Default cap is 2000 lines per call when `limit` is null; the response includes a truncation notice telling you how to read the next slice with `offset` + `limit`.\n\
@@ -67,7 +68,7 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
             "properties": {
                 "path": {"type": "string", "description": "Relative path inside the working directory."},
                 "offset": {"type": ["integer", "null"], "description": "Zero-indexed starting line; null starts at the top."},
-                "limit": {"type": ["integer", "null"], "description": "Maximum number of lines to return; null reads to the end."}
+                "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 2000, "description": "Maximum number of lines to return; null uses the default cap."}
             },
             "required": ["path", "offset", "limit"],
             "additionalProperties": false
@@ -86,6 +87,7 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         // Claude Code's Read tool — keeps a single read from flooding the
         // context window with a large file.
         const DEFAULT_LINE_LIMIT: usize = 2000;
+        const MAX_LINE_LIMIT: usize = DEFAULT_LINE_LIMIT;
         // Per-line truncation so a minified bundle (one giant line) can't
         // blow out the context. Mirrors Claude Code's 2000-char-per-line cap.
         const MAX_LINE_CHARS: usize = 2000;
@@ -93,12 +95,23 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         let meta = tokio::fs::metadata(&path)
             .await
             .with_context(|| format!("stat {}", path.display()))?;
+        if a.limit == Some(0) {
+            return Err(anyhow!("limit must be greater than 0"));
+        }
+        if a.limit.is_some_and(|limit| limit > MAX_LINE_LIMIT) {
+            return Err(anyhow!("limit must be <= {MAX_LINE_LIMIT}"));
+        }
         if meta.len() > MAX_BYTES && a.limit.is_none() {
             return Err(anyhow!(
                 "file is too large ({} bytes > {} byte cap); pass `limit` to read a slice",
                 meta.len(),
                 MAX_BYTES
             ));
+        }
+        let start = a.offset.unwrap_or(0);
+        let effective_limit = a.limit.unwrap_or(DEFAULT_LINE_LIMIT);
+        if meta.len() > MAX_BYTES {
+            return read_large_text_slice(&path, &a.path, start, effective_limit, MAX_LINE_CHARS);
         }
         let text = tokio::fs::read_to_string(&path)
             .await
@@ -111,20 +124,11 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         }
         let lines: Vec<&str> = text.lines().collect();
         let total = lines.len();
-        let start = a.offset.unwrap_or(0).min(total);
-        // Caller's explicit limit wins; otherwise apply the default cap.
-        let effective_limit = a.limit.unwrap_or(DEFAULT_LINE_LIMIT);
-        let end = (start + effective_limit).min(total);
+        let start = start.min(total);
+        let end = start.saturating_add(effective_limit).min(total);
         let mut out = String::new();
         for (i, line) in lines[start..end].iter().enumerate() {
-            // Truncate by characters (not bytes) so we don't slice mid-codepoint.
-            let printed: String = if line.chars().count() > MAX_LINE_CHARS {
-                let head: String = line.chars().take(MAX_LINE_CHARS).collect();
-                format!("{head}… [line truncated]")
-            } else {
-                (*line).to_string()
-            };
-            out.push_str(&format!("{:>6}\t{}\n", start + i + 1, printed));
+            out.push_str(&numbered_line(start + i + 1, line, false, MAX_LINE_CHARS));
         }
         // Tell the model how to grab the next slice when we hit the cap.
         if end < total {
@@ -140,6 +144,104 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         }
         Ok(out)
     }
+}
+
+fn numbered_line(
+    line_no: usize,
+    line: &str,
+    was_byte_truncated: bool,
+    max_line_chars: usize,
+) -> String {
+    let printed: String = if was_byte_truncated || line.chars().count() > max_line_chars {
+        let head: String = line.chars().take(max_line_chars).collect();
+        format!("{head}… [line truncated]")
+    } else {
+        line.to_string()
+    };
+    format!("{line_no:>6}\t{printed}\n")
+}
+
+fn read_large_text_slice(
+    path: &std::path::Path,
+    display_path: &str,
+    start: usize,
+    limit: usize,
+    max_line_chars: usize,
+) -> Result<String> {
+    let file = std::fs::File::open(path).with_context(|| format!("read {}", path.display()))?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut out = String::new();
+    let mut line_no = 0usize;
+    let mut printed = 0usize;
+    let max_line_bytes = max_line_chars.saturating_mul(4);
+
+    while let Some((bytes, was_byte_truncated)) =
+        read_next_line_capped(&mut reader, max_line_bytes)?
+    {
+        if line_no >= start {
+            if printed >= limit {
+                out.push_str(&format!(
+                    "<system-reminder>Showing a slice of large file `{display_path}`. More lines remain — call read_file again with offset={line_no} and an explicit limit to continue.</system-reminder>\n"
+                ));
+                break;
+            }
+            let text = bytes_to_line(&bytes, was_byte_truncated)?;
+            out.push_str(&numbered_line(
+                line_no + 1,
+                &text,
+                was_byte_truncated,
+                max_line_chars,
+            ));
+            printed += 1;
+        }
+        line_no = line_no.saturating_add(1);
+    }
+    Ok(out)
+}
+
+fn read_next_line_capped<R: std::io::BufRead>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<Option<(Vec<u8>, bool)>> {
+    let mut out = Vec::new();
+    let mut truncated = false;
+    loop {
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            return if out.is_empty() && !truncated {
+                Ok(None)
+            } else {
+                Ok(Some((out, truncated)))
+            };
+        }
+        let newline = buf.iter().position(|b| *b == b'\n');
+        let take_len = newline.map(|i| i + 1).unwrap_or(buf.len());
+        let chunk = &buf[..take_len];
+        if !truncated {
+            let remaining = max_bytes.saturating_sub(out.len());
+            if chunk.len() <= remaining {
+                out.extend_from_slice(chunk);
+            } else {
+                out.extend_from_slice(&chunk[..remaining]);
+                truncated = true;
+            }
+        }
+        reader.consume(take_len);
+        if newline.is_some() {
+            return Ok(Some((out, truncated)));
+        }
+    }
+}
+
+fn bytes_to_line(bytes: &[u8], was_byte_truncated: bool) -> Result<String> {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) if was_byte_truncated && e.valid_up_to() > 0 => {
+            std::str::from_utf8(&bytes[..e.valid_up_to()])?
+        }
+        Err(e) => return Err(anyhow!("file is not valid UTF-8: {e}")),
+    };
+    Ok(text.trim_end_matches(['\r', '\n']).to_string())
 }
 
 #[derive(Deserialize)]
@@ -199,24 +301,48 @@ Parameters:\n\
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: WriteArgs = super::parse_args("write_file", args)?;
         let path = resolve(&ctx.cwd, &a.path)?;
+        let existing_meta = match tokio::fs::metadata(&path).await {
+            Ok(meta) => Some(meta),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e).with_context(|| format!("stat {}", path.display())),
+        };
+        if existing_meta.as_ref().is_some_and(|meta| meta.is_dir()) {
+            return Err(anyhow!(
+                "cannot write file over directory {}",
+                path.display()
+            ));
+        }
         // Snapshot prior contents as RAW BYTES, not UTF-8: a binary file that
-        // exists must be restorable on undo. read_to_string().ok() returned
-        // None for both "missing" and "non-UTF-8", so undo deleted overwritten
-        // binaries instead of restoring them.
-        let original = tokio::fs::read(&path).await.ok();
+        // exists must be restorable on undo. If an existing file cannot be
+        // read, fail before overwriting — otherwise undo would treat it as a
+        // newly-created file and delete it.
+        let original = if existing_meta.is_some() {
+            Some(
+                tokio::fs::read(&path)
+                    .await
+                    .with_context(|| format!("read original {}", path.display()))?,
+            )
+        } else {
+            None
+        };
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .with_context(|| format!("create parent dirs for {}", parent.display()))?;
         }
-        tokio::fs::write(&path, a.content.as_bytes())
+        let tmp = path.with_extension(format!("write-{}.tmp", rand_suffix()));
+        tokio::fs::write(&tmp, a.content.as_bytes())
             .await
-            .with_context(|| format!("write {}", path.display()))?;
-        let post_edit_mtime = snapshot_mtime(&path);
+            .with_context(|| format!("write temp {}", tmp.display()))?;
+        tokio::fs::rename(&tmp, &path)
+            .await
+            .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+        let (post_edit_mtime, post_edit_size) = snapshot_meta(&path);
         ctx.session.lock().await.push_undo_entry(super::UndoEntry {
             path: path.clone(),
             original_content: original,
             post_edit_mtime,
+            post_edit_size,
         });
         Ok(format!(
             "Wrote {} bytes to {}",
@@ -273,7 +399,7 @@ Parameters:\n\
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Relative path inside the working directory; file must exist."},
-                "old_string": {"type": "string", "description": "Exact text to find. Whitespace matters."},
+                "old_string": {"type": "string", "minLength": 1, "description": "Exact non-empty text to find. Whitespace matters."},
                 "new_string": {"type": "string", "description": "Text to substitute in."},
                 "replace_all": {"type": "boolean", "description": "Replace every occurrence when true; require uniqueness when false."}
             },
@@ -301,6 +427,9 @@ Parameters:\n\
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: EditArgs = super::parse_args("edit_file", args)?;
+        if a.old_string.is_empty() {
+            return Err(anyhow!("old_string must not be empty"));
+        }
         let path = resolve(&ctx.cwd, &a.path)?;
         let original = tokio::fs::read_to_string(&path)
             .await
@@ -328,11 +457,12 @@ Parameters:\n\
         tokio::fs::rename(&tmp, &path)
             .await
             .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
-        let post_edit_mtime = snapshot_mtime(&path);
+        let (post_edit_mtime, post_edit_size) = snapshot_meta(&path);
         ctx.session.lock().await.push_undo_entry(super::UndoEntry {
             path: path.clone(),
             original_content: Some(original.into_bytes()),
             post_edit_mtime,
+            post_edit_size,
         });
         Ok(format!(
             "Replaced {} occurrence(s) in {}",
@@ -464,7 +594,7 @@ Parameters:\n\
                     "items": {
                         "type": "object",
                         "properties": {
-                            "old_string": {"type": "string", "description": "Exact text to find."},
+                            "old_string": {"type": "string", "minLength": 1, "description": "Exact non-empty text to find."},
                             "new_string": {"type": "string", "description": "Text to substitute in."},
                             "replace_all": {"type": "boolean", "description": "Replace every occurrence when true; require uniqueness when false."}
                         },
@@ -493,6 +623,9 @@ Parameters:\n\
         let original_for_undo = content.clone();
         let mut total_replacements = 0usize;
         for (i, edit) in a.edits.iter().enumerate() {
+            if edit.old_string.is_empty() {
+                return Err(anyhow!("edit #{}: old_string must not be empty", i + 1));
+            }
             let count = content.matches(&edit.old_string).count();
             if count == 0 {
                 return Err(anyhow!(
@@ -522,11 +655,12 @@ Parameters:\n\
         tokio::fs::rename(&tmp, &path)
             .await
             .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
-        let post_edit_mtime = snapshot_mtime(&path);
+        let (post_edit_mtime, post_edit_size) = snapshot_meta(&path);
         ctx.session.lock().await.push_undo_entry(super::UndoEntry {
             path: path.clone(),
             original_content: Some(original_for_undo.into_bytes()),
             post_edit_mtime,
+            post_edit_size,
         });
         Ok(format!(
             "Applied {} edit(s) ({} total replacement(s)) to {}",
@@ -557,55 +691,70 @@ Parameters: none."
         json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })
     }
     async fn execute(&self, _args: Value, ctx: &ToolContext) -> Result<String> {
-        let entry = {
-            let mut session = ctx.session.lock().await;
-            session.undo_stack.pop_back()
-        };
-        let entry = entry.ok_or_else(|| anyhow!("no edits to undo"))?;
+        let mut session = ctx.session.lock().await;
+        let entry = session
+            .undo_stack
+            .back()
+            .cloned()
+            .ok_or_else(|| anyhow!("no edits to undo"))?;
         // TOCTOU guard: refuse to restore if the file has been touched since
         // the edit. Without this, an `undo_last_edit` after the user manually
         // edits the file (in their editor, another shell, etc.) would
         // silently nuke those changes.
         if let Some(expected) = entry.post_edit_mtime {
-            let current = snapshot_mtime(&entry.path);
-            if current != Some(expected) {
+            let (current_mtime, current_size) = snapshot_meta(&entry.path);
+            if current_mtime != Some(expected) || current_size != entry.post_edit_size {
                 return Err(anyhow!(
                     "refusing to undo {}: file has been modified since the edit; restore manually if intended",
                     entry.path.display()
                 ));
             }
         }
-        match entry.original_content {
+        let message = match entry.original_content {
             Some(content) => {
-                tokio::fs::write(&entry.path, content)
+                // Atomic restore (temp + rename), matching the edit/write tools,
+                // so a crash mid-restore can't leave a half-written file.
+                let tmp = entry
+                    .path
+                    .with_extension(format!("undo-{}.tmp", rand_suffix()));
+                tokio::fs::write(&tmp, content)
+                    .await
+                    .with_context(|| format!("write temp {}", tmp.display()))?;
+                tokio::fs::rename(&tmp, &entry.path)
                     .await
                     .with_context(|| format!("restore {}", entry.path.display()))?;
-                Ok(format!("Restored {}", entry.path.display()))
+                format!("Restored {}", entry.path.display())
             }
             None => {
                 tokio::fs::remove_file(&entry.path)
                     .await
                     .with_context(|| format!("remove {}", entry.path.display()))?;
-                Ok(format!(
-                    "Removed (was a new file): {}",
-                    entry.path.display()
-                ))
+                format!("Removed (was a new file): {}", entry.path.display())
             }
-        }
+        };
+        session.undo_stack.pop_back();
+        Ok(message)
     }
 }
 
-/// mtime helper used by every edit/write tool to snapshot the file state
-/// immediately after a successful write, and by `UndoLastEdit` to detect
-/// post-edit modifications before restoring.
-fn snapshot_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+/// Snapshots (mtime, size) used by every edit/write tool immediately after a
+/// successful write, and by `UndoLastEdit` to detect post-edit modifications
+/// before restoring. Both come from one `metadata()` call so they're
+/// consistent. Comparing size as well as mtime catches same-second external
+/// edits a coarse mtime alone would miss.
+pub(super) fn snapshot_meta(
+    path: &std::path::Path,
+) -> (Option<std::time::SystemTime>, Option<u64>) {
+    match std::fs::metadata(path) {
+        Ok(m) => (m.modified().ok(), Some(m.len())),
+        Err(_) => (None, None),
+    }
 }
 
 /// Resolve a model-supplied path against the sandbox `cwd`. Rejects absolute
-/// paths and any relative path that escapes `cwd` after lexically normalising
-/// `..` components. Without this guard the LLM could read `/etc/shadow`,
-/// write to `~/.ssh/authorized_keys`, or otherwise escape the working tree.
+/// paths, lexical `..` escapes, and symlinks whose resolved target leaves `cwd`.
+/// Without this guard the LLM could read `/etc/shadow`, write to
+/// `~/.ssh/authorized_keys`, or otherwise escape the working tree.
 pub(crate) fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathBuf> {
     let path = std::path::Path::new(p);
     if path.is_absolute() {
@@ -630,7 +779,43 @@ pub(crate) fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathB
             }
         }
     }
-    Ok(cwd.join(normalized))
+
+    let sandbox = cwd
+        .canonicalize()
+        .with_context(|| format!("resolve sandbox cwd {}", cwd.display()))?;
+
+    let mut existing = cwd.to_path_buf();
+    let mut missing: Vec<OsString> = Vec::new();
+    let mut found_missing = false;
+    for comp in normalized.components() {
+        let name = comp.as_os_str();
+        if found_missing {
+            missing.push(name.to_os_string());
+            continue;
+        }
+        let next = existing.join(name);
+        match std::fs::symlink_metadata(&next) {
+            Ok(_) => existing = next,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                found_missing = true;
+                missing.push(name.to_os_string());
+            }
+            Err(e) => return Err(e).with_context(|| format!("stat {}", next.display())),
+        }
+    }
+
+    let resolved_existing = existing
+        .canonicalize()
+        .with_context(|| format!("resolve {}", existing.display()))?;
+    if !resolved_existing.starts_with(&sandbox) {
+        return Err(anyhow!("path escapes the sandbox: {}", path.display()));
+    }
+
+    let mut resolved = resolved_existing;
+    for comp in missing {
+        resolved.push(comp);
+    }
+    Ok(resolved)
 }
 
 #[cfg(test)]
@@ -645,6 +830,7 @@ mod tests {
             cwd,
             approval: ApprovalMode::Auto,
             session: Arc::new(Mutex::new(SessionState::default())),
+            config: crate::config::Config::default(),
         }
     }
 
@@ -737,5 +923,139 @@ mod tests {
         assert!(!out.contains("\tL6\n"), "should not include L6");
         // 5 lines after offset 5 remain → continuation notice expected.
         assert!(out.contains("more line"), "missing continuation: {out}");
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_zero_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("small.txt"), "hello\n").unwrap();
+
+        let err = ReadFile
+            .execute(
+                read_args("small.txt", None, Some(0)),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("limit must be greater than 0"));
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_limit_above_hard_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("small.txt"), "hello\n").unwrap();
+
+        let err = ReadFile
+            .execute(
+                read_args("small.txt", None, Some(2001)),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("limit must be <= 2000"));
+    }
+
+    #[tokio::test]
+    async fn read_file_streams_large_file_when_limit_is_explicit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.log");
+        let mut content = String::new();
+        for i in 1..=470_000 {
+            content.push_str(&format!("line {i:06}\n"));
+        }
+        assert!(content.len() > 5_000_000);
+        std::fs::write(&path, content).unwrap();
+
+        let out = ReadFile
+            .execute(
+                read_args("large.log", Some(2), Some(2)),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.contains("\tline 000003\n"), "got: {out}");
+        assert!(out.contains("\tline 000004\n"), "got: {out}");
+        assert!(!out.contains("\tline 000005\n"), "got: {out}");
+        assert!(out.contains("More lines remain"), "got: {out}");
+        assert!(out.contains("offset=4"), "got: {out}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_file_rejects_symlink_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("outside")).unwrap();
+
+        let err = ReadFile
+            .execute(
+                read_args("outside/secret.txt", None, None),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("path escapes the sandbox"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_file_rejects_symlink_escape_through_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("outside")).unwrap();
+
+        let err = WriteFile
+            .execute(
+                json!({"path": "outside/owned.txt", "content": "owned"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("path escapes the sandbox"));
+        assert!(!outside.path().join("owned.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn write_file_rejects_directory_targets() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = WriteFile
+            .execute(
+                json!({"path": ".", "content": "not a directory"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("cannot write file over directory"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_file_refuses_existing_unreadable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("write-only.txt");
+        std::fs::write(&path, "secret").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o200)).unwrap();
+
+        let err = WriteFile
+            .execute(
+                json!({"path": "write-only.txt", "content": "replacement"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err();
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(err.to_string().contains("read original"), "got: {err}");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "secret");
     }
 }

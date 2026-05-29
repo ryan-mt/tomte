@@ -6,6 +6,7 @@ use opencli_core::auth::resolve_credential;
 use opencli_core::client::LlmClient;
 use opencli_core::config;
 use opencli_core::provider::Provider;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 pub async fn run(
@@ -29,8 +30,15 @@ pub async fn run(
         cfg.model = m;
     }
     if let Some(r) = reasoning {
+        let Some(r) = config::normalize_reasoning_effort(&r) else {
+            anyhow::bail!(
+                "invalid reasoning effort `{r}`; expected one of: {}",
+                config::VALID_REASONING_EFFORTS.join(", ")
+            );
+        };
         cfg.reasoning_effort = r;
     }
+    let format = normalize_output_format(&output_format)?;
 
     let provider = Provider::from_model(&cfg.model);
     let credential = resolve_credential(provider).await?;
@@ -59,10 +67,11 @@ pub async fn run(
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(256);
     let agent_task = tokio::spawn(async move { agent.run_turn(tx).await });
 
-    let format = output_format.to_ascii_lowercase();
     let json_mode = matches!(format.as_str(), "json" | "stream-json");
 
     let mut stdout = std::io::stdout().lock();
+    let mut event_error: Option<String> = None;
+    let mut tool_names: HashMap<String, String> = HashMap::new();
     while let Some(ev) = rx.recv().await {
         if json_mode {
             // One AgentEvent per line so consumers can pipe through `jq`.
@@ -83,7 +92,8 @@ pub async fn run(
                 stdout.flush().ok();
             }
             AgentEvent::ReasoningDelta { .. } => {}
-            AgentEvent::ToolCallStarted { name, call_id: _ } => {
+            AgentEvent::ToolCallStarted { name, call_id } => {
+                tool_names.insert(call_id, name.clone());
                 writeln!(stdout, "\n\x1b[2m▸ tool: {name}\x1b[0m").ok();
             }
             AgentEvent::ToolCallArgsDone { arguments, .. } => {
@@ -92,7 +102,21 @@ pub async fn run(
                     .unwrap_or(arguments);
                 writeln!(stdout, "\x1b[2m  args:\x1b[0m {pretty}").ok();
             }
-            AgentEvent::ToolResult { output, error, .. } => {
+            AgentEvent::ToolResult {
+                call_id,
+                output,
+                error,
+            } => {
+                if !error
+                    && tool_names
+                        .get(&call_id)
+                        .is_some_and(|name| name == "ask_user_question")
+                {
+                    if let Some(rendered) = opencli_core::tools::ask::render_ask_envelope(&output) {
+                        writeln!(stdout, "\n{rendered}").ok();
+                        continue;
+                    }
+                }
                 let prefix = if error { "✗" } else { "✓" };
                 let mut snippet = output.lines().take(20).collect::<Vec<_>>().join("\n");
                 if output.lines().count() > 20 {
@@ -105,12 +129,50 @@ pub async fn run(
                 break;
             }
             AgentEvent::Error { message } => {
-                eprintln!("\nerror: {message}");
+                event_error = Some(message);
                 break;
             }
             _ => {}
         }
     }
-    let _ = agent_task.await;
-    Ok(())
+    match agent_task.await {
+        Ok(Ok(())) => {
+            if let Some(message) = event_error {
+                anyhow::bail!(message);
+            }
+            Ok(())
+        }
+        Ok(Err(e)) => Err(event_error.map_or(e, anyhow::Error::msg)),
+        Err(e) => Err(anyhow::anyhow!("agent task failed: {e}")),
+    }
+}
+
+fn normalize_output_format(value: &str) -> Result<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "text" | "json" | "stream-json") {
+        Ok(normalized)
+    } else {
+        anyhow::bail!("invalid output format `{value}`; expected one of: text, json, stream-json")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_output_format;
+
+    #[test]
+    fn output_format_accepts_known_values_case_insensitively() {
+        assert_eq!(normalize_output_format(" TEXT ").unwrap(), "text");
+        assert_eq!(normalize_output_format("json").unwrap(), "json");
+        assert_eq!(
+            normalize_output_format("STREAM-JSON").unwrap(),
+            "stream-json"
+        );
+    }
+
+    #[test]
+    fn output_format_rejects_unknown_values() {
+        let err = normalize_output_format("yaml").unwrap_err();
+        assert!(err.to_string().contains("invalid output format"));
+    }
 }

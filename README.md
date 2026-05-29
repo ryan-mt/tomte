@@ -108,17 +108,18 @@ cargo test --workspace        # run the test suite
 
 ## Supported models
 
-| Model            | Notes                                                            |
-| ---------------- | ---------------------------------------------------------------- |
-| `gpt-5`          | Default, balanced reasoning + speed                              |
-| `gpt-5-pro`      | Extended reasoning for hard agent tasks                          |
-| `gpt-5-codex`    | Code-specialised model (used via the ChatGPT Codex OAuth backend)|
-| `gpt-5-mini`     | Fast, cheaper, still strong for routine code                     |
-| `gpt-5-nano`     | Latency-sensitive, cheapest                                      |
+| Model          | Notes                                        |
+| -------------- | -------------------------------------------- |
+| `gpt-5.5`      | Default, largest OpenAI context window       |
+| `gpt-5.4`      | Previous frontier, stable                    |
+| `gpt-5.3`      | Older frontier                               |
+| `gpt-5-pro`    | Extended reasoning for hard agent tasks      |
+| `gpt-5-mini`   | Fast, cheaper, still strong for routine code |
+| `gpt-5-nano`   | Latency-sensitive, cheapest                  |
 
-Older opencli builds shipped placeholder names (`gpt-5.5`, `gpt-5.4-mini`, …).
-`opencli` now auto-migrates those to the matching real model on startup, so an
-existing `config.json` keeps working.
+Older opencli builds shipped legacy base names (`gpt-5`, `gpt-5.1`, `gpt-5.2`).
+`opencli` auto-migrates those to the current default on startup, so an existing
+`config.json` keeps working.
 
 Reasoning effort: `low` · `medium` · `high` · `xhigh`.
 Verbosity: `low` · `medium` · `high`.

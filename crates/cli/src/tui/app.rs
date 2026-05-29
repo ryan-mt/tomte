@@ -422,17 +422,12 @@ pub fn pick_spinner_word() -> String {
 impl App {
     fn new() -> Self {
         let config = config::load();
-        let auth_mode = auth::load_auth().map(|a| a.mode).unwrap_or(AuthMode::None);
+        let auth_mode = auth::load_auth()
+            .map(|a| auth::effective_mode_with_env(&a))
+            .unwrap_or_else(|_| auth_mode_from_env().unwrap_or(AuthMode::None));
         let cwd = std::env::current_dir().unwrap_or_default();
         let blocks = vec![Block::Welcome];
-        let has_env_key = std::env::var("OPENAI_API_KEY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        let screen = if auth_mode == AuthMode::None && !has_env_key {
-            Screen::Login
-        } else {
-            Screen::Chat
-        };
+        let screen = initial_screen(auth_mode, has_supported_env_key());
         Self {
             screen,
             login: LoginScreen::new(),
@@ -607,6 +602,45 @@ impl App {
         };
         self.overlay = Some((kind, picker));
     }
+}
+
+fn has_supported_env_key() -> bool {
+    auth_mode_from_env().is_some()
+}
+
+fn auth_mode_from_env() -> Option<AuthMode> {
+    ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+        .iter()
+        .find_map(|name| match *name {
+            "OPENAI_API_KEY" if std::env::var(name).is_ok_and(|v| !v.is_empty()) => {
+                Some(AuthMode::OpenaiApiKey)
+            }
+            "ANTHROPIC_API_KEY" if std::env::var(name).is_ok_and(|v| !v.is_empty()) => {
+                Some(AuthMode::AnthropicApiKey)
+            }
+            _ => None,
+        })
+}
+
+fn initial_screen(auth_mode: AuthMode, has_env_key: bool) -> Screen {
+    if auth_mode == AuthMode::None && !has_env_key {
+        Screen::Login
+    } else {
+        Screen::Chat
+    }
+}
+
+fn resolve_cwd_arg(current: &std::path::Path, arg: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(arg);
+    let candidate = if path.is_absolute() {
+        path
+    } else {
+        current.join(path)
+    };
+    if !candidate.is_dir() {
+        return None;
+    }
+    Some(candidate.canonicalize().unwrap_or(candidate))
 }
 
 async fn main_loop(
@@ -1012,7 +1046,7 @@ async fn handle_key(
         }
         KeyCode::Esc => {
             if app.busy {
-                cancel_current_turn(app);
+                cancel_current_turn(app).await;
             } else {
                 app.input.clear();
             }
@@ -1166,7 +1200,7 @@ async fn handle_overlay_select(app: &mut App, kind: OverlayKind, key_sel: &str) 
                 opencli_core::auth::clear_credential(&mut record, target);
                 match auth::save_auth(&record) {
                     Ok(_) => {
-                        app.auth_mode = record.mode;
+                        app.auth_mode = auth::effective_mode_with_env(&record);
                         app.blocks.push(Block::System("✅ Logged out.".into()));
                     }
                     Err(e) => app
@@ -1231,6 +1265,7 @@ async fn apply_resume(
             a.approval = app.approval;
             a.apply_project_memory();
             a.apply_skill_manifest();
+            a.load_mcp().await.ok();
             a.restore_from(record);
             *guard = Some(a);
         } else if let Some(a) = guard.as_mut() {
@@ -1362,9 +1397,7 @@ fn rebuild_blocks_from_history(history: &[opencli_core::openai::InputItem]) -> V
 }
 
 async fn handle_slash(app: &mut App, cmd: &str) {
-    let mut parts = cmd.splitn(2, ' ');
-    let head = parts.next().unwrap_or("");
-    let arg = parts.next().unwrap_or("").trim();
+    let (head, arg) = split_slash_command(cmd);
     match head {
         "help" | "?" => {
             app.blocks.push(Block::System(
@@ -1405,10 +1438,9 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             ));
         }
         "login" => {
-            app.status_line = "Opening OAuth in browser…".to_string();
-            tokio::spawn(async {
-                let _ = auth::login_with_browser(true).await;
-            });
+            app.login = LoginScreen::new();
+            app.screen = Screen::Login;
+            app.status_line.clear();
         }
         "apikey" => {
             if arg.is_empty() {
@@ -1454,7 +1486,8 @@ async fn handle_slash(app: &mut App, cmd: &str) {
         }
         "status" => {
             let record = auth::load_auth().unwrap_or_default();
-            let msg = match record.mode {
+            let active_mode = auth::effective_mode_with_env(&record);
+            let mut msg = match active_mode {
                 AuthMode::None => "Not signed in.".to_string(),
                 AuthMode::OpenaiApiKey => "Signed in with OpenAI API key.".to_string(),
                 AuthMode::OpenaiOauth => {
@@ -1468,6 +1501,26 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 AuthMode::AnthropicApiKey => "Signed in with Anthropic API key.".to_string(),
                 AuthMode::AnthropicOauth => "Signed in with Claude Pro/Max OAuth.".to_string(),
             };
+            let mut extra = Vec::new();
+            if auth::has_openai_oauth(&record) && !matches!(active_mode, AuthMode::OpenaiOauth) {
+                extra.push("OpenAI OAuth token is also stored");
+            }
+            if auth::has_openai_api_key(&record) && !matches!(active_mode, AuthMode::OpenaiApiKey) {
+                extra.push("OpenAI API key is also stored");
+            }
+            if auth::has_anthropic_oauth(&record)
+                && !matches!(active_mode, AuthMode::AnthropicOauth)
+            {
+                extra.push("Anthropic OAuth token is also stored");
+            }
+            if auth::has_anthropic_api_key(&record)
+                && !matches!(active_mode, AuthMode::AnthropicApiKey)
+            {
+                extra.push("Anthropic API key is also stored");
+            }
+            for note in extra {
+                msg.push_str(&format!("\n  ({note})"));
+            }
             app.blocks.push(Block::System(msg));
             let providers = auth::signed_in_providers();
             if !providers.is_empty() {
@@ -1498,25 +1551,36 @@ async fn handle_slash(app: &mut App, cmd: &str) {
         "effort" | "thinking" => {
             if arg.is_empty() {
                 app.open_overlay(OverlayKind::EffortPicker);
-            } else {
-                app.config.reasoning_effort = arg.to_string();
+            } else if let Some(effort) = config::normalize_reasoning_effort(arg) {
+                app.config.reasoning_effort = effort.clone();
                 if let Err(e) = config::save(&app.config) {
                     app.blocks
                         .push(Block::System(format!("config save failed: {e}")));
                 }
-                app.blocks.push(Block::System(format!("effort → {arg}")));
+                app.blocks.push(Block::System(format!("effort → {effort}")));
+            } else {
+                app.blocks.push(Block::System(format!(
+                    "Invalid effort `{arg}`. Expected one of: {}",
+                    config::VALID_REASONING_EFFORTS.join(", ")
+                )));
             }
         }
         "verbosity" => {
             if arg.is_empty() {
                 app.open_overlay(OverlayKind::VerbosityPicker);
-            } else {
-                app.config.verbosity = arg.to_string();
+            } else if let Some(verbosity) = config::normalize_verbosity(arg) {
+                app.config.verbosity = verbosity.clone();
                 if let Err(e) = config::save(&app.config) {
                     app.blocks
                         .push(Block::System(format!("config save failed: {e}")));
                 }
-                app.blocks.push(Block::System(format!("verbosity → {arg}")));
+                app.blocks
+                    .push(Block::System(format!("verbosity → {verbosity}")));
+            } else {
+                app.blocks.push(Block::System(format!(
+                    "Invalid verbosity `{arg}`. Expected one of: {}",
+                    config::VALID_VERBOSITIES.join(", ")
+                )));
             }
         }
         "img" | "image" => {
@@ -1549,15 +1613,12 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             if arg.is_empty() {
                 app.blocks
                     .push(Block::System(format!("cwd: {}", app.cwd.display())));
+            } else if let Some(path) = resolve_cwd_arg(&app.cwd, arg) {
+                app.cwd = path;
+                app.blocks
+                    .push(Block::System(format!("cwd → {}", app.cwd.display())));
             } else {
-                let p = std::path::PathBuf::from(arg);
-                if p.is_dir() {
-                    app.cwd = p;
-                    app.blocks
-                        .push(Block::System(format!("cwd → {}", app.cwd.display())));
-                } else {
-                    app.blocks.push(Block::System("Invalid path.".into()));
-                }
+                app.blocks.push(Block::System("Invalid path.".into()));
             }
         }
         "plan" => {
@@ -1695,7 +1756,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             if servers.is_empty() {
                 app.blocks.push(Block::System(
                     "No MCP servers configured.\n\
-                     Add some in ~/.config/opencli/settings.json under .mcp_servers"
+                     Add some in ~/.config/opencli/settings.json under mcp_servers"
                         .into(),
                 ));
             } else {
@@ -1901,14 +1962,14 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                         d.tools.join(", ")
                     };
                     out.push_str(&format!(
-                        "  /agent {:<20} {} [tools: {}]
+                        "  {:<20} {} [tools: {}]
 ",
                         d.name, d.description, tools
                     ));
                 }
                 out.push_str(
                     "
-Invoke from the model via the dispatch_agent tool.",
+Invoke from the model via dispatch_agent with subagent_type set to the name.",
                 );
                 app.blocks.push(Block::System(out));
             }
@@ -1984,16 +2045,31 @@ Type /<name> [args] to expand and send.",
     }
 }
 
+fn split_slash_command(cmd: &str) -> (&str, &str) {
+    let trimmed = cmd.trim();
+    let Some((idx, ch)) = trimmed.char_indices().find(|(_, c)| c.is_whitespace()) else {
+        return (trimmed, "");
+    };
+    let head = &trimmed[..idx];
+    let arg = trimmed[idx + ch.len_utf8()..].trim();
+    (head, arg)
+}
+
 /// Rough OpenAI Responses pricing per model — used by `/cost` for a local
 /// estimate. Returns `(input_$_per_million, output_$_per_million)`.
 /// Update when official pricing changes; an inexact estimate beats none.
 fn pricing_for(model: &str) -> (f64, f64) {
     match model {
-        "gpt-5" | "gpt-5.5" | "gpt-5.4" => (1.25, 10.0),
-        "gpt-5-pro" | "gpt-5.5-pro" | "gpt-5.4-pro" => (5.00, 20.0),
-        "gpt-5-codex" => (1.25, 10.0),
-        "gpt-5-mini" | "gpt-5.4-mini" => (0.25, 2.00),
-        "gpt-5-nano" | "gpt-5.4-nano" => (0.05, 0.40),
+        "gpt-5.5" => (5.00, 30.0),
+        "gpt-5.4" => (2.50, 15.0),
+        "gpt-5.3" | "gpt-5.3-chat-latest" | "gpt-5.3-codex" => (1.75, 14.0),
+        "gpt-5" => (1.25, 10.0),
+        "gpt-5.5-pro" | "gpt-5.4-pro" => (30.00, 180.0),
+        "gpt-5-pro" => (15.00, 120.0),
+        "gpt-5.4-mini" => (0.75, 4.50),
+        "gpt-5-mini" => (0.25, 2.00),
+        "gpt-5.4-nano" => (0.20, 1.25),
+        "gpt-5-nano" => (0.05, 0.40),
         _ => (1.25, 10.0),
     }
 }
@@ -2103,15 +2179,21 @@ async fn launch_turn(
             a.approval = app.approval;
             a.apply_project_memory();
             a.apply_skill_manifest();
+            a.load_mcp().await.ok();
             *guard = Some(a);
         } else {
             // Update mutable config every turn so /model, /effort, /plan take effect.
             if let Some(a) = guard.as_mut() {
+                let cwd_changed = a.cwd != app.cwd;
+                a.client = client;
                 a.config = app.config.clone();
                 a.cwd = app.cwd.clone();
                 a.approval = app.approval;
                 a.require_approval = app.require_approval;
                 a.auto_approve_edits = app.auto_approve_edits;
+                if cwd_changed {
+                    a.refresh_system_context();
+                }
             }
         }
         if let Some(a) = guard.as_mut() {
@@ -2150,11 +2232,7 @@ async fn launch_turn(
         let mut guard = agent_clone.lock().await;
         if let Some(a) = guard.as_mut() {
             if let Err(e) = a.run_turn(tx_clone.clone()).await {
-                let _ = tx_clone
-                    .send(AgentEvent::Error {
-                        message: e.to_string(),
-                    })
-                    .await;
+                tracing::debug!(error = %e, "agent turn failed");
             }
             // Persist the conversation after every turn so /resume can pick
             // it up later. Failure to save is logged at debug level only —
@@ -2175,7 +2253,7 @@ async fn launch_turn(
 /// Abort the in-flight turn (if any) and reset transient UI state. Used by the
 /// Esc handler when a turn appears stuck (e.g. SSE stalled, model thinking
 /// forever) so the user can recover without killing the app.
-fn cancel_current_turn(app: &mut App) {
+async fn cancel_current_turn(app: &mut App) {
     if let Some(handle) = app.current_turn.take() {
         handle.abort();
     }
@@ -2186,7 +2264,17 @@ fn cancel_current_turn(app: &mut App) {
     // Drop any in-flight approval modal: leaving pending_approval=Some after
     // a cancel makes handle_key intercept every keystroke, locking the user
     // out of the input box with no way to recover short of restarting.
-    app.pending_approval = None;
+    if let Some(pending) = app.pending_approval.take() {
+        if let Some(handle) = app.approval_handle.clone() {
+            let sender = {
+                let mut map = handle.lock().await;
+                map.remove(&pending.call_id)
+            };
+            if let Some(sender) = sender {
+                let _ = sender.send(false);
+            }
+        }
+    }
     app.approval_handle = None;
     // Close the open assistant block, then surface a small note so the user
     // can see the cancel happened.
@@ -2268,7 +2356,9 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
         }
         AgentEvent::ToolCallArgsDone { call_id, arguments } => {
             if let Some(Block::Tool { args, .. }) = find_tool_mut(&mut app.blocks, &call_id) {
-                *args = arguments;
+                if !arguments.is_empty() {
+                    *args = arguments;
+                }
             }
         }
         AgentEvent::ToolResult {
@@ -2276,7 +2366,9 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             output,
             error,
         } => {
+            let mut ask_prompt = None;
             if let Some(Block::Tool {
+                name,
                 output: o,
                 error: e,
                 ..
@@ -2284,6 +2376,14 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             {
                 *o = Some(output);
                 *e = error;
+                if name == "ask_user_question" && !error {
+                    ask_prompt = o
+                        .as_deref()
+                        .and_then(opencli_core::tools::ask::render_ask_envelope);
+                }
+            }
+            if let Some(prompt) = ask_prompt {
+                app.blocks.push(Block::System(prompt));
             }
             // Tool result terminates the reasoning phase too.
             collapse_reasoning_into_thought(app);
@@ -2298,20 +2398,7 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
         AgentEvent::TurnComplete => {
             collapse_reasoning_into_thought(app);
             app.is_thinking = false;
-            if let Some(Block::Assistant {
-                done,
-                text,
-                reasoning,
-                thought_for_secs,
-                ..
-            }) = last_assistant_mut_open(&mut app.blocks)
-            {
-                *done = true;
-                // Drop trailing assistant blocks that produced neither text nor reasoning.
-                if text.is_empty() && reasoning.is_empty() && thought_for_secs.is_none() {
-                    app.blocks.pop();
-                }
-            }
+            finish_open_assistant_block(&mut app.blocks);
             app.busy = false;
             app.turn_started_at = None;
             app.status_line.clear();
@@ -2337,8 +2424,11 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             app.session_todos = todos;
         }
         AgentEvent::Error { message } => {
+            collapse_reasoning_into_thought(app);
+            finish_open_assistant_block(&mut app.blocks);
             app.blocks.push(Block::System(format!("error: {message}")));
             app.busy = false;
+            app.is_thinking = false;
             app.turn_started_at = None;
             app.status_line.clear();
             app.current_turn = None;
@@ -2462,6 +2552,29 @@ fn find_tool_mut<'a>(blocks: &'a mut [Block], call_id: &str) -> Option<&'a mut B
         .find(|b| matches!(b, Block::Tool { call_id: c, .. } if c == call_id))
 }
 
+fn finish_open_assistant_block(blocks: &mut Vec<Block>) {
+    let Some(i) = blocks
+        .iter()
+        .rposition(|b| matches!(b, Block::Assistant { done: false, .. }))
+    else {
+        return;
+    };
+    let should_remove = matches!(
+        &blocks[i],
+        Block::Assistant {
+            text,
+            reasoning,
+            thought_for_secs,
+            ..
+        } if text.is_empty() && reasoning.is_empty() && thought_for_secs.is_none()
+    );
+    if should_remove {
+        blocks.remove(i);
+    } else if let Block::Assistant { done, .. } = &mut blocks[i] {
+        *done = true;
+    }
+}
+
 /// Maintain the invariant "at most one open assistant block" by closing any
 /// still-open blocks (and dropping empty ones), then pushing a fresh open
 /// block. Used after a tool result so subsequent reasoning/text appears below
@@ -2492,4 +2605,162 @@ fn rotate_assistant_block(blocks: &mut Vec<Block>) {
         thought_for_secs: None,
         reasoning_started_at: None,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("opencli-tui-app-{name}-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn initial_screen_allows_any_supported_env_key() {
+        assert_eq!(initial_screen(AuthMode::None, false), Screen::Login);
+        assert_eq!(initial_screen(AuthMode::None, true), Screen::Chat);
+        assert_eq!(
+            initial_screen(AuthMode::AnthropicApiKey, false),
+            Screen::Chat
+        );
+    }
+
+    #[test]
+    fn cwd_arg_resolves_relative_to_current_app_cwd() {
+        let root = temp_dir("cwd-root");
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let resolved = resolve_cwd_arg(&root, "nested").unwrap();
+        assert_eq!(resolved, nested.canonicalize().unwrap());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn slash_command_splits_on_any_whitespace() {
+        assert_eq!(split_slash_command("cwd\t./nested"), ("cwd", "./nested"));
+        assert_eq!(
+            split_slash_command("review   --focus security"),
+            ("review", "--focus security")
+        );
+        assert_eq!(split_slash_command("status"), ("status", ""));
+    }
+
+    #[tokio::test]
+    async fn login_slash_opens_login_screen_instead_of_detached_task() {
+        let mut app = App::new();
+        app.screen = Screen::Chat;
+        app.status_line = "stale".to_string();
+
+        handle_slash(&mut app, "login").await;
+
+        assert_eq!(app.screen, Screen::Login);
+        assert!(matches!(app.login.stage().await, LoginStage::PickMode));
+        assert!(app.status_line.is_empty());
+    }
+
+    #[test]
+    fn empty_args_done_does_not_clear_streamed_tool_args() {
+        let mut app = App::new();
+        apply_agent_event(
+            &mut app,
+            AgentEvent::ToolCallStarted {
+                name: "read_file".to_string(),
+                call_id: "call_1".to_string(),
+            },
+        );
+        apply_agent_event(
+            &mut app,
+            AgentEvent::ToolCallArgsDelta {
+                call_id: "call_1".to_string(),
+                delta: "{\"path\":\"src/lib.rs\"}".to_string(),
+            },
+        );
+        apply_agent_event(
+            &mut app,
+            AgentEvent::ToolCallArgsDone {
+                call_id: "call_1".to_string(),
+                arguments: String::new(),
+            },
+        );
+
+        match find_tool_mut(&mut app.blocks, "call_1") {
+            Some(Block::Tool { args, .. }) => assert_eq!(args, "{\"path\":\"src/lib.rs\"}"),
+            other => panic!("expected tool block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finishing_open_assistant_drops_empty_block() {
+        let mut blocks = vec![Block::Assistant {
+            text: String::new(),
+            reasoning: String::new(),
+            done: false,
+            thought_for_secs: None,
+            reasoning_started_at: None,
+        }];
+
+        finish_open_assistant_block(&mut blocks);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn finishing_open_assistant_marks_non_empty_block_done() {
+        let mut blocks = vec![Block::Assistant {
+            text: "hello".to_string(),
+            reasoning: String::new(),
+            done: false,
+            thought_for_secs: None,
+            reasoning_started_at: None,
+        }];
+
+        finish_open_assistant_block(&mut blocks);
+        match &blocks[0] {
+            Block::Assistant { done, .. } => assert!(*done),
+            other => panic!("expected assistant block, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_current_turn_clears_pending_approval_sender() {
+        let mut app = App::new();
+        app.busy = true;
+        app.pending_approval = Some(PendingApproval {
+            call_id: "call_1".to_string(),
+            tool_name: "run_shell".to_string(),
+            args_json: "{}".to_string(),
+            diff_preview: None,
+        });
+
+        let approvals =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        approvals.lock().await.insert("call_1".to_string(), tx);
+        app.approval_handle = Some(approvals.clone());
+
+        cancel_current_turn(&mut app).await;
+
+        assert!(!app.busy);
+        assert!(app.pending_approval.is_none());
+        assert!(app.approval_handle.is_none());
+        assert!(!approvals.lock().await.contains_key("call_1"));
+        assert_eq!(rx.await, Ok(false));
+    }
+
+    #[test]
+    fn pricing_for_current_openai_models_matches_api_docs() {
+        assert_eq!(pricing_for("gpt-5.5"), (5.00, 30.0));
+        assert_eq!(pricing_for("gpt-5.4"), (2.50, 15.0));
+        assert_eq!(pricing_for("gpt-5.3"), (1.75, 14.0));
+        assert_eq!(pricing_for("gpt-5-pro"), (15.00, 120.0));
+        assert_eq!(pricing_for("gpt-5.5-pro"), (30.00, 180.0));
+        assert_eq!(pricing_for("gpt-5.4-mini"), (0.75, 4.50));
+        assert_eq!(pricing_for("gpt-5.4-nano"), (0.20, 1.25));
+        assert_eq!(pricing_for("gpt-5-mini"), (0.25, 2.00));
+        assert_eq!(pricing_for("gpt-5-nano"), (0.05, 0.40));
+    }
 }

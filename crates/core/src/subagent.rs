@@ -109,7 +109,8 @@ pub fn load_all(cwd: &Path) -> Vec<SubagentDefinition> {
 }
 
 /// Load a single subagent definition by name, searching each root in
-/// precedence order. Returns NotFound if no `<root>/<name>.md` exists in any.
+/// precedence order. Prefer `<root>/<name>.md`, then fall back to the parsed
+/// frontmatter `name` so `/agents` never advertises an un-callable name.
 pub fn load_by_name(cwd: &Path, name: &str) -> Result<SubagentDefinition> {
     if name.is_empty() || name.contains(['/', '\\', '.']) {
         return Err(anyhow!(
@@ -123,6 +124,9 @@ pub fn load_by_name(cwd: &Path, name: &str) -> Result<SubagentDefinition> {
         if let Ok(text) = std::fs::read_to_string(&path) {
             return parse(&text, &path);
         }
+    }
+    if let Some(def) = load_all(cwd).into_iter().find(|def| def.name == name) {
+        return Ok(def);
     }
     Err(anyhow!(
         "subagent `{name}` not found in any agents directory (looked in ~/.config/opencli/agents, ~/.claude/agents, and project .opencli/.claude)"
@@ -320,6 +324,22 @@ mod tests {
             let err = load_by_name(cwd, bad).unwrap_err();
             assert!(err.to_string().contains("invalid") || err.to_string().contains("not found"));
         }
+    }
+
+    #[test]
+    fn load_by_name_falls_back_to_frontmatter_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".opencli").join("agents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("filename.md"),
+            "---\nname: frontmatter-name\ndescription: d\n---\nbody\n",
+        )
+        .unwrap();
+
+        let def = load_by_name(tmp.path(), "frontmatter-name").unwrap();
+        assert_eq!(def.name, "frontmatter-name");
+        assert_eq!(def.system_prompt, "body\n");
     }
 
     #[test]

@@ -47,10 +47,12 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
             let mut response_id: Option<String> = None;
             let mut response_model: Option<String> = None;
             let mut had_error = false;
+            let mut completed = false;
             while let Some(item) = stream.next().await {
                 match item {
                     Ok(ev) => {
                         if ev.data == "[DONE]" {
+                            completed = true;
                             break;
                         }
                         let parsed: Value = match serde_json::from_str(&ev.data) {
@@ -267,8 +269,7 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 let _ = tx
                                     .send(Ok(ResponseStreamEvent::Completed { response }))
                                     .await;
-                                // Exit via break so the post-loop fallback does not
-                                // send a second Completed event.
+                                completed = true;
                                 break;
                             }
                             "ping" => {}
@@ -297,14 +298,11 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                     }
                 }
             }
-            if !had_error {
-                let response = json!({
-                    "id": response_id,
-                    "model": response_model,
-                    "usage": last_usage,
-                });
+            if !had_error && !completed {
                 let _ = tx
-                    .send(Ok(ResponseStreamEvent::Completed { response }))
+                    .send(Err(anyhow::anyhow!(
+                        "Anthropic SSE stream ended before message_stop"
+                    )))
                     .await;
             }
         });
@@ -317,4 +315,83 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
         }
     });
     StreamHandle { rx }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::openai::stream::ResponseStreamEvent;
+    use axum::{
+        response::sse::{Event, Sse},
+        routing::get,
+        Router,
+    };
+    use futures_util::stream;
+    use std::{convert::Infallible, time::Duration};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn message_stop_emits_completed_once() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let events = vec![
+                    Ok::<Event, Infallible>(Event::default().data(
+                        r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}"#,
+                    )),
+                    Ok(Event::default().data(r#"{"type":"message_stop"}"#)),
+                ];
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_from_response(resp);
+        let mut completed = 0;
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            if matches!(event.unwrap(), ResponseStreamEvent::Completed { .. }) {
+                completed += 1;
+            }
+        }
+        server.abort();
+
+        assert_eq!(completed, 1);
+    }
+
+    #[tokio::test]
+    async fn eof_before_message_stop_reports_error() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let events = vec![Ok::<Event, Infallible>(Event::default().data(
+                    r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}"#,
+                ))];
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_from_response(resp);
+        let err = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        server.abort();
+
+        assert!(err.to_string().contains("message_stop"), "got: {err}");
+    }
 }

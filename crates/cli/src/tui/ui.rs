@@ -3,6 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
+use std::path::Path;
 
 use super::app::{App, Block};
 use opencli_core::auth::AuthMode;
@@ -509,13 +510,7 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
     )));
 
     // Right side: model · effort · cwd
-    let mut cwd = app.cwd.display().to_string();
-    if let Some(home) = dirs::home_dir() {
-        let h = home.display().to_string();
-        if cwd.starts_with(&h) {
-            cwd = format!("~{}", &cwd[h.len()..]);
-        }
-    }
+    let cwd = shorten_home_path(&app.cwd);
     let auth_dot = match app.auth_mode {
         AuthMode::None => Span::styled("● ", Style::default().fg(Color::Red)),
         AuthMode::OpenaiApiKey => Span::styled("● ", Style::default().fg(Color::Cyan)),
@@ -763,13 +758,7 @@ fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
     let accent = Style::default().fg(Color::Rgb(25, 195, 154));
     let border = Style::default().fg(Color::Rgb(80, 80, 80));
 
-    let mut cwd = app.cwd.display().to_string();
-    if let Some(home) = dirs::home_dir() {
-        let h = home.display().to_string();
-        if cwd.starts_with(&h) {
-            cwd = format!("~{}", &cwd[h.len()..]);
-        }
-    }
+    let cwd = shorten_home_path(&app.cwd);
 
     let auth_label = match app.auth_mode {
         opencli_core::auth::AuthMode::OpenaiOauth => "ChatGPT account",
@@ -1564,13 +1553,25 @@ fn parse_shell_output(text: &str) -> (i32, String, String) {
 }
 
 fn pretty_path(p: &str) -> String {
+    shorten_home_path(Path::new(p))
+}
+
+fn shorten_home_path(path: &Path) -> String {
     if let Some(home) = dirs::home_dir() {
-        let h = home.display().to_string();
-        if let Some(stripped) = p.strip_prefix(&h) {
-            return format!("~{stripped}");
-        }
+        return shorten_path_with_home(path, &home);
     }
-    p.to_string()
+    path.display().to_string()
+}
+
+fn shorten_path_with_home(path: &Path, home: &Path) -> String {
+    let Ok(rest) = path.strip_prefix(home) else {
+        return path.display().to_string();
+    };
+    if rest.as_os_str().is_empty() {
+        "~".to_string()
+    } else {
+        format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display())
+    }
 }
 
 fn wrap(text: &str, width: usize) -> Vec<String> {
@@ -1630,14 +1631,47 @@ fn compact_args(s: &str) -> String {
 
 fn input_height(app: &App) -> u16 {
     let max_visible = (app.last_height / 3).max(3) as usize;
-    let lines = app.input.lines().len().max(1);
-    let inner = lines.min(max_visible);
+    let content_w = (app.last_width as usize).saturating_sub(2).max(1);
+    let rows = input_visual_row_count(app.input.lines(), content_w);
+    let inner = rows.min(max_visible);
     (inner as u16).saturating_add(2)
+}
+
+fn input_visual_row_count<'a, I>(lines: I, content_w: usize) -> usize
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    lines
+        .into_iter()
+        .map(|line| wrap_visual_rows(line, content_w, None).0.len())
+        .sum::<usize>()
+        .max(1)
+}
+
+#[cfg(test)]
+mod path_display_tests {
+    use super::shorten_path_with_home;
+    use std::path::Path;
+
+    #[test]
+    fn shortens_home_and_children_only_on_path_boundaries() {
+        let home = Path::new("/home/ryan");
+
+        assert_eq!(shorten_path_with_home(Path::new("/home/ryan"), home), "~");
+        assert_eq!(
+            shorten_path_with_home(Path::new("/home/ryan/project"), home),
+            "~/project"
+        );
+        assert_eq!(
+            shorten_path_with_home(Path::new("/home/ryan2/project"), home),
+            "/home/ryan2/project"
+        );
+    }
 }
 
 #[cfg(test)]
 mod input_wrap_tests {
-    use super::wrap_visual_rows;
+    use super::{input_visual_row_count, wrap_visual_rows};
 
     #[test]
     fn no_wrap_short_line() {
@@ -1693,5 +1727,10 @@ mod input_wrap_tests {
             wrap_visual_rows("世界A", 4, None).0,
             vec!["世界".to_string(), "A".to_string()]
         );
+    }
+
+    #[test]
+    fn input_height_counts_soft_wrapped_rows() {
+        assert_eq!(input_visual_row_count(["abcdefgh"].into_iter(), 4), 2);
     }
 }

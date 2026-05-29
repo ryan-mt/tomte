@@ -84,19 +84,20 @@ pub fn parse(text: &str, path: &Path) -> Result<CustomCommand> {
 
     let mut description = String::new();
     let mut argument_hint = String::new();
-    let mut body_start = 0usize;
+    let mut body = text;
 
-    let trimmed = text.trim_start_matches('\u{feff}');
+    let trimmed = text.trim_start_matches('\u{feff}').trim_start();
     if let Some(rest) = trimmed.strip_prefix("---") {
         let rest = rest.strip_prefix('\n').unwrap_or(rest);
-        if let Some(end_idx) = rest.find("\n---") {
+        let end_idx = rest.match_indices("\n---").find(|(i, _)| {
+            let after = &rest[i + 4..];
+            after.is_empty() || after.starts_with('\n') || after.starts_with('\r')
+        });
+        if let Some((end_idx, _)) = end_idx {
             let frontmatter = &rest[..end_idx];
-            // body offset relative to original text
-            let consumed = text.len() - rest.len() + end_idx + "\n---".len();
-            let mut body = &text[consumed..];
+            body = &rest[end_idx + "\n---".len()..];
             body = body.strip_prefix('\r').unwrap_or(body);
             body = body.strip_prefix('\n').unwrap_or(body);
-            body_start = text.len() - body.len();
             for raw_line in frontmatter.lines() {
                 let line = raw_line.trim();
                 if line.is_empty() || line.starts_with('#') {
@@ -116,12 +117,11 @@ pub fn parse(text: &str, path: &Path) -> Result<CustomCommand> {
             }
         }
     }
-    let body = text[body_start..].to_string();
     Ok(CustomCommand {
         name,
         description,
         argument_hint,
-        body,
+        body: body.to_string(),
         source_path: path.to_path_buf(),
     })
 }
@@ -199,12 +199,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_frontmatter_tolerates_leading_whitespace() {
+        let text = "\n\t---\ndescription: do a thing\n---\nrun\n";
+        let cmd = parse(text, &fake("spaced")).unwrap();
+        assert_eq!(cmd.description, "do a thing");
+        assert_eq!(cmd.body, "run\n");
+    }
+
+    #[test]
     fn parse_without_frontmatter() {
         let text = "Hello $ARGUMENTS\n";
         let cmd = parse(text, &fake("hi")).unwrap();
         assert_eq!(cmd.name, "hi");
         assert!(cmd.description.is_empty());
         assert_eq!(cmd.body, "Hello $ARGUMENTS\n");
+    }
+
+    #[test]
+    fn parse_frontmatter_closing_fence_must_be_exact_line() {
+        let text = "---\ndescription: keep\n----\nargument-hint: <x>\n---\nbody\n";
+        let cmd = parse(text, &fake("fence")).unwrap();
+        assert_eq!(cmd.description, "keep");
+        assert_eq!(cmd.argument_hint, "<x>");
+        assert_eq!(cmd.body, "body\n");
     }
 
     #[test]

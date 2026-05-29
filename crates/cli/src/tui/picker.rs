@@ -298,11 +298,6 @@ pub fn models() -> Vec<PickerItem> {
                         description: "more compute for hard problems".into(),
                     },
                     PickerItem {
-                        key: "gpt-5-codex".into(),
-                        title: "gpt-5-codex".into(),
-                        description: "code-specialised · used via ChatGPT Codex".into(),
-                    },
-                    PickerItem {
                         key: "gpt-5-mini".into(),
                         title: "gpt-5-mini".into(),
                         description: "fast · cheaper".into(),

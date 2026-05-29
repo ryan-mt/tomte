@@ -83,7 +83,10 @@ fn map_effort(model: &str, effort: Option<&str>) -> EffortPlan {
             output_config: Some(OutputConfig {
                 effort: eff.to_string(),
             }),
-            max_tokens: if eff == "max" {
+            // `xhigh` is the highest deliberation tier (Opus 4.7/4.8); like
+            // `max` it must get the lifted ceiling, otherwise adaptive
+            // thinking tokens eat the 32k budget and truncate the answer.
+            max_tokens: if eff == "max" || eff == "xhigh" {
                 MAX_EFFORT_MAX_TOKENS
             } else {
                 DEFAULT_MAX_TOKENS
@@ -483,6 +486,8 @@ mod tests {
         let req = ResponsesRequest::new("claude-opus-4-8", vec![]).with_reasoning("xhigh");
         let out = to_messages_request(&req);
         assert_eq!(out.output_config.as_ref().unwrap().effort, "xhigh");
+        // xhigh is the top tier, so it must get the lifted ceiling like `max`.
+        assert!(out.max_tokens > 32_000);
     }
 
     #[test]

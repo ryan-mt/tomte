@@ -132,6 +132,43 @@ Parameters:\n\
     }
 }
 
+pub fn render_ask_envelope(output: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(output).ok()?;
+    if v.get("kind").and_then(|k| k.as_str()) != Some("ask_user_question") {
+        return None;
+    }
+    let questions = v.get("questions")?.as_array()?;
+    let mut out = String::from("User input needed:\n");
+    for (qi, q) in questions.iter().enumerate() {
+        let question = q.get("question").and_then(|v| v.as_str()).unwrap_or("");
+        let header = q.get("header").and_then(|v| v.as_str()).unwrap_or("");
+        if qi > 0 {
+            out.push('\n');
+        }
+        if header.is_empty() {
+            out.push_str(&format!("\n{}. {question}\n", qi + 1));
+        } else {
+            out.push_str(&format!("\n{}. [{header}] {question}\n", qi + 1));
+        }
+        if let Some(options) = q.get("options").and_then(|v| v.as_array()) {
+            for (oi, opt) in options.iter().enumerate() {
+                let label = opt.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                let description = opt
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                out.push_str(&format!("   {}. {}", oi + 1, label));
+                if !description.is_empty() {
+                    out.push_str(&format!(" - {description}"));
+                }
+                out.push('\n');
+            }
+        }
+    }
+    out.push_str("\nReply with the option label(s), or write a short free-form answer.");
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +181,7 @@ mod tests {
             cwd: std::env::current_dir().unwrap(),
             approval: ApprovalMode::Auto,
             session: Arc::new(Mutex::new(SessionState::default())),
+            config: crate::config::Config::default(),
         }
     }
 
@@ -212,5 +250,16 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("1..=4 questions"), "got: {err}");
+    }
+
+    #[test]
+    fn render_envelope_formats_questions_and_options() {
+        let rendered = render_ask_envelope(
+            r#"{"kind":"ask_user_question","questions":[{"question":"Which approach?","header":"Choice","options":[{"label":"A","description":"do A"},{"label":"B","description":"do B"}],"multi_select":false}]}"#,
+        )
+        .unwrap();
+        assert!(rendered.contains("[Choice] Which approach?"), "{rendered}");
+        assert!(rendered.contains("1. A - do A"), "{rendered}");
+        assert!(rendered.contains("2. B - do B"), "{rendered}");
     }
 }

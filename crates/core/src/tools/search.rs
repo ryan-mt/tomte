@@ -111,100 +111,164 @@ Parameters:\n\
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: GrepArgs = super::parse_args("grep", args)?;
-        let mode = a.output_mode.as_deref().unwrap_or("content");
-        if !matches!(mode, "content" | "files_with_matches" | "count") {
+        execute_grep_with_commands(&a, ctx, "rg", "grep").await
+    }
+}
+
+async fn execute_grep_with_commands(
+    a: &GrepArgs,
+    ctx: &ToolContext,
+    rg_program: &str,
+    grep_program: &str,
+) -> Result<String> {
+    let mode = a.output_mode.as_deref().unwrap_or("content");
+    if !matches!(mode, "content" | "files_with_matches" | "count") {
+        return Err(anyhow::anyhow!(
+            "output_mode must be 'content', 'files_with_matches', or 'count' (got '{mode}')"
+        ));
+    }
+
+    let mut cmd = Command::new(rg_program);
+    cmd.arg("--color=never");
+    match mode {
+        "files_with_matches" => {
+            cmd.arg("--files-with-matches");
+        }
+        "count" => {
+            cmd.arg("--count");
+        }
+        _ => {
+            cmd.arg("--no-heading").arg("--line-number");
+            if let Some(n) = a.context_after {
+                cmd.arg("-A").arg(n.to_string());
+            }
+            if let Some(n) = a.context_before {
+                cmd.arg("-B").arg(n.to_string());
+            }
+        }
+    }
+    if a.case_insensitive {
+        cmd.arg("-i");
+    }
+    if a.multiline.unwrap_or(false) {
+        cmd.arg("--multiline").arg("--multiline-dotall");
+    }
+    if let Some(g) = &a.glob {
+        cmd.arg("--glob").arg(g);
+    }
+    if let Some(t) = &a.file_type {
+        cmd.arg("--type").arg(t);
+    }
+    // `--` stops flag parsing so a pattern beginning with `-` (e.g. `-rf`)
+    // is searched literally instead of being read as ripgrep flags. The
+    // grep fallback below already does this.
+    cmd.arg("--").arg(&a.pattern);
+    if let Some(p) = &a.path {
+        cmd.arg(resolved_relative_to_cwd(&ctx.cwd, p)?);
+    } else {
+        cmd.arg(".");
+    }
+    cmd.current_dir(&ctx.cwd);
+    let out = cmd.output().await;
+    if let Ok(out) = out {
+        // rg exits 0 on matches and 1 on "no matches" (both fine); exit 2+
+        // is a real error (invalid regex, bad glob). Surface that instead of
+        // returning empty stdout, which the model reads as "no matches".
+        if !out.status.success() && out.status.code() != Some(1) {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let msg = stderr.trim();
             return Err(anyhow::anyhow!(
-                "output_mode must be 'content', 'files_with_matches', or 'count' (got '{mode}')"
+                "ripgrep failed: {}",
+                if msg.is_empty() { "unknown error" } else { msg }
             ));
         }
-
-        let mut cmd = Command::new("rg");
-        cmd.arg("--color=never");
-        match mode {
-            "files_with_matches" => {
-                cmd.arg("--files-with-matches");
-            }
-            "count" => {
-                cmd.arg("--count");
-            }
-            _ => {
-                cmd.arg("--no-heading").arg("--line-number");
-                if let Some(n) = a.context_after {
-                    cmd.arg("-A").arg(n.to_string());
-                }
-                if let Some(n) = a.context_before {
-                    cmd.arg("-B").arg(n.to_string());
-                }
-            }
-        }
-        if a.case_insensitive {
-            cmd.arg("-i");
-        }
-        if a.multiline.unwrap_or(false) {
-            cmd.arg("--multiline").arg("--multiline-dotall");
-        }
-        if let Some(g) = &a.glob {
-            cmd.arg("--glob").arg(g);
-        }
-        if let Some(t) = &a.file_type {
-            cmd.arg("--type").arg(t);
-        }
-        // `--` stops flag parsing so a pattern beginning with `-` (e.g. `-rf`)
-        // is searched literally instead of being read as ripgrep flags. The
-        // grep fallback below already does this.
-        cmd.arg("--").arg(&a.pattern);
-        if let Some(p) = &a.path {
-            let resolved = super::fs::resolve(&ctx.cwd, p)?;
-            cmd.arg(&resolved);
-        } else {
-            cmd.arg(".");
-        }
-        cmd.current_dir(&ctx.cwd);
-        let out = cmd.output().await;
-        if let Ok(out) = out {
-            // rg exits 0 on matches and 1 on "no matches" (both fine); exit 2+
-            // is a real error (invalid regex, bad glob). Surface that instead of
-            // returning empty stdout, which the model reads as "no matches".
-            if !out.status.success() && out.status.code() != Some(1) {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                let msg = stderr.trim();
-                return Err(anyhow::anyhow!(
-                    "ripgrep failed: {}",
-                    if msg.is_empty() { "unknown error" } else { msg }
-                ));
-            }
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            return Ok(apply_limits(&stdout, a.head_limit, 8000));
-        }
-        // Fallback to grep (rg missing). Limited features — output_mode and
-        // multiline are not supported here; report degraded behavior in
-        // stdout so the model knows.
-        let mut grep = Command::new("grep");
-        grep.arg("-rn");
-        if a.case_insensitive {
-            grep.arg("-i");
-        }
-        if let Some(n) = a.context_after {
-            grep.arg("-A").arg(n.to_string());
-        }
-        if let Some(n) = a.context_before {
-            grep.arg("-B").arg(n.to_string());
-        }
-        // `--` separates flags from positional args so a pattern starting
-        // with `-` isn't misinterpreted as a flag.
-        grep.arg("--").arg(&a.pattern);
-        match a.path.as_deref() {
-            Some(p) => grep.arg(super::fs::resolve(&ctx.cwd, p)?),
-            None => grep.arg("."),
-        };
-        grep.current_dir(&ctx.cwd);
-        let out = grep.output().await?;
-        Ok(apply_limits(
-            &String::from_utf8_lossy(&out.stdout),
-            a.head_limit,
-            8000,
-        ))
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        return Ok(apply_limits(&stdout, a.head_limit, 8000));
     }
+    if a.multiline.unwrap_or(false) {
+        return Err(grep_fallback_unsupported("multiline"));
+    }
+    if a.glob.is_some() {
+        return Err(grep_fallback_unsupported("glob"));
+    }
+    if a.file_type.is_some() {
+        return Err(grep_fallback_unsupported("file_type"));
+    }
+
+    let mut grep = Command::new(grep_program);
+    grep.arg("-E").arg("-r");
+    match mode {
+        "files_with_matches" => {
+            grep.arg("-l");
+        }
+        "count" => {
+            grep.arg("-c");
+        }
+        _ => {
+            grep.arg("-n");
+            if let Some(n) = a.context_after {
+                grep.arg("-A").arg(n.to_string());
+            }
+            if let Some(n) = a.context_before {
+                grep.arg("-B").arg(n.to_string());
+            }
+        }
+    }
+    if a.case_insensitive {
+        grep.arg("-i");
+    }
+    // `--` separates flags from positional args so a pattern starting
+    // with `-` isn't misinterpreted as a flag.
+    grep.arg("--").arg(&a.pattern);
+    match a.path.as_deref() {
+        Some(p) => grep.arg(resolved_relative_to_cwd(&ctx.cwd, p)?),
+        None => grep.arg("."),
+    };
+    grep.current_dir(&ctx.cwd);
+    let out = grep.output().await?;
+    if !out.status.success() && out.status.code() != Some(1) {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let msg = stderr.trim();
+        return Err(anyhow::anyhow!(
+            "grep fallback failed: {}",
+            if msg.is_empty() { "unknown error" } else { msg }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stdout = if mode == "count" {
+        filter_zero_count_lines(&stdout)
+    } else {
+        stdout
+    };
+    Ok(apply_limits(&stdout, a.head_limit, 8000))
+}
+
+fn grep_fallback_unsupported(feature: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "ripgrep is not available and the grep fallback does not support '{feature}'; install ripgrep or remove that option"
+    )
+}
+
+fn resolved_relative_to_cwd(cwd: &std::path::Path, path: &str) -> Result<std::path::PathBuf> {
+    let resolved = super::fs::resolve(cwd, path)?;
+    let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    Ok(resolved
+        .strip_prefix(&root)
+        .map(|p| p.to_path_buf())
+        .unwrap_or(resolved))
+}
+
+fn filter_zero_count_lines(stdout: &str) -> String {
+    stdout
+        .lines()
+        .filter(|line| {
+            let Some((_, count)) = line.rsplit_once(':') else {
+                return true;
+            };
+            count.trim() != "0"
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(Deserialize)]
@@ -275,6 +339,7 @@ Parameters:\n\
                 "sort must be 'name' or 'mtime' (got '{sort}')"
             ));
         }
+        let root = ctx.cwd.canonicalize().unwrap_or_else(|_| ctx.cwd.clone());
         let cwd = match a.path.as_deref() {
             Some(p) => super::fs::resolve(&ctx.cwd, p)?,
             None => ctx.cwd.clone(),
@@ -336,11 +401,11 @@ Parameters:\n\
                 .collect()
         };
 
-        let mut ordered: Vec<String> = files;
+        let mut ordered = relativize_glob_results(files, &cwd, &root);
         if sort == "mtime" {
             // Stat each file once; sort newest-first. Files we can't stat sink
             // to the bottom (UNIX_EPOCH).
-            let base = cwd.clone();
+            let base = root.clone();
             let mut with_mtime: Vec<(String, std::time::SystemTime)> = ordered
                 .into_iter()
                 .map(|p| {
@@ -358,6 +423,23 @@ Parameters:\n\
 
         Ok(apply_limits(&ordered.join("\n"), a.limit, 8000))
     }
+}
+
+fn relativize_glob_results(
+    files: Vec<String>,
+    search_root: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Vec<String> {
+    files
+        .into_iter()
+        .map(|p| {
+            let rel = p.strip_prefix("./").unwrap_or(&p);
+            let full = search_root.join(rel);
+            full.strip_prefix(cwd)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| rel.to_string())
+        })
+        .collect()
 }
 
 /// Cap an output string by both lines (`head_limit`) and bytes (`byte_cap`).
@@ -407,6 +489,7 @@ mod tests {
             cwd,
             approval: ApprovalMode::Auto,
             session: Arc::new(Mutex::new(SessionState::default())),
+            config: crate::config::Config::default(),
         }
     }
 
@@ -424,6 +507,33 @@ mod tests {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+
+    fn grep_available() -> bool {
+        std::process::Command::new("grep")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn grep_args(pattern: &str) -> GrepArgs {
+        GrepArgs {
+            pattern: pattern.to_string(),
+            path: None,
+            glob: None,
+            case_insensitive: false,
+            output_mode: None,
+            head_limit: None,
+            context_after: None,
+            context_before: None,
+            multiline: None,
+            file_type: None,
+        }
+    }
+
+    fn missing_rg(dir: &std::path::Path) -> String {
+        dir.join("opencli-missing-rg").display().to_string()
     }
 
     #[tokio::test]
@@ -456,6 +566,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn grep_fallback_files_with_matches_mode_returns_paths_only() {
+        if !grep_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.txt", "hello\nworld\n");
+        write(dir.path(), "b.txt", "no match here\n");
+        write(dir.path(), "c/d.txt", "hello again\n");
+
+        let mut args = grep_args("hello");
+        args.output_mode = Some("files_with_matches".to_string());
+        let out = execute_grep_with_commands(
+            &args,
+            &ctx(dir.path().to_path_buf()),
+            &missing_rg(dir.path()),
+            "grep",
+        )
+        .await
+        .unwrap();
+
+        assert!(out.contains("a.txt"), "got: {out}");
+        assert!(out.contains("d.txt"), "got: {out}");
+        assert!(!out.contains("b.txt"), "got: {out}");
+        assert!(!out.contains("hello"), "got: {out}");
+    }
+
+    #[tokio::test]
     async fn grep_count_mode_returns_path_colon_count() {
         if !rg_available() {
             return;
@@ -478,6 +615,51 @@ mod tests {
             .unwrap();
         assert!(out.contains("a.txt:3"), "got: {out}");
         assert!(out.contains("b.txt:1"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn grep_fallback_count_mode_returns_matching_files_only() {
+        if !grep_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.txt", "x\nx\n");
+        write(dir.path(), "b.txt", "no hit\n");
+
+        let mut args = grep_args("x");
+        args.output_mode = Some("count".to_string());
+        let out = execute_grep_with_commands(
+            &args,
+            &ctx(dir.path().to_path_buf()),
+            &missing_rg(dir.path()),
+            "grep",
+        )
+        .await
+        .unwrap();
+
+        assert!(out.contains("a.txt:2"), "got: {out}");
+        assert!(!out.contains("b.txt:0"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn grep_fallback_rejects_unsupported_glob_instead_of_ignoring_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut args = grep_args("x");
+        args.glob = Some("*.rs".to_string());
+
+        let err = execute_grep_with_commands(
+            &args,
+            &ctx(dir.path().to_path_buf()),
+            &missing_rg(dir.path()),
+            "grep",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("does not support 'glob'"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -534,6 +716,37 @@ mod tests {
         assert!(out.contains("line2"), "got: {out}");
         assert!(out.contains("line3"), "got: {out}");
         assert!(!out.contains("line4"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn grep_with_path_returns_paths_relative_to_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "src/lib.rs", "needle\n");
+
+        let out = Grep
+            .execute(
+                json!({
+                    "pattern": "needle",
+                    "path": "src",
+                    "glob": null,
+                    "case_insensitive": false,
+                    "output_mode": "content",
+                    "head_limit": null,
+                    "context_after": null,
+                    "context_before": null,
+                    "multiline": null,
+                    "file_type": null,
+                }),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.contains("src/lib.rs:1:needle"), "got: {out}");
+        assert!(
+            !out.contains(&dir.path().display().to_string()),
+            "grep output should be cwd-relative: {out}"
+        );
     }
 
     #[tokio::test]
@@ -616,6 +829,27 @@ mod tests {
             payload_lines <= 5,
             "got {payload_lines} payload lines: {out}"
         );
+    }
+
+    #[tokio::test]
+    async fn glob_with_path_returns_paths_relative_to_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "src/lib.rs", "x");
+
+        let out = Glob
+            .execute(
+                json!({
+                    "pattern": "*.rs",
+                    "path": "src",
+                    "sort": "name",
+                    "limit": null,
+                }),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out.trim(), "src/lib.rs");
     }
 
     #[tokio::test]

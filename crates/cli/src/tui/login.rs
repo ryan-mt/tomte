@@ -96,12 +96,6 @@ impl LoginScreen {
             KeyCode::Enter => match self.selected {
                 Option_::ChatGpt => self.start_chatgpt().await,
                 Option_::ApiKey => {
-                    if let Ok(env_key) = std::env::var("OPENAI_API_KEY") {
-                        if !env_key.is_empty() {
-                            self.api_input.buffer = env_key.clone();
-                            self.api_input.cursor = env_key.len();
-                        }
-                    }
                     *self.stage.lock().await = Stage::ApiKeyEntry;
                 }
             },
@@ -417,4 +411,52 @@ fn render_footer(f: &mut Frame, area: Rect) {
         ))),
         area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    static ENV_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.as_ref() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn api_key_entry_does_not_prefill_env_secret() {
+        let _lock = ENV_LOCK.lock().await;
+        let _env = EnvGuard::set("OPENAI_API_KEY", "sk-secret-should-not-render");
+        let mut login = LoginScreen::new();
+        login.selected = Option_::ApiKey;
+
+        let finished = login
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert!(!finished);
+        assert!(matches!(login.stage().await, Stage::ApiKeyEntry));
+        assert!(login.api_input.is_empty());
+    }
 }

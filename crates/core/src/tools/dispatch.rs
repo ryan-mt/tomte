@@ -19,7 +19,6 @@ use super::{BuiltinTool, Registry, ToolContext};
 use crate::agent::{Agent, AgentEvent};
 use crate::auth::resolve_credential;
 use crate::client::LlmClient;
-use crate::config;
 use crate::provider::Provider;
 use crate::subagent::{load_all, load_by_name, resolve_model_alias};
 
@@ -51,7 +50,7 @@ When NOT to use:\n\
 - Editing files the parent should review — sub-agents that write files do so without parent oversight.\n\
 \n\
 Parameters:\n\
-- `subagent_type`: Bare name of the agent definition file (without `.md`). The file lives at `~/.config/opencli/agents/<name>.md` and looks like:\n\
+- `subagent_type`: Sub-agent name from the definition's `name:` frontmatter (or the bare filename without `.md`). The file lives at `~/.config/opencli/agents/<name>.md` and looks like:\n\
   ```\n\
   ---\n\
   name: code-explorer\n\
@@ -76,7 +75,7 @@ Behaviour:\n\
             "properties": {
                 "subagent_type": {
                     "type": "string",
-                    "description": "Bare name of the sub-agent definition file under ~/.config/opencli/agents (no extension)."
+                    "description": "Sub-agent name from frontmatter, or the bare definition filename under ~/.config/opencli/agents (no extension)."
                 },
                 "prompt": {
                     "type": "string",
@@ -107,7 +106,7 @@ Behaviour:\n\
             }
         })?;
 
-        let mut cfg = config::load();
+        let mut cfg = ctx.config.clone();
         if let Some(ref m) = def.model {
             cfg.model = resolve_model_alias(m);
         }
@@ -150,7 +149,12 @@ Behaviour:\n\
         // error rather than returning an empty success.
         match task.await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => error_msgs.push(e.to_string()),
+            Ok(Err(e)) => {
+                let msg = e.to_string();
+                if !error_msgs.iter().any(|seen| seen == &msg) {
+                    error_msgs.push(msg);
+                }
+            }
             Err(join_err) => error_msgs.push(format!("subagent task panicked: {join_err}")),
         }
 

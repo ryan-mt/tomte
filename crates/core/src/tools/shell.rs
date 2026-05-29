@@ -44,12 +44,7 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
                     && t.contains('f'))
         });
         if is_recursive {
-            let dangerous_target = tokens.iter().any(|t| {
-                matches!(
-                    *t,
-                    "/" | "/*" | "~" | "~/" | "~/*" | "$home" | "$home/" | ".*" | "*"
-                )
-            });
+            let dangerous_target = tokens.iter().any(|t| is_dangerous_rm_target(t));
             if dangerous_target {
                 return Some("recursive rm targeting root, home, or glob");
             }
@@ -124,6 +119,58 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
     None
 }
 
+fn is_dangerous_rm_target(token: &str) -> bool {
+    let token = token.trim_end_matches([';', '&', '|']);
+    let literal = token.trim_matches(|c| matches!(c, '"' | '\''));
+    if matches!(
+        literal,
+        "/" | "/*" | "." | "./" | "./*" | "./.*" | ".." | "../*" | ".*" | "*"
+    ) {
+        return true;
+    }
+
+    let is_unquoted = !token.contains('"') && !token.contains('\'');
+    if is_unquoted && has_path_prefix(literal, "~") {
+        return true;
+    }
+
+    let double_unquoted: String = token.chars().filter(|c| *c != '"').collect();
+    has_shell_var_path_prefix(&double_unquoted, "home")
+        || has_shell_var_path_prefix(&double_unquoted, "pwd")
+}
+
+fn has_path_prefix(target: &str, prefix: &str) -> bool {
+    target
+        .strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+fn has_shell_var_path_prefix(target: &str, var: &str) -> bool {
+    if has_path_prefix(target, &format!("${var}")) {
+        return true;
+    }
+
+    let Some(rest) = target.strip_prefix(&format!("${{{var}")) else {
+        return false;
+    };
+    let Some(first) = rest.chars().next() else {
+        return false;
+    };
+    if first != '}'
+        && !matches!(
+            first,
+            ':' | '?' | '+' | '-' | '#' | '%' | '/' | ',' | '^' | '='
+        )
+    {
+        return false;
+    }
+    let Some(close_idx) = rest.find('}') else {
+        return false;
+    };
+    let after = &rest[close_idx + 1..];
+    after.is_empty() || after.starts_with('/')
+}
+
 fn bash_id() -> String {
     use rand::RngCore;
     let mut b = [0u8; 6];
@@ -141,6 +188,32 @@ fn now_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+
+#[cfg(unix)]
+fn isolate_process_group(cmd: &mut Command) {
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_cmd: &mut Command) {}
+
+#[cfg(unix)]
+fn kill_process_group(pid: Option<u32>) {
+    const SIGKILL: i32 = 9;
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+
+    let Some(pid) = pid.and_then(|p| i32::try_from(p).ok()) else {
+        return;
+    };
+    unsafe {
+        let _ = kill(-pid, SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: Option<u32>) {}
 
 /// Env vars whose names contain any of these substrings are scrubbed from the
 /// child's environment. Prevents the LLM from exfiltrating tokens via
@@ -241,6 +314,7 @@ Parameters:\n\
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        isolate_process_group(&mut cmd);
         // Strip likely-secret env vars before spawn so the LLM can't echo them.
         for (k, _) in std::env::vars() {
             let upper = k.to_ascii_uppercase();
@@ -255,14 +329,16 @@ Parameters:\n\
 
         let timeout = std::time::Duration::from_millis(a.timeout_ms.unwrap_or(120_000));
         let child = cmd.spawn()?;
+        let child_pid = child.id();
         let wait = child.wait_with_output();
         let out = match tokio::time::timeout(timeout, wait).await {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => {
-                // Future was dropped; kill_on_drop fires SIGKILL on the
-                // child so it does not orphan with the parent env still
-                // mapped in its fds.
+                kill_process_group(child_pid);
+                // Future was dropped; kill_on_drop also fires SIGKILL on the
+                // child. The explicit process-group kill handles descendants
+                // that the shell spawned before timing out.
                 return Err(anyhow::anyhow!("timed out after {}ms", timeout.as_millis()));
             }
         };
@@ -283,9 +359,11 @@ async fn spawn_background(
     command_str: &str,
     ctx: &ToolContext,
 ) -> Result<String> {
+    isolate_process_group(&mut cmd);
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow!("failed to spawn background shell: {e}"))?;
+    let child_pid = child.id();
 
     let stdout = child
         .stdout
@@ -358,6 +436,7 @@ async fn spawn_background(
                     };
                 }
                 _ = kill_rx => {
+                    kill_process_group(child_pid);
                     // SIGKILL — `kill_on_drop` will also fire when `child` drops.
                     let _ = child.start_kill();
                     let _ = child.wait().await;
@@ -554,12 +633,22 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    fn ctx() -> ToolContext {
+    fn ctx_at(cwd: std::path::PathBuf) -> ToolContext {
         ToolContext {
-            cwd: std::env::current_dir().unwrap(),
+            cwd,
             approval: ApprovalMode::Auto,
             session: Arc::new(Mutex::new(SessionState::default())),
+            config: crate::config::Config::default(),
         }
+    }
+
+    fn ctx() -> ToolContext {
+        ctx_at(std::env::current_dir().unwrap())
+    }
+
+    #[cfg(unix)]
+    fn sh_quote(path: &std::path::Path) -> String {
+        format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
     }
 
     fn parse_bash_id(s: &str) -> String {
@@ -701,6 +790,77 @@ mod tests {
         assert!(again.contains("already terminated"), "got: {again}");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_shell_timeout_kills_background_descendants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("survived-timeout");
+        let ctx = ctx_at(tmp.path().to_path_buf());
+        let command = format!(
+            "(sleep 0.5; printf survived > {}) & wait",
+            sh_quote(&marker)
+        );
+
+        let err = RunShell
+            .execute(
+                json!({
+                    "command": command,
+                    "timeout_ms": 80,
+                    "run_in_background": false,
+                    "dangerous_override": null,
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("timed out"), "got: {err}");
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+        assert!(
+            !marker.exists(),
+            "timeout killed only the shell; a background descendant survived"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_shell_kills_background_descendants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("survived-kill");
+        let ctx = ctx_at(tmp.path().to_path_buf());
+        let command = format!(
+            "(sleep 0.5; printf survived > {}) & wait",
+            sh_quote(&marker)
+        );
+
+        let out = RunShell
+            .execute(
+                json!({
+                    "command": command,
+                    "timeout_ms": null,
+                    "run_in_background": true,
+                    "dangerous_override": null,
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let id = parse_bash_id(&out);
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        let killed = KillShell
+            .execute(json!({"bash_id": id.clone()}), &ctx)
+            .await
+            .unwrap();
+        assert!(killed.contains("kill_requested"), "got: {killed}");
+        let _ = wait_until_status(&ctx, &id, "killed", 3000).await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+        assert!(
+            !marker.exists(),
+            "kill_shell killed only the shell; a background descendant survived"
+        );
+    }
+
     #[tokio::test]
     async fn bash_output_rejects_unknown_id() {
         let ctx = ctx();
@@ -717,6 +877,20 @@ mod tests {
             "rm -rf /",
             "rm -rf  /*",
             "rm -rf ~",
+            "rm -rf ~/*",
+            "rm -rf .",
+            "rm -rf ./*",
+            "rm -rf ./.*",
+            "rm -rf ..",
+            "rm -rf $HOME/*",
+            "rm -rf \"$HOME\"",
+            "rm -rf \"$HOME\"/*",
+            "rm -rf ${HOME}/.cache",
+            "rm -rf \"${HOME}\"/*",
+            "rm -rf \"${HOME:?}/.cache\"",
+            "rm -rf $PWD/*",
+            "rm -rf \"${PWD}\"/*",
+            "rm -rf \"${PWD:?}\"/*",
             "rm -fr /",
             "sudo rm -rf /",
             "mkfs.ext4 /dev/sda1",
@@ -743,6 +917,7 @@ mod tests {
             "rm target/foo.txt",
             "rm -rf target/",
             "rm -rf node_modules",
+            "rm -rf '$HOME'",
             "find . -name '*.rs'",
             "npm install",
             "dd if=input.bin of=output.bin",
@@ -767,6 +942,7 @@ mod tests {
             cwd: tmp.path().to_path_buf(),
             approval: ApprovalMode::Auto,
             session: Arc::new(Mutex::new(SessionState::default())),
+            config: crate::config::Config::default(),
         };
         let out = RunShell
             .execute(

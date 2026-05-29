@@ -17,6 +17,14 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// outer cap is generous enough to clear it (default 120s) plus margin.
 const TOOL_HARD_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// Backstop on tool-call round-trips within a single user turn. Each iteration
+/// is one model response; the loop only ends naturally when the model replies
+/// without a tool call. A model wedged in a call→result→call cycle (e.g. a
+/// tool that keeps failing) would otherwise loop forever, burning tokens. This
+/// is intentionally generous — far above any legitimate task — and surfaces as
+/// a clear error so the user can re-prompt to continue.
+const MAX_AGENT_STEPS: usize = 250;
+
 use crate::client::LlmClient;
 use crate::config::Config;
 use crate::openai::{InputItem, MessageContent, ResponseStreamEvent, ResponsesRequest};
@@ -276,11 +284,12 @@ impl Agent {
     /// host (e.g. a `/undo` slash command) without round-tripping the model.
     pub async fn undo_last_edit(&self) -> anyhow::Result<String> {
         use anyhow::{anyhow, Context};
-        let entry = {
-            let mut session = self.session.lock().await;
-            session.undo_stack.pop_back()
-        };
-        let entry = entry.ok_or_else(|| anyhow!("no edits to undo"))?;
+        let mut session = self.session.lock().await;
+        let entry = session
+            .undo_stack
+            .back()
+            .cloned()
+            .ok_or_else(|| anyhow!("no edits to undo"))?;
         // Mirrors the TOCTOU guard in the `undo_last_edit` tool: refuse to
         // overwrite a file that has been touched since we edited it, so a
         // user's manual changes can't be silently destroyed by /undo.
@@ -295,23 +304,22 @@ impl Agent {
                 ));
             }
         }
-        match entry.original_content {
+        let message = match entry.original_content {
             Some(content) => {
                 tokio::fs::write(&entry.path, content)
                     .await
                     .with_context(|| format!("restore {}", entry.path.display()))?;
-                Ok(format!("Restored {}", entry.path.display()))
+                format!("Restored {}", entry.path.display())
             }
             None => {
                 tokio::fs::remove_file(&entry.path)
                     .await
                     .with_context(|| format!("remove {}", entry.path.display()))?;
-                Ok(format!(
-                    "Removed (was a new file): {}",
-                    entry.path.display()
-                ))
+                format!("Removed (was a new file): {}", entry.path.display())
             }
-        }
+        };
+        session.undo_stack.pop_back();
+        Ok(message)
     }
 
     /// Replace this agent's history and identity from a stored session so
@@ -396,8 +404,16 @@ impl Agent {
              approach for one kind of task. When a request clearly matches a skill's \
              description, call the `skill` tool with its exact name to load the full \
              instructions, then follow them. Load at most what you need — do not pull in \
-             skills speculatively.\n\n{manifest}"
+            skills speculatively.\n\n{manifest}"
         ));
+    }
+
+    /// Rebuild the static instruction prefix after cwd-dependent context
+    /// changes. Conversation history and session state are intentionally kept.
+    pub fn refresh_system_context(&mut self) {
+        self.system_prompt = default_system_prompt();
+        self.apply_project_memory();
+        self.apply_skill_manifest();
     }
 
     /// Build a `SessionRecord` snapshot of the current conversation. Cheap
@@ -480,7 +496,14 @@ impl Agent {
     /// returns (idle timeout, stream error, response.failed); firing here covers
     /// all of them instead of only the clean-completion path.
     pub async fn run_turn(&mut self, tx: mpsc::Sender<AgentEvent>) -> Result<()> {
-        let result = self.run_turn_inner(tx).await;
+        let result = self.run_turn_inner(tx.clone()).await;
+        if let Err(e) = &result {
+            let _ = tx
+                .send(AgentEvent::Error {
+                    message: e.to_string(),
+                })
+                .await;
+        }
         self.hooks.fire_stop().await;
         result
     }
@@ -573,7 +596,15 @@ impl Agent {
     }
 
     async fn run_turn_inner(&mut self, tx: mpsc::Sender<AgentEvent>) -> Result<()> {
+        let mut steps = 0usize;
         loop {
+            steps += 1;
+            if steps > MAX_AGENT_STEPS {
+                return Err(anyhow::anyhow!(
+                    "stopped after {MAX_AGENT_STEPS} tool-call round-trips — \
+                     the model may be stuck in a loop; send another message to continue"
+                ));
+            }
             let request = ResponsesRequest::new(self.config.model.clone(), self.history.clone())
                 .with_instructions(self.system_prompt.clone())
                 .with_tools(self.registry.definitions())
@@ -592,42 +623,21 @@ impl Agent {
                         // No event for STREAM_IDLE_TIMEOUT — the upstream
                         // stream is stuck. Surface as an error and bail so
                         // the UI unsticks and the user can retry.
-                        let msg = format!(
+                        return Err(anyhow::anyhow!(
                             "stream idle for {}s — connection may be stale, try again",
                             STREAM_IDLE_TIMEOUT.as_secs()
-                        );
-                        let _ = tx
-                            .send(AgentEvent::Error {
-                                message: msg.clone(),
-                            })
-                            .await;
-                        return Err(anyhow::anyhow!(msg));
+                        ));
                     }
                     Ok(None) => break,
-                    Ok(Some(Err(e))) => {
-                        let _ = tx
-                            .send(AgentEvent::Error {
-                                message: e.to_string(),
-                            })
-                            .await;
-                        return Err(e);
-                    }
+                    Ok(Some(Err(e))) => return Err(e),
                     Ok(Some(Ok(v))) => v,
                 };
                 match ev {
                     ResponseStreamEvent::OutputItemAdded { item, .. }
                         if item.get("type").and_then(|v| v.as_str()) == Some("function_call") =>
                     {
-                        let call_id = item
-                            .get("call_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let item_id = item
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         let name = item
                             .get("name")
                             .and_then(|v| v.as_str())
@@ -639,13 +649,13 @@ impl Agent {
                         // would corrupt, eventually dispatching a tool with
                         // bogus or empty arguments. Drop the event with a
                         // warning instead of pretending it worked.
-                        if call_id.is_empty() && item_id.is_empty() {
+                        let Some((call_id, item_id)) = function_call_ids(call_id, item_id) else {
                             tracing::warn!(
                                 name = %name,
                                 "function_call event missing both call_id and id; skipping"
                             );
                             continue;
-                        }
+                        };
                         // Some models send the complete arguments inline on the
                         // OutputItemAdded item; capture them as an initial buffer.
                         let args_buf = item
@@ -671,33 +681,49 @@ impl Agent {
                             item_id,
                             name: name.clone(),
                             args_buf,
+                            args_done_emitted: false,
                         });
                         let _ = tx.send(AgentEvent::ToolCallStarted { name, call_id }).await;
+                        if let Some(pc) = pending_calls.last_mut() {
+                            if !pc.args_buf.is_empty() {
+                                let _ = tx
+                                    .send(AgentEvent::ToolCallArgsDone {
+                                        call_id: pc.call_id.clone(),
+                                        arguments: pc.args_buf.clone(),
+                                    })
+                                    .await;
+                                pc.args_done_emitted = true;
+                            }
+                        }
                     }
                     ResponseStreamEvent::OutputItemDone { item, .. }
                         if item.get("type").and_then(|v| v.as_str()) == Some("function_call") =>
                     {
-                        let call_id = item
-                            .get("call_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let item_id = item
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
+                        let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         let arguments = item
                             .get("arguments")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
+                        let Some((call_id, item_id)) = function_call_ids(call_id, item_id) else {
+                            continue;
+                        };
                         if let Some(pc) = pending_calls
                             .iter_mut()
                             .find(|p| p.call_id == call_id || p.item_id == item_id)
                         {
                             if !arguments.is_empty() {
                                 pc.args_buf = arguments.clone();
+                                if !pc.args_done_emitted {
+                                    let _ = tx
+                                        .send(AgentEvent::ToolCallArgsDone {
+                                            call_id: pc.call_id.clone(),
+                                            arguments: pc.args_buf.clone(),
+                                        })
+                                        .await;
+                                    pc.args_done_emitted = true;
+                                }
                             }
                         }
                     }
@@ -740,10 +766,11 @@ impl Agent {
                             .await;
                     }
                     ResponseStreamEvent::FunctionCallArgsDone { item_id, arguments } => {
-                        let call_id = pending_calls
+                        let emit = match pending_calls
                             .iter_mut()
                             .find(|p| p.item_id == item_id || p.call_id == item_id)
-                            .map(|pc| {
+                        {
+                            Some(pc) => {
                                 // Only overwrite when the done event actually
                                 // carried args; an empty/absent `arguments` must
                                 // not wipe the buffer accumulated from the deltas
@@ -751,12 +778,21 @@ impl Agent {
                                 if !arguments.is_empty() {
                                     pc.args_buf = arguments.clone();
                                 }
-                                pc.call_id.clone()
-                            })
-                            .unwrap_or_else(|| item_id.clone());
-                        let _ = tx
-                            .send(AgentEvent::ToolCallArgsDone { call_id, arguments })
-                            .await;
+                                // Emit at most once per call (see args_done_emitted).
+                                if pc.args_done_emitted {
+                                    None
+                                } else {
+                                    pc.args_done_emitted = true;
+                                    Some((pc.call_id.clone(), pc.args_buf.clone()))
+                                }
+                            }
+                            None => Some((item_id.clone(), arguments)),
+                        };
+                        if let Some((call_id, arguments)) = emit {
+                            let _ = tx
+                                .send(AgentEvent::ToolCallArgsDone { call_id, arguments })
+                                .await;
+                        }
                     }
                     ResponseStreamEvent::ReasoningDelta { delta } => {
                         reasoning_text.push_str(&delta);
@@ -783,19 +819,9 @@ impl Agent {
                             .and_then(|m| m.as_str())
                             .unwrap_or("response.failed (no message)")
                             .to_string();
-                        let _ = tx
-                            .send(AgentEvent::Error {
-                                message: message.clone(),
-                            })
-                            .await;
                         return Err(anyhow::anyhow!("response.failed: {message}"));
                     }
                     ResponseStreamEvent::Error { message } => {
-                        let _ = tx
-                            .send(AgentEvent::Error {
-                                message: message.clone(),
-                            })
-                            .await;
                         return Err(anyhow::anyhow!(message));
                     }
                     crate::openai::stream::ResponseStreamEvent::Other { kind } => {
@@ -821,6 +847,7 @@ impl Agent {
                 cwd: self.cwd.clone(),
                 approval: self.approval,
                 session: self.session.clone(),
+                config: self.config.clone(),
             };
 
             // History pushes deferred until after outputs computed (cancel-safety).
@@ -1053,6 +1080,12 @@ impl Agent {
             // Append outputs to history in the original call order so the
             // model sees a deterministic transcript even when completion
             // order shuffled.
+            let should_stop_for_user_question = pending_calls.iter().any(|pc| {
+                pc.name == "ask_user_question"
+                    && results
+                        .iter()
+                        .any(|(id, _, is_err)| id == &pc.call_id && !*is_err)
+            });
             let mut by_id: std::collections::HashMap<String, String> =
                 results.into_iter().map(|(id, out, _)| (id, out)).collect();
             // Record the assistant's narration that preceded the tool calls
@@ -1095,6 +1128,10 @@ impl Agent {
                     todos: todos_snapshot,
                 })
                 .await;
+            if should_stop_for_user_question {
+                let _ = tx.send(AgentEvent::TurnComplete).await;
+                return Ok(());
+            }
             // continue loop to send tool outputs back
         }
     }
@@ -1105,6 +1142,24 @@ struct PendingCall {
     item_id: String,
     name: String,
     args_buf: String,
+    /// Whether a `ToolCallArgsDone` has already been emitted for this call.
+    /// OpenAI sends both `function_call_arguments.done` and
+    /// `output_item.done` carrying the full args, so without this guard the
+    /// event fires twice (e.g. `chat` text mode prints the `args:` line twice).
+    args_done_emitted: bool,
+}
+
+fn function_call_ids(call_id: &str, item_id: &str) -> Option<(String, String)> {
+    if call_id.is_empty() && item_id.is_empty() {
+        return None;
+    }
+    let item_id = item_id.to_string();
+    let call_id = if call_id.is_empty() {
+        item_id.clone()
+    } else {
+        call_id.to_string()
+    };
+    Some((call_id, item_id))
 }
 
 async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, model: &str) {
@@ -1374,5 +1429,31 @@ mod compaction_tests {
         assert!(!should_compact(0));
         assert!(!should_compact(COMPACT_MIN_ITEMS));
         assert!(should_compact(COMPACT_MIN_ITEMS + 1));
+    }
+}
+
+#[cfg(test)]
+mod function_call_id_tests {
+    use super::function_call_ids;
+
+    #[test]
+    fn uses_item_id_when_call_id_is_missing() {
+        assert_eq!(
+            function_call_ids("", "item_123"),
+            Some(("item_123".to_string(), "item_123".to_string()))
+        );
+    }
+
+    #[test]
+    fn keeps_provider_call_id_when_present() {
+        assert_eq!(
+            function_call_ids("call_123", "item_123"),
+            Some(("call_123".to_string(), "item_123".to_string()))
+        );
+    }
+
+    #[test]
+    fn rejects_events_with_no_usable_id() {
+        assert_eq!(function_call_ids("", ""), None);
     }
 }

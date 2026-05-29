@@ -135,6 +135,10 @@ pub struct UndoEntry {
     /// an editor save) we refuse to restore so the user's manual changes
     /// are not silently overwritten. `None` disables the check.
     pub post_edit_mtime: Option<std::time::SystemTime>,
+    /// File size snapshot captured alongside `post_edit_mtime`. Compared too
+    /// at undo time so a same-second external edit (which a coarse 1s-resolution
+    /// mtime can't distinguish) is still caught whenever it changes the length.
+    pub post_edit_size: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -161,6 +165,7 @@ pub struct ToolContext {
     pub cwd: std::path::PathBuf,
     pub approval: ApprovalMode,
     pub session: Arc<Mutex<SessionState>>,
+    pub config: crate::config::Config,
 }
 
 impl ToolContext {
@@ -171,6 +176,7 @@ impl ToolContext {
             cwd,
             approval,
             session: Arc::new(Mutex::new(SessionState::default())),
+            config: crate::config::Config::default(),
         }
     }
 }
@@ -234,17 +240,20 @@ impl Registry {
     /// Build a registry that contains only the named built-in tools.
     ///
     /// - An empty list, or one containing `"*"`, returns `Self::standard()`
-    ///   minus `dispatch_agent` (subagents must not recurse into themselves).
+    ///   minus tools that cannot run coherently inside subagents.
     /// - Unknown names are silently skipped — the caller (typically the
     ///   `dispatch_agent` tool) is expected to surface a useful error if the
     ///   subagent file references a non-existent tool.
     /// - `dispatch_agent` is always stripped so a sub-agent can never spawn
     ///   another sub-agent (avoids unbounded fan-out and recursive cost).
+    /// - `ask_user_question` is always stripped because sub-agents have no UI
+    ///   channel for a follow-up answer from the user.
     pub fn filtered(allowed: &[String]) -> Self {
         let wildcard = allowed.is_empty() || allowed.iter().any(|t| t == "*");
         if wildcard {
             let mut s = Self::standard();
-            s.tools.retain(|t| t.name() != "dispatch_agent");
+            s.tools
+                .retain(|t| !matches!(t.name(), "dispatch_agent" | "ask_user_question"));
             return s;
         }
         let mut tools: Vec<Box<dyn BuiltinTool>> = Vec::new();
@@ -254,10 +263,9 @@ impl Registry {
                 tracing::warn!(tool = %name, "subagent referenced unknown tool; skipping");
                 continue;
             };
-            // `dispatch_agent` (and its Claude Code alias `Task`) canonicalise
-            // to the dispatch tool, which is always stripped so sub-agents
-            // cannot recurse.
-            if canon == "dispatch_agent" {
+            // Tools that need parent-level orchestration are stripped from
+            // sub-agents even when explicitly whitelisted.
+            if matches!(canon, "dispatch_agent" | "ask_user_question") {
                 continue;
             }
             // Dedup: aliases that canonicalise to the same built-in (e.g.
@@ -362,6 +370,13 @@ mod registry_tests {
         let n = names(&reg);
         assert!(n.contains(&"skill"));
         assert!(!n.contains(&"dispatch_agent"));
+        assert!(!n.contains(&"ask_user_question"));
+    }
+
+    #[test]
+    fn filtered_strips_user_prompt_tool_from_subagents() {
+        let reg = Registry::filtered(&["ask_user_question".into(), "Read".into()]);
+        assert_eq!(names(&reg), vec!["read_file"]);
     }
 
     #[test]
@@ -369,5 +384,36 @@ mod registry_tests {
         let n = names(&Registry::standard());
         assert!(n.contains(&"skill"));
         assert!(n.contains(&"dispatch_agent"));
+    }
+
+    #[test]
+    fn standard_tool_definitions_use_portable_function_names() {
+        for def in Registry::standard().definitions() {
+            let crate::openai::Tool::Function(f) = def else {
+                continue;
+            };
+            assert!(
+                !f.name.is_empty() && f.name.len() <= 64,
+                "bad tool name length: {}",
+                f.name
+            );
+            assert!(
+                f.name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')),
+                "non-portable tool name: {}",
+                f.name
+            );
+            assert!(
+                f.parameters.get("type").and_then(|v| v.as_str()) == Some("object"),
+                "tool schema root must be object: {}",
+                f.name
+            );
+            assert!(
+                f.parameters.get("additionalProperties").is_some(),
+                "tool schema must state additionalProperties: {}",
+                f.name
+            );
+        }
     }
 }

@@ -15,8 +15,8 @@
 //!   - `"*"`          — matches anything
 //!   - `"run_shell"`  — exact tool name (PreToolUse/PostToolUse only)
 //!   - `"re:^edit_"` — regex match on tool name
-//!   - `"file:**/*.rs"` — file-path glob (matched against `path`/`file_path`
-//!     fields in the args/result JSON; useful for write_file/edit_file).
+//!   - `"file:**/*.rs"` — file-path glob (matched against `path`/`file_path`/
+//!     `notebook_path` fields in the args/result JSON; useful for file tools).
 //!
 //! Format (settings.json):
 //! ```json
@@ -40,6 +40,32 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+
+#[cfg(unix)]
+fn isolate_process_group(cmd: &mut Command) {
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_cmd: &mut Command) {}
+
+#[cfg(unix)]
+fn kill_process_group(pid: Option<u32>) {
+    const SIGKILL: i32 = 9;
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+
+    let Some(pid) = pid.and_then(|p| i32::try_from(p).ok()) else {
+        return;
+    };
+    unsafe {
+        let _ = kill(-pid, SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: Option<u32>) {}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct HooksConfig {
@@ -104,7 +130,7 @@ pub fn load() -> HookSet {
 /// only `"*"` matches).
 ///
 /// `path_hint`, when Some, is also considered for the `file:<glob>` matcher
-/// (we check args for `path`/`file_path`).
+/// (we check args for `path`/`file_path`/`notebook_path`).
 pub fn matches(matcher: &str, key: &str, path_hint: Option<&str>) -> bool {
     if matcher == "*" {
         return true;
@@ -132,40 +158,43 @@ pub fn matches(matcher: &str, key: &str, path_hint: Option<&str>) -> bool {
 /// path segment, `?` matches a single char. Good enough for the typical
 /// `**/*.rs` patterns; sidesteps adding the `glob` crate as a hard dep.
 pub fn glob_match(pattern: &str, path: &str) -> bool {
-    fn helper(p: &[u8], s: &[u8]) -> bool {
-        let mut pi = 0;
-        let mut si = 0;
-        let (mut star_p, mut star_s): (Option<usize>, usize) = (None, 0);
-        while si < s.len() {
-            if pi < p.len() && (p[pi] == s[si] || p[pi] == b'?') {
-                pi += 1;
-                si += 1;
-                continue;
-            }
-            if pi < p.len() && p[pi] == b'*' {
-                // Handle `**` as same as `*` for this simple matcher.
-                while pi + 1 < p.len() && p[pi + 1] == b'*' {
-                    pi += 1;
-                }
-                star_p = Some(pi);
-                star_s = si;
-                pi += 1;
-                continue;
-            }
-            if let Some(sp) = star_p {
-                pi = sp + 1;
-                star_s += 1;
-                si = star_s;
-                continue;
-            }
-            return false;
+    fn push_literal(out: &mut String, ch: char) {
+        if matches!(
+            ch,
+            '.' | '+' | '(' | ')' | '|' | '^' | '$' | '{' | '}' | '[' | ']' | '\\'
+        ) {
+            out.push('\\');
         }
-        while pi < p.len() && p[pi] == b'*' {
-            pi += 1;
-        }
-        pi == p.len()
+        out.push(ch);
     }
-    helper(pattern.as_bytes(), path.as_bytes())
+
+    let pattern = pattern.replace('\\', "/");
+    let path = path.replace('\\', "/");
+    let mut regex = String::from("^");
+    let mut chars = pattern.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '*' if chars.peek() == Some(&'*') => {
+                while chars.peek() == Some(&'*') {
+                    chars.next();
+                }
+                if chars.peek() == Some(&'/') {
+                    chars.next();
+                    regex.push_str("(?:.*/)?");
+                } else {
+                    regex.push_str(".*");
+                }
+            }
+            '*' => regex.push_str("[^/]*"),
+            '?' => regex.push_str("[^/]"),
+            '/' => regex.push('/'),
+            other => push_literal(&mut regex, other),
+        }
+    }
+    regex.push('$');
+    regex::Regex::new(&regex)
+        .map(|re| re.is_match(&path))
+        .unwrap_or(false)
 }
 
 impl HookSet {
@@ -183,6 +212,7 @@ impl HookSet {
     fn path_hint_from_args(args: &Value) -> Option<String> {
         args.get("path")
             .or_else(|| args.get("file_path"))
+            .or_else(|| args.get("notebook_path"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     }
@@ -298,21 +328,40 @@ impl HookSet {
 /// Run a hook command via `sh -c`, write the JSON payload to its stdin, and
 /// return the exit code + captured stdout. Times out at 30 seconds.
 async fn run_hook(command: &str, payload: &Value) -> Result<(i32, String)> {
-    let mut child = Command::new("sh")
-        .arg("-c")
+    run_hook_with_timeout(command, payload, Duration::from_secs(30)).await
+}
+
+async fn run_hook_with_timeout(
+    command: &str,
+    payload: &Value,
+    timeout: Duration,
+) -> Result<(i32, String)> {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
         .arg(command)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
+        .kill_on_drop(true);
+    isolate_process_group(&mut cmd);
+
+    let mut child = cmd.spawn()?;
+    let child_pid = child.id();
     if let Some(mut stdin) = child.stdin.take() {
         let bytes = serde_json::to_vec(payload).unwrap_or_default();
         let _ = stdin.write_all(&bytes).await;
         let _ = stdin.flush().await;
         drop(stdin);
     }
-    let out = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output()).await??;
+    let wait = child.wait_with_output();
+    let out = match tokio::time::timeout(timeout, wait).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(e.into()),
+        Err(e) => {
+            kill_process_group(child_pid);
+            return Err(e.into());
+        }
+    };
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let code = out.status.code().unwrap_or(-1);
     Ok((code, stdout))
@@ -342,17 +391,64 @@ mod tests {
     fn matches_file_glob_against_path_hint() {
         assert!(matches("file:**/*.rs", "edit_file", Some("src/foo.rs")));
         assert!(matches("file:**/*.rs", "edit_file", Some("a/b/c.rs")));
+        assert!(matches("file:**/*.rs", "edit_file", Some("main.rs")));
         assert!(!matches("file:**/*.rs", "edit_file", Some("src/foo.ts")));
         assert!(!matches("file:**/*.rs", "edit_file", None));
+    }
+
+    #[test]
+    fn path_hint_from_args_includes_notebook_path() {
+        let args = serde_json::json!({
+            "notebook_path": "analysis/demo.ipynb",
+            "edit_mode": "replace"
+        });
+
+        assert_eq!(
+            HookSet::path_hint_from_args(&args).as_deref(),
+            Some("analysis/demo.ipynb")
+        );
     }
 
     #[test]
     fn glob_match_basic() {
         assert!(glob_match("*.rs", "main.rs"));
         assert!(glob_match("src/*.rs", "src/lib.rs"));
+        assert!(!glob_match("*.rs", "src/main.rs"));
+        assert!(glob_match("**/*.rs", "main.rs"));
         assert!(glob_match("**/*.rs", "deep/nested/file.rs"));
         assert!(!glob_match("*.rs", "main.ts"));
         assert!(glob_match("?ello", "hello"));
         assert!(!glob_match("?ello", "yyello"));
+    }
+
+    #[cfg(unix)]
+    fn sh_quote(path: &std::path::Path) -> String {
+        format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_hook_timeout_kills_background_descendants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("survived-hook-timeout");
+        let command = format!(
+            "(sleep 0.5; printf survived > {}) & wait",
+            sh_quote(&marker)
+        );
+
+        let err = run_hook_with_timeout(
+            &command,
+            &serde_json::json!({"hook": "test"}),
+            Duration::from_millis(80),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("elapsed"), "got: {err}");
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        assert!(
+            !marker.exists(),
+            "hook timeout killed only the shell; a background descendant survived"
+        );
     }
 }

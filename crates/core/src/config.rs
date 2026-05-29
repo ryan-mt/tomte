@@ -1,8 +1,14 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 const CONFIG_DIR_NAME: &str = "opencli";
+static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+pub const VALID_REASONING_EFFORTS: &[&str] =
+    &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub const VALID_VERBOSITIES: &[&str] = &["low", "medium", "high"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -114,9 +120,31 @@ pub fn save(cfg: &Config) -> std::io::Result<()> {
     // Atomic write: a SIGKILL between truncate and write previously left
     // config.json empty, silently resetting all settings on next launch.
     let path = config_file();
-    let tmp = path.with_extension("tmp");
+    let tmp = unique_tmp_path(&path);
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, &path)
+}
+
+pub fn normalize_reasoning_effort(value: &str) -> Option<String> {
+    normalize_enum_value(value, VALID_REASONING_EFFORTS)
+}
+
+pub fn normalize_verbosity(value: &str) -> Option<String> {
+    normalize_enum_value(value, VALID_VERBOSITIES)
+}
+
+fn normalize_enum_value(value: &str, allowed: &[&str]) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    allowed.contains(&normalized.as_str()).then_some(normalized)
+}
+
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = SAVE_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("tmp.{}.{}.{}", std::process::id(), now, seq))
 }
 
 /// `max` is the heaviest adaptive-thinking tier on Anthropic and is
@@ -173,18 +201,41 @@ mod tests {
     }
 
     #[test]
+    fn save_temp_paths_are_unique() {
+        let path = PathBuf::from("config.json");
+        assert_ne!(unique_tmp_path(&path), unique_tmp_path(&path));
+    }
+
+    #[test]
     fn migrate_legacy_model_name_passes_through_new_names() {
         for name in [
             "gpt-5.5",
             "gpt-5.4",
             "gpt-5.3",
             "gpt-5-pro",
-            "gpt-5-codex",
             "gpt-5-mini",
             "gpt-5-nano",
             "o3",
         ] {
             assert_eq!(migrate_legacy_model_name(name), name);
         }
+    }
+
+    #[test]
+    fn normalizes_reasoning_effort_at_boundaries() {
+        assert_eq!(normalize_reasoning_effort(" HIGH "), Some("high".into()));
+        assert_eq!(
+            normalize_reasoning_effort("minimal"),
+            Some("minimal".into())
+        );
+        assert_eq!(normalize_reasoning_effort("max"), Some("max".into()));
+        assert_eq!(normalize_reasoning_effort("definitely-not-valid"), None);
+    }
+
+    #[test]
+    fn normalizes_verbosity_at_boundaries() {
+        assert_eq!(normalize_verbosity(" LOW "), Some("low".into()));
+        assert_eq!(normalize_verbosity("medium"), Some("medium".into()));
+        assert_eq!(normalize_verbosity("xhigh"), None);
     }
 }

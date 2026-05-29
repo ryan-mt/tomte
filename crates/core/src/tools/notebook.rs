@@ -101,6 +101,7 @@ Parameters:\n\
                     .as_object_mut()
                     .ok_or_else(|| anyhow!("cell {idx} is not an object"))?;
                 if let Some(ct) = &a.cell_type {
+                    validate_cell_type(ct)?;
                     cell.insert("cell_type".into(), json!(ct));
                 }
                 cell.insert("source".into(), to_source_lines(&a.new_source));
@@ -119,9 +120,7 @@ Parameters:\n\
                     .cell_type
                     .as_deref()
                     .ok_or_else(|| anyhow!("edit_mode `insert` requires cell_type"))?;
-                if ct != "code" && ct != "markdown" {
-                    return Err(anyhow!("cell_type must be `code` or `markdown`"));
-                }
+                validate_cell_type(ct)?;
                 let at = match a.cell_id.as_deref().filter(|s| !s.is_empty()) {
                     None => 0,
                     Some(cid) => find_cell_index(cells, cid)
@@ -164,11 +163,12 @@ Parameters:\n\
             .await
             .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
 
-        let post_edit_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let (post_edit_mtime, post_edit_size) = super::fs::snapshot_meta(&path);
         ctx.session.lock().await.push_undo_entry(UndoEntry {
             path: path.clone(),
             original_content: Some(original.into_bytes()),
             post_edit_mtime,
+            post_edit_size,
         });
         Ok(msg)
     }
@@ -219,6 +219,14 @@ fn make_cell(cell_type: &str, source: &str) -> Value {
     }
 }
 
+fn validate_cell_type(cell_type: &str) -> Result<()> {
+    if cell_type == "code" || cell_type == "markdown" {
+        Ok(())
+    } else {
+        Err(anyhow!("cell_type must be `code` or `markdown`"))
+    }
+}
+
 fn gen_id() -> String {
     use rand::RngCore;
     let mut b = [0u8; 4];
@@ -238,6 +246,7 @@ mod tests {
             cwd,
             approval: ApprovalMode::Auto,
             session: Arc::new(Mutex::new(SessionState::default())),
+            config: crate::config::Config::default(),
         }
     }
 
@@ -366,5 +375,24 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("nb.ipynb")).unwrap())
                 .unwrap();
         assert_eq!(nb["cells"][0]["source"], json!(["y = 2\n"]));
+    }
+
+    #[tokio::test]
+    async fn replace_rejects_invalid_cell_type() {
+        let dir = tempfile::tempdir().unwrap();
+        write_nb(dir.path()).await;
+        let err = NotebookEdit
+            .execute(
+                json!({"notebook_path": "nb.ipynb", "new_source": "text\n", "cell_id": "aaa", "cell_type": "raw", "edit_mode": "replace"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cell_type must be"), "got: {err}");
+
+        let nb: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("nb.ipynb")).unwrap())
+                .unwrap();
+        assert_eq!(nb["cells"][0]["cell_type"], "code");
     }
 }

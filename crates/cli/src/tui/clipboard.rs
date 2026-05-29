@@ -8,10 +8,13 @@
 //! image attachments and a `[Image #N]` marker is inserted into the input;
 //! text is inserted at the cursor.
 use std::io::Cursor;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{anyhow, Context, Result};
 use arboard::Clipboard;
+
+static CLIPBOARD_IMAGE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub enum PasteResult {
     Image(PathBuf),
@@ -54,7 +57,33 @@ fn save_image(img: arboard::ImageData<'_>) -> Result<PathBuf> {
     let dir = opencli_core::config::config_dir().join("clipboard");
     std::fs::create_dir_all(&dir).ok();
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f").to_string();
-    let path = dir.join(format!("paste-{ts}.png"));
+    let path = clipboard_image_path(&dir, &ts);
     std::fs::write(&path, &png_bytes).context("writing clipboard PNG")?;
     Ok(path)
+}
+
+fn clipboard_image_path(dir: &Path, timestamp: &str) -> PathBuf {
+    let seq = CLIPBOARD_IMAGE_SEQ.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(
+        "paste-{timestamp}-{}-{seq}.png",
+        std::process::id()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_image_paths_are_unique_within_same_millisecond() {
+        let dir = Path::new("/tmp/opencli-clipboard-test");
+        let timestamp = "20260101-000000.000";
+
+        let first = clipboard_image_path(dir, timestamp);
+        let second = clipboard_image_path(dir, timestamp);
+
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), Some(dir));
+        assert_eq!(second.parent(), Some(dir));
+    }
 }

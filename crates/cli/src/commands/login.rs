@@ -186,7 +186,8 @@ fn print_available_models() {
 
 pub async fn status() -> Result<()> {
     let record = auth::load_auth()?;
-    match record.mode {
+    let active_mode = auth::effective_mode_with_env(&record);
+    match active_mode {
         AuthMode::None => println!("Not signed in."),
         AuthMode::OpenaiApiKey => println!("OpenAI: signed in with API key."),
         AuthMode::OpenaiOauth => {
@@ -202,11 +203,17 @@ pub async fn status() -> Result<()> {
             println!("Anthropic: signed in with Claude Pro/Max OAuth.");
         }
     }
-    if record.anthropic_tokens.is_some() && !matches!(record.mode, AuthMode::AnthropicOauth) {
+    if auth::has_anthropic_oauth(&record) && !matches!(active_mode, AuthMode::AnthropicOauth) {
         println!("  (Anthropic OAuth token is also stored)");
     }
-    if record.anthropic_api_key.is_some() && !matches!(record.mode, AuthMode::AnthropicApiKey) {
+    if auth::has_anthropic_api_key(&record) && !matches!(active_mode, AuthMode::AnthropicApiKey) {
         println!("  (Anthropic API key is also stored)");
+    }
+    if auth::has_openai_oauth(&record) && !matches!(active_mode, AuthMode::OpenaiOauth) {
+        println!("  (OpenAI OAuth token is also stored)");
+    }
+    if auth::has_openai_api_key(&record) && !matches!(active_mode, AuthMode::OpenaiApiKey) {
+        println!("  (OpenAI API key is also stored)");
     }
     print_available_models();
     Ok(())
