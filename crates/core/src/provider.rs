@@ -24,6 +24,33 @@ impl Provider {
         }
     }
 
+    /// Parse a provider id — the left side of a `provider/model` spec.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "openai" => Some(Self::OpenAi),
+            "anthropic" => Some(Self::Anthropic),
+            _ => None,
+        }
+    }
+
+    /// Resolve a model spec into its provider and the bare model id used on the
+    /// wire. Accepts an explicit `provider/model` form (e.g.
+    /// `anthropic/claude-opus-4-8`): when the prefix names a known provider it
+    /// is authoritative and stripped from the id. A bare id — no slash, or an
+    /// unrecognised prefix — falls back to [`Provider::from_model`] heuristics
+    /// and is returned unchanged. Lets the configured `model` be either form
+    /// without breaking the existing bare-id configs.
+    pub fn parse_model(spec: &str) -> (Self, String) {
+        if let Some((prefix, rest)) = spec.split_once('/') {
+            if let Some(provider) = Self::from_name(prefix) {
+                if !rest.is_empty() {
+                    return (provider, rest.to_string());
+                }
+            }
+        }
+        (Self::from_model(spec), spec.to_string())
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
@@ -76,6 +103,36 @@ mod tests {
         assert_eq!(Provider::from_model("gpt-5"), Provider::OpenAi);
         assert_eq!(Provider::from_model("o3"), Provider::OpenAi);
         assert_eq!(Provider::from_model(""), Provider::OpenAi);
+    }
+
+    #[test]
+    fn parse_model_honours_explicit_provider_prefix() {
+        assert_eq!(
+            Provider::parse_model("anthropic/claude-opus-4-8"),
+            (Provider::Anthropic, "claude-opus-4-8".to_string())
+        );
+        assert_eq!(
+            Provider::parse_model("openai/gpt-5.5"),
+            (Provider::OpenAi, "gpt-5.5".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_model_falls_back_for_bare_and_unknown_prefixes() {
+        // Bare id keeps working via the heuristic, returned unchanged.
+        assert_eq!(
+            Provider::parse_model("claude-opus-4-8"),
+            (Provider::Anthropic, "claude-opus-4-8".to_string())
+        );
+        assert_eq!(
+            Provider::parse_model("gpt-5.5"),
+            (Provider::OpenAi, "gpt-5.5".to_string())
+        );
+        // Unknown prefix (e.g. a path-like id) is not treated as a provider.
+        assert_eq!(
+            Provider::parse_model("lmstudio/google/gemma"),
+            (Provider::OpenAi, "lmstudio/google/gemma".to_string())
+        );
     }
 
     #[test]

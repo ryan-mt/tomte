@@ -27,7 +27,9 @@ pub async fn run(
 
     let mut cfg = config::load();
     if let Some(m) = model {
-        cfg.model = m;
+        // Accept an explicit `provider/model` spec from --model; store the bare
+        // wire id (matches how config.json values are normalised on load).
+        cfg.model = Provider::parse_model(&m).1;
     }
     if let Some(r) = reasoning {
         let Some(r) = config::normalize_reasoning_effort(&r) else {

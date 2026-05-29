@@ -99,15 +99,18 @@ pub fn load() -> Config {
         },
         Err(_) => Config::default(),
     };
-    // Auto-upgrade legacy placeholder model names from earlier opencli builds.
-    let migrated = migrate_legacy_model_name(&cfg.model);
-    if migrated != cfg.model {
+    // Normalise the configured model: accept an explicit `provider/model` spec
+    // (strip the prefix to the bare wire id used everywhere downstream), then
+    // auto-upgrade legacy placeholder names from earlier opencli builds.
+    let (_, bare) = crate::provider::Provider::parse_model(&cfg.model);
+    let normalized = migrate_legacy_model_name(&bare);
+    if normalized != cfg.model {
         tracing::info!(
             old = %cfg.model,
-            new = %migrated,
-            "migrating legacy model name in config.json"
+            new = %normalized,
+            "normalizing model name in config.json"
         );
-        cfg.model = migrated;
+        cfg.model = normalized;
     }
     cfg
 }

@@ -1540,12 +1540,15 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 app.chain_to_effort = true;
                 app.open_overlay(OverlayKind::ModelPicker);
             } else {
-                app.config.model = arg.to_string();
+                // Accept an explicit `provider/model` spec; store the bare wire
+                // id used everywhere downstream.
+                let model = Provider::parse_model(arg).1;
+                app.config.model = model.clone();
                 if let Err(e) = config::save(&app.config) {
                     app.blocks
                         .push(Block::System(format!("config save failed: {e}")));
                 }
-                app.blocks.push(Block::System(format!("model → {arg}")));
+                app.blocks.push(Block::System(format!("model → {model}")));
             }
         }
         "effort" | "thinking" => {
