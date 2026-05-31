@@ -590,7 +590,7 @@ fn canonical_tool_name(name: &str) -> Option<&'static str> {
         }
         "grep" => Some("grep"),
         "glob" => Some("glob"),
-        "run_shell" | "runshell" | "bash" | "shell" => Some("run_shell"),
+        "run_shell" | "runshell" | "bash" | "shell" | "powershell" | "pwsh" => Some("run_shell"),
         "bash_output" | "bashoutput" => Some("bash_output"),
         "kill_shell" | "killshell" => Some("kill_shell"),
         "todo_write" | "todowrite" => Some("todo_write"),
@@ -669,6 +669,8 @@ mod registry_tests {
             ("Grep", "grep"),
             ("Glob", "glob"),
             ("Bash", "run_shell"),
+            ("PowerShell", "run_shell"),
+            ("pwsh", "run_shell"),
             ("RunShell", "run_shell"),
             ("BashOutput", "bash_output"),
             ("KillShell", "kill_shell"),

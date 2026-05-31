@@ -251,6 +251,26 @@ fn isolate_process_group(cmd: &mut Command) {
 #[cfg(not(unix))]
 fn isolate_process_group(_cmd: &mut Command) {}
 
+#[cfg(windows)]
+fn platform_shell_name() -> &'static str {
+    "cmd"
+}
+
+#[cfg(not(windows))]
+fn platform_shell_name() -> &'static str {
+    "sh"
+}
+
+#[cfg(windows)]
+fn configure_platform_shell(cmd: &mut Command, command: &str) {
+    cmd.arg("/C").arg(command);
+}
+
+#[cfg(not(windows))]
+fn configure_platform_shell(cmd: &mut Command, command: &str) {
+    cmd.arg("-c").arg(command);
+}
+
 #[cfg(unix)]
 fn kill_process_group(pid: Option<u32>) {
     const SIGKILL: i32 = 9;
@@ -298,7 +318,7 @@ impl BuiltinTool for RunShell {
         "run_shell"
     }
     fn description(&self) -> &'static str {
-        "Run a shell command via `sh -c` in the working directory. Returns combined exit code, stdout, and stderr in a single string.\n\
+        "Run a command via the platform shell (`sh -c` on Unix, `cmd /C` on Windows) in the working directory. Returns combined exit code, stdout, and stderr in a single string.\n\
 \n\
 When to use:\n\
 - Builds and tests: `cargo build`, `cargo test`, `npm test`, `pytest`, `go test ./...`.\n\
@@ -336,7 +356,7 @@ Common mistakes:\n\
 - Spawning a dev server in foreground — it will hang until timeout. Use background mode.\n\
 \n\
 Parameters:\n\
-- `command`: Shell command to execute. Quote arguments that contain spaces.\n\
+- `command`: Shell command to execute with the platform shell. Quote arguments that contain spaces.\n\
 - `timeout_ms`: Foreground hard timeout in milliseconds, or `null` for the default of 120000. Ignored when `run_in_background` is true.\n\
 - `run_in_background`: When true, spawn detached and return `bash_id` immediately. When false or null, run synchronously and return the full result."
     }
@@ -344,7 +364,7 @@ Parameters:\n\
         json!({
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "Shell command to execute (interpreted by `sh -c`)."},
+                "command": {"type": "string", "description": "Shell command to execute (interpreted by `sh -c` on Unix and `cmd /C` on Windows)."},
                 "timeout_ms": {"type": ["integer", "null"], "description": "Foreground hard timeout in milliseconds; null uses the default of 120000. Ignored in background mode."},
                 "run_in_background": {"type": ["boolean", "null"], "description": "Spawn detached and return bash_id immediately; null/false runs synchronously."},
                 "dangerous_override": {"type": ["boolean", "null"], "description": "Set true ONLY after user explicitly confirmed."}
@@ -361,10 +381,9 @@ Parameters:\n\
             }
             tracing::warn!(command = %a.command, reason, "run_shell.dangerous_override_used");
         }
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c")
-            .arg(&a.command)
-            .current_dir(&ctx.cwd)
+        let mut cmd = Command::new(platform_shell_name());
+        configure_platform_shell(&mut cmd, &a.command);
+        cmd.current_dir(&ctx.cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -792,6 +811,39 @@ mod tests {
         ctx_at(std::env::current_dir().unwrap())
     }
 
+    fn print_command(text: &str) -> String {
+        #[cfg(windows)]
+        {
+            format!("echo {text}")
+        }
+        #[cfg(not(windows))]
+        {
+            format!("printf '{}\\n'", text.replace('\'', "'\\''"))
+        }
+    }
+
+    fn delayed_two_line_command() -> &'static str {
+        #[cfg(windows)]
+        {
+            "echo first & powershell -NoProfile -Command \"Start-Sleep -Milliseconds 200\" & echo second"
+        }
+        #[cfg(not(windows))]
+        {
+            "printf 'first\\n'; sleep 0.2; printf 'second\\n'"
+        }
+    }
+
+    fn long_sleep_command() -> &'static str {
+        #[cfg(windows)]
+        {
+            "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\""
+        }
+        #[cfg(not(windows))]
+        {
+            "sleep 30"
+        }
+    }
+
     #[cfg(unix)]
     fn sh_quote(path: &std::path::Path) -> String {
         format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
@@ -829,7 +881,7 @@ mod tests {
         let out = RunShell
             .execute(
                 json!({
-                    "command": "printf 'hello-bg\\n'",
+                    "command": print_command("hello-bg"),
                     "timeout_ms": null,
                     "run_in_background": true,
                     "dangerous_override": null,
@@ -860,7 +912,7 @@ mod tests {
         let out = RunShell
             .execute(
                 json!({
-                    "command": "printf 'first\\n'; sleep 0.2; printf 'second\\n'",
+                    "command": delayed_two_line_command(),
                     "timeout_ms": null,
                     "run_in_background": true,
                     "dangerous_override": null,
@@ -907,7 +959,7 @@ mod tests {
         let out = RunShell
             .execute(
                 json!({
-                    "command": "printf 'alias-bg\\n'",
+                    "command": print_command("alias-bg"),
                     "timeout_ms": null,
                     "run_in_background": true,
                     "dangerous_override": null,
@@ -942,7 +994,7 @@ mod tests {
         let out = RunShell
             .execute(
                 json!({
-                    "command": "sleep 30",
+                    "command": long_sleep_command(),
                     "timeout_ms": null,
                     "run_in_background": true,
                     "dangerous_override": null,
@@ -977,7 +1029,7 @@ mod tests {
         let out = RunShell
             .execute(
                 json!({
-                    "command": "sleep 30",
+                    "command": long_sleep_command(),
                     "timeout_ms": null,
                     "run_in_background": true,
                     "dangerous_override": null,
@@ -1190,7 +1242,7 @@ mod tests {
         let out = RunShell
             .execute(
                 json!({
-                    "command": "printf shell-ok",
+                    "command": print_command("shell-ok"),
                     "timeout": "5000",
                     "run_in_background": "false",
                     "description": "Print marker"
@@ -1209,7 +1261,7 @@ mod tests {
         let out = RunShell
             .execute(
                 json!({
-                    "cmd": "printf cmd-alias-ok",
+                    "cmd": print_command("cmd-alias-ok"),
                     "timeout_ms": 5000,
                     "run_in_background": false,
                     "dangerous_override": null
@@ -1228,7 +1280,7 @@ mod tests {
         let out = RunShell
             .execute(
                 json!({
-                    "command": "printf camel-shell-ok",
+                    "command": print_command("camel-shell-ok"),
                     "timeoutMs": "5000",
                     "runInBackground": "false",
                     "dangerousOverride": null
