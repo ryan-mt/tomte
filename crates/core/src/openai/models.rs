@@ -62,12 +62,30 @@ pub enum InputItem {
         arguments: String,
     },
     #[serde(rename = "function_call_output")]
-    FunctionCallOutput { call_id: String, output: String },
+    FunctionCallOutput {
+        call_id: String,
+        output: String,
+        /// Internal-only marker so provider adapters that support explicit tool
+        /// errors (Anthropic) can preserve the distinction. Skipped on the
+        /// OpenAI Responses wire because function_call_output does not accept
+        /// an `error` field.
+        #[serde(default, skip_serializing)]
+        error: bool,
+    },
     #[serde(rename = "reasoning")]
     Reasoning {
         id: String,
         #[serde(default)]
         summary: Vec<Value>,
+        /// Anthropic thinking plaintext, kept to replay the block across the
+        /// tool loop. Empty when the model's `display` is `omitted` (4.7/4.8).
+        /// `skip` so the OpenAI Responses wire never serializes it.
+        #[serde(skip)]
+        thinking: Option<String>,
+        /// Anthropic thinking-block signature (opaque encrypted reasoning).
+        /// Required ahead of a replayed `tool_use`. `skip` for the OpenAI path.
+        #[serde(skip)]
+        signature: Option<String>,
     },
 }
 
@@ -165,5 +183,41 @@ impl ResponsesRequest {
             verbosity: Some(v.into()),
         });
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn function_call_output_error_is_internal_only_on_responses_wire() {
+        let req = ResponsesRequest::new(
+            "gpt-5",
+            vec![InputItem::FunctionCallOutput {
+                call_id: "call_1".into(),
+                output: "Error: failed".into(),
+                error: true,
+            }],
+        );
+        let wire = serde_json::to_value(&req).unwrap();
+        assert_eq!(wire["input"][0]["type"], "function_call_output");
+        assert_eq!(wire["input"][0]["call_id"], "call_1");
+        assert_eq!(wire["input"][0]["output"], "Error: failed");
+        assert!(wire["input"][0].get("error").is_none());
+    }
+
+    #[test]
+    fn function_call_output_error_defaults_false_when_missing() {
+        let item: InputItem = serde_json::from_value(serde_json::json!({
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": "ok"
+        }))
+        .unwrap();
+        match item {
+            InputItem::FunctionCallOutput { error, .. } => assert!(!error),
+            other => panic!("expected FunctionCallOutput, got {other:?}"),
+        }
     }
 }

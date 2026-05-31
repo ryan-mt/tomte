@@ -3,9 +3,14 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::agent::AgentEvent;
+
 use super::{BuiltinTool, TodoItem, TodoStatus, ToolContext};
 
 pub struct TodoWrite;
+
+const VERIFICATION_NUDGE_MIN_TODOS: usize = 3;
+const VERIFICATION_NUDGE: &str = "NOTE: You just completed 3+ todo items, but none looked like a verification step. Before writing the final response, run or record a relevant verification step if one is available.";
 
 #[derive(Deserialize)]
 struct TodoWriteArgs {
@@ -16,6 +21,7 @@ struct TodoWriteArgs {
 struct TodoInput {
     content: String,
     status: String,
+    #[serde(alias = "activeForm")]
     active_form: String,
 }
 
@@ -31,8 +37,10 @@ Use this whenever a task has three or more discrete steps, when the user provide
 \n\
 Each entry has:\n\
 - `content`: Imperative form of the task (e.g. \"Run the test suite\").\n\
-- `active_form`: Present-continuous form shown while in progress (e.g. \"Running the test suite\").\n\
+- `activeForm`: Present-continuous form shown while in progress (e.g. \"Running the test suite\"). The legacy `active_form` spelling is also accepted.\n\
 - `status`: One of `pending`, `in_progress`, `completed`. Keep exactly one task `in_progress` at a time. Mark `completed` immediately after finishing; do not batch.\n\
+\n\
+For implementation todo lists with three or more items, include a verification task (tests, build, lint, type-check, or an equivalent project-specific check) before final completion.\n\
 \n\
 Returns a short summary of how many items were stored and how many are still pending."
     }
@@ -47,10 +55,10 @@ Returns a short summary of how many items were stored and how many are still pen
                         "type": "object",
                         "properties": {
                             "content": {"type": "string", "description": "Imperative form of the task."},
-                            "active_form": {"type": "string", "description": "Present-continuous form shown while the task is in progress."},
+                            "activeForm": {"type": "string", "description": "Present-continuous form shown while the task is in progress."},
                             "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Current status."}
                         },
-                        "required": ["content", "active_form", "status"],
+                        "required": ["content", "activeForm", "status"],
                         "additionalProperties": false
                     }
                 }
@@ -59,11 +67,23 @@ Returns a short summary of how many items were stored and how many are still pen
             "additionalProperties": false
         })
     }
+    fn is_read_only(&self) -> bool {
+        true
+    }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: TodoWriteArgs = super::parse_args("todo_write", args)?;
         let mut items: Vec<TodoItem> = Vec::with_capacity(a.todos.len());
         let mut in_progress = 0usize;
         for (i, t) in a.todos.into_iter().enumerate() {
+            if t.content.trim().is_empty() {
+                return Err(anyhow!("todo #{}: content cannot be empty", i + 1));
+            }
+            if t.active_form.trim().is_empty() {
+                return Err(anyhow!(
+                    "todo #{}: active_form/activeForm cannot be empty",
+                    i + 1
+                ));
+            }
             let status = TodoStatus::parse(&t.status).ok_or_else(|| {
                 anyhow!(
                     "todo #{}: invalid status `{}` (expected pending|in_progress|completed)",
@@ -90,10 +110,346 @@ Returns a short summary of how many items were stored and how many are still pen
             .filter(|t| matches!(t.status, TodoStatus::Pending))
             .count();
         let total = items.len();
+        let all_completed = total > 0 && pending == 0 && in_progress == 0;
+        let needs_verification_nudge = needs_verification_nudge(&items, all_completed);
+        if all_completed {
+            if let Some(events) = &ctx.events {
+                let _ = events
+                    .send(AgentEvent::TodosSnapshot {
+                        todos: items.clone(),
+                    })
+                    .await;
+            }
+        }
         let mut session = ctx.session.lock().await;
-        session.todos = items;
+        session.todos = if all_completed { Vec::new() } else { items };
+        if all_completed {
+            let mut message = format!("Completed {total} todo(s); cleared the session todo list");
+            if needs_verification_nudge {
+                message.push_str("\n\n");
+                message.push_str(VERIFICATION_NUDGE);
+            }
+            return Ok(message);
+        }
         Ok(format!(
             "Stored {total} todo(s) — {pending} pending, {in_progress} in progress"
         ))
+    }
+}
+
+fn needs_verification_nudge(items: &[TodoItem], all_completed: bool) -> bool {
+    all_completed
+        && items.len() >= VERIFICATION_NUDGE_MIN_TODOS
+        && !items.iter().any(todo_mentions_verification)
+}
+
+fn todo_mentions_verification(todo: &TodoItem) -> bool {
+    text_mentions_verification(&todo.content) || text_mentions_verification(&todo.active_form)
+}
+
+fn text_mentions_verification(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("verif")
+        || lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| {
+                matches!(
+                    word,
+                    "test"
+                        | "tests"
+                        | "tested"
+                        | "testing"
+                        | "build"
+                        | "builds"
+                        | "built"
+                        | "lint"
+                        | "lints"
+                        | "linting"
+                        | "typecheck"
+                        | "typechecks"
+                        | "typechecking"
+                        | "check"
+                        | "checks"
+                        | "checking"
+                        | "qa"
+                )
+            })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::tools::{ApprovalMode, SessionState};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn ctx() -> ToolContext {
+        ToolContext {
+            cwd: PathBuf::from("/tmp"),
+            approval: ApprovalMode::Auto,
+            require_approval: false,
+            auto_approve_edits: false,
+            session: Arc::new(Mutex::new(SessionState::default())),
+            config: Config::default(),
+            events: None,
+        }
+    }
+
+    #[test]
+    fn parameters_schema_prefers_claude_code_active_form_spelling() {
+        let schema = TodoWrite.parameters_schema();
+        let item = &schema["properties"]["todos"]["items"];
+        assert!(item["properties"].get("activeForm").is_some());
+        assert!(item["properties"].get("active_form").is_none());
+        let required = item["required"].as_array().expect("required array");
+        assert!(required.iter().any(|v| v == "activeForm"));
+        assert!(!required.iter().any(|v| v == "active_form"));
+    }
+
+    #[test]
+    fn todo_write_is_session_only_read_only_for_plan_mode() {
+        assert!(TodoWrite.is_read_only());
+    }
+
+    #[tokio::test]
+    async fn execute_stores_incomplete_todo_list() {
+        let ctx = ctx();
+        let out = TodoWrite
+            .execute(
+                json!({
+                    "todos": [
+                        {
+                            "content": "Read the code",
+                            "active_form": "Reading the code",
+                            "status": "completed"
+                        },
+                        {
+                            "content": "Run tests",
+                            "active_form": "Running tests",
+                            "status": "in_progress"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("todo_write succeeds");
+
+        assert_eq!(out, "Stored 2 todo(s) — 0 pending, 1 in progress");
+        let session = ctx.session.lock().await;
+        assert_eq!(session.todos.len(), 2);
+        assert!(matches!(session.todos[1].status, TodoStatus::InProgress));
+    }
+
+    #[tokio::test]
+    async fn execute_accepts_claude_code_active_form_spelling() {
+        let ctx = ctx();
+        let out = TodoWrite
+            .execute(
+                json!({
+                    "todos": [
+                        {
+                            "content": "Run tests",
+                            "activeForm": "Running tests",
+                            "status": "in_progress"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("todo_write accepts activeForm");
+
+        assert_eq!(out, "Stored 1 todo(s) — 0 pending, 1 in progress");
+        let session = ctx.session.lock().await;
+        assert_eq!(session.todos[0].active_form, "Running tests");
+    }
+
+    #[tokio::test]
+    async fn execute_accepts_common_status_aliases() {
+        let ctx = ctx();
+        let out = TodoWrite
+            .execute(
+                json!({
+                    "todos": [
+                        {
+                            "content": "Read code",
+                            "activeForm": "Reading code",
+                            "status": "done"
+                        },
+                        {
+                            "content": "Run tests",
+                            "activeForm": "Running tests",
+                            "status": "in progress"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("todo_write accepts semantic status aliases");
+
+        assert_eq!(out, "Stored 2 todo(s) — 0 pending, 1 in progress");
+        let session = ctx.session.lock().await;
+        assert!(matches!(session.todos[0].status, TodoStatus::Completed));
+        assert!(matches!(session.todos[1].status, TodoStatus::InProgress));
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_empty_content_or_active_form() {
+        let ctx = ctx();
+        let err = TodoWrite
+            .execute(
+                json!({
+                    "todos": [
+                        {
+                            "content": "",
+                            "activeForm": "Running tests",
+                            "status": "in_progress"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("empty content is rejected");
+        assert!(err.to_string().contains("content cannot be empty"));
+
+        let err = TodoWrite
+            .execute(
+                json!({
+                    "todos": [
+                        {
+                            "content": "Run tests",
+                            "activeForm": " ",
+                            "status": "in_progress"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("empty active form is rejected");
+        assert!(err
+            .to_string()
+            .contains("active_form/activeForm cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn execute_clears_session_todos_when_all_completed() {
+        let mut ctx = ctx();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        ctx.events = Some(tx);
+        {
+            let mut session = ctx.session.lock().await;
+            session.todos.push(TodoItem {
+                content: "Old item".to_string(),
+                status: TodoStatus::InProgress,
+                active_form: "Working old item".to_string(),
+            });
+        }
+
+        let out = TodoWrite
+            .execute(
+                json!({
+                    "todos": [
+                        {
+                            "content": "Read the code",
+                            "active_form": "Reading the code",
+                            "status": "completed"
+                        },
+                        {
+                            "content": "Run tests",
+                            "active_form": "Running tests",
+                            "status": "completed"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("todo_write succeeds");
+
+        assert_eq!(out, "Completed 2 todo(s); cleared the session todo list");
+        match rx.recv().await.expect("completed snapshot event") {
+            AgentEvent::TodosSnapshot { todos } => {
+                assert_eq!(todos.len(), 2);
+                assert!(todos
+                    .iter()
+                    .all(|todo| matches!(todo.status, TodoStatus::Completed)));
+            }
+            other => panic!("expected todos snapshot, got {other:?}"),
+        }
+        let session = ctx.session.lock().await;
+        assert!(session.todos.is_empty());
+    }
+
+    #[tokio::test]
+    async fn execute_nudges_when_large_completed_list_has_no_verification_step() {
+        let ctx = ctx();
+        let out = TodoWrite
+            .execute(
+                json!({
+                    "todos": [
+                        {
+                            "content": "Read the code",
+                            "activeForm": "Reading the code",
+                            "status": "completed"
+                        },
+                        {
+                            "content": "Patch the parser",
+                            "activeForm": "Patching the parser",
+                            "status": "completed"
+                        },
+                        {
+                            "content": "Update the UI",
+                            "activeForm": "Updating the UI",
+                            "status": "completed"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("todo_write succeeds");
+
+        assert!(out.contains("Completed 3 todo(s)"));
+        assert!(out.contains("verification step"));
+        let session = ctx.session.lock().await;
+        assert!(session.todos.is_empty());
+    }
+
+    #[tokio::test]
+    async fn execute_skips_verification_nudge_when_completed_list_has_test_step() {
+        let ctx = ctx();
+        let out = TodoWrite
+            .execute(
+                json!({
+                    "todos": [
+                        {
+                            "content": "Read the code",
+                            "activeForm": "Reading the code",
+                            "status": "completed"
+                        },
+                        {
+                            "content": "Patch the parser",
+                            "activeForm": "Patching the parser",
+                            "status": "completed"
+                        },
+                        {
+                            "content": "Run tests",
+                            "activeForm": "Running tests",
+                            "status": "completed"
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("todo_write succeeds");
+
+        assert_eq!(out, "Completed 3 todo(s); cleared the session todo list");
     }
 }

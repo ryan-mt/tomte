@@ -57,6 +57,29 @@ impl TextInput {
         }
     }
 
+    /// Jump the cursor to the very start of the message (Ctrl+A). Distinct from
+    /// `move_home`, which stops at the start of the current line.
+    pub fn move_to_start(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// Delete from the cursor to the end of the current line (Ctrl+K). When the
+    /// cursor already sits at the line end, consume the trailing newline instead
+    /// so repeated presses remove the message one line at a time rather than
+    /// clearing everything at once.
+    pub fn kill_to_line_end(&mut self) {
+        let rest = &self.buffer[self.cursor..];
+        let end = match rest.find('\n') {
+            Some(0) => 1,       // at the line end: drop the newline
+            Some(i) => i,       // up to (not including) the newline
+            None => rest.len(), // last line: to the end of the buffer
+        };
+        if end > 0 {
+            self.buffer
+                .replace_range(self.cursor..self.cursor + end, "");
+        }
+    }
+
     pub fn move_left(&mut self) {
         if self.cursor == 0 {
             return;
@@ -180,4 +203,50 @@ fn col_to_byte(line: &str, target_col: usize) -> usize {
         col += w;
     }
     line.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TextInput;
+
+    fn at(buffer: &str, cursor: usize) -> TextInput {
+        TextInput {
+            buffer: buffer.to_string(),
+            cursor,
+        }
+    }
+
+    #[test]
+    fn move_to_start_jumps_past_lines() {
+        let mut i = at("ab\ncd", 5);
+        i.move_to_start();
+        assert_eq!(i.cursor, 0);
+    }
+
+    #[test]
+    fn kill_to_line_end_clears_only_the_line_then_the_newline() {
+        // First press kills the line content but keeps the newline…
+        let mut i = at("hello\nworld", 0);
+        i.kill_to_line_end();
+        assert_eq!(i.buffer, "\nworld");
+        assert_eq!(i.cursor, 0);
+        // …a second press removes the now-empty line — line by line, not all.
+        i.kill_to_line_end();
+        assert_eq!(i.buffer, "world");
+    }
+
+    #[test]
+    fn kill_to_line_end_from_mid_line() {
+        let mut i = at("abc", 1);
+        i.kill_to_line_end();
+        assert_eq!(i.buffer, "a");
+        assert_eq!(i.cursor, 1);
+    }
+
+    #[test]
+    fn kill_to_line_end_at_buffer_end_is_noop() {
+        let mut i = at("abc", 3);
+        i.kill_to_line_end();
+        assert_eq!(i.buffer, "abc");
+    }
 }

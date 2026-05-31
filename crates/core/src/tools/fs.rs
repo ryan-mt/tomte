@@ -14,6 +14,29 @@ fn rand_suffix() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
 }
 
+pub(super) async fn atomic_write_preserving_permissions(
+    path: &std::path::Path,
+    tmp: &std::path::Path,
+    bytes: &[u8],
+) -> Result<()> {
+    let permissions = tokio::fs::metadata(path)
+        .await
+        .ok()
+        .map(|meta| meta.permissions());
+    tokio::fs::write(tmp, bytes)
+        .await
+        .with_context(|| format!("write temp {}", tmp.display()))?;
+    if let Some(permissions) = permissions {
+        tokio::fs::set_permissions(tmp, permissions)
+            .await
+            .with_context(|| format!("set permissions on temp {}", tmp.display()))?;
+    }
+    tokio::fs::rename(tmp, path)
+        .await
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
 pub struct ReadFile;
 pub struct WriteFile;
 pub struct EditFile;
@@ -21,10 +44,11 @@ pub struct ListDir;
 
 #[derive(Deserialize)]
 struct ReadArgs {
+    #[serde(alias = "file_path", alias = "filePath")]
     path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::deserialize_optional_usize")]
     offset: Option<usize>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::deserialize_optional_usize")]
     limit: Option<usize>,
 }
 
@@ -95,6 +119,12 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         let meta = tokio::fs::metadata(&path)
             .await
             .with_context(|| format!("stat {}", path.display()))?;
+        // Record that this file was read this session so write_file/edit_file
+        // can refuse to clobber a file the model never looked at. Keyed on the
+        // canonical resolved path so later write/edit lookups match regardless
+        // of how the path was spelled. Recorded for every read variant (full,
+        // slice, empty, large) since they all pass through here first.
+        ctx.session.lock().await.read_files.insert(path.clone());
         if a.limit == Some(0) {
             return Err(anyhow!("limit must be greater than 0"));
         }
@@ -113,9 +143,19 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         if meta.len() > MAX_BYTES {
             return read_large_text_slice(&path, &a.path, start, effective_limit, MAX_LINE_CHARS);
         }
-        let text = tokio::fs::read_to_string(&path)
+        let bytes = tokio::fs::read(&path)
             .await
             .with_context(|| format!("read {}", path.display()))?;
+        let text = match String::from_utf8(bytes) {
+            Ok(t) => t,
+            Err(e) => {
+                // Non-UTF-8: an image, PDF, or other binary. read_file can't
+                // render it as text, so return an informative summary instead
+                // of a cryptic decode error. The file is already recorded as
+                // read above, so write_file may overwrite it if intended.
+                return Ok(describe_binary(&a.path, e.as_bytes()));
+            }
+        };
         if text.is_empty() {
             return Ok(format!(
                 "<system-reminder>The file `{}` exists but is empty.</system-reminder>\n",
@@ -143,6 +183,47 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
             ));
         }
         Ok(out)
+    }
+}
+
+/// One-line summary for a binary file that `read_file` can't show as text —
+/// the kind (sniffed from magic bytes) and size, plus how to view an image.
+fn describe_binary(display_path: &str, bytes: &[u8]) -> String {
+    let kind = sniff_binary_kind(bytes);
+    let is_image = matches!(
+        kind,
+        "PNG image" | "JPEG image" | "GIF image" | "WebP image"
+    );
+    let hint = if is_image {
+        " To have the model see it, attach it with /img."
+    } else {
+        ""
+    };
+    format!(
+        "<system-reminder>`{}` is a {} ({} bytes); read_file shows text only, not its contents. \
+         It is recorded as read, so write_file may overwrite it if you intend to replace it.{}</system-reminder>\n",
+        display_path,
+        kind,
+        bytes.len(),
+        hint
+    )
+}
+
+/// Best-effort binary type from leading magic bytes (more reliable than the
+/// extension). Falls back to a generic label.
+fn sniff_binary_kind(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "PNG image"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "JPEG image"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "GIF image"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "WebP image"
+    } else if bytes.starts_with(b"%PDF-") {
+        "PDF document"
+    } else {
+        "binary file"
     }
 }
 
@@ -246,7 +327,9 @@ fn bytes_to_line(bytes: &[u8], was_byte_truncated: bool) -> Result<String> {
 
 #[derive(Deserialize)]
 struct WriteArgs {
+    #[serde(alias = "file_path", alias = "filePath")]
     path: String,
+    #[serde(alias = "contents", alias = "text")]
     content: String,
 }
 
@@ -265,6 +348,8 @@ When to use:\n\
 When NOT to use:\n\
 - DO NOT use this to modify an existing file. Use `edit_file` (for one change) or `multi_edit` (for several) so you don't silently destroy unrelated code.\n\
 - Don't use this to append; read + edit_file, or read + write_file with the combined content.\n\
+\n\
+Safety: overwriting an EXISTING file is refused unless you read it first this session (new files need no read), so you can't discard content you never saw.\n\
 \n\
 Common mistakes:\n\
 - Treating this as a faster alternative to `edit_file` — it isn't; it's a complete overwrite.\n\
@@ -312,6 +397,16 @@ Parameters:\n\
                 path.display()
             ));
         }
+        // Read-before-overwrite safety: refuse to replace an EXISTING file the
+        // model hasn't read this session, so it can't silently discard content
+        // it never saw. Creating a new file (no existing_meta) needs no read.
+        if existing_meta.is_some() && !ctx.session.lock().await.read_files.contains(&path) {
+            return Err(anyhow!(
+                "write_file refuses to overwrite {} because it was not read this session. \
+                 Call read_file on it first so you don't discard unseen content (or use edit_file for a targeted change).",
+                path.display()
+            ));
+        }
         // Snapshot prior contents as RAW BYTES, not UTF-8: a binary file that
         // exists must be restorable on undo. If an existing file cannot be
         // read, fail before overwriting — otherwise undo would treat it as a
@@ -331,19 +426,21 @@ Parameters:\n\
                 .with_context(|| format!("create parent dirs for {}", parent.display()))?;
         }
         let tmp = path.with_extension(format!("write-{}.tmp", rand_suffix()));
-        tokio::fs::write(&tmp, a.content.as_bytes())
-            .await
-            .with_context(|| format!("write temp {}", tmp.display()))?;
-        tokio::fs::rename(&tmp, &path)
-            .await
-            .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+        atomic_write_preserving_permissions(&path, &tmp, a.content.as_bytes()).await?;
         let (post_edit_mtime, post_edit_size) = snapshot_meta(&path);
-        ctx.session.lock().await.push_undo_entry(super::UndoEntry {
-            path: path.clone(),
-            original_content: original,
-            post_edit_mtime,
-            post_edit_size,
-        });
+        {
+            // A freshly written file counts as "read" so a follow-up edit_file
+            // doesn't spuriously demand a read_file of bytes the model just
+            // authored. Same lock also records undo.
+            let mut session = ctx.session.lock().await;
+            session.read_files.insert(path.clone());
+            session.push_undo_entry(super::UndoEntry {
+                path: path.clone(),
+                original_content: original,
+                post_edit_mtime,
+                post_edit_size,
+            });
+        }
         Ok(format!(
             "Wrote {} bytes to {}",
             a.content.len(),
@@ -354,10 +451,17 @@ Parameters:\n\
 
 #[derive(Deserialize)]
 struct EditArgs {
+    #[serde(alias = "file_path", alias = "filePath")]
     path: String,
+    #[serde(alias = "oldString", alias = "old_text", alias = "oldText")]
     old_string: String,
+    #[serde(alias = "newString", alias = "new_text", alias = "newText")]
     new_string: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "replaceAll",
+        deserialize_with = "super::deserialize_bool"
+    )]
     replace_all: bool,
 }
 
@@ -384,7 +488,7 @@ How to make `old_string` unique:\n\
 - If the snippet truly repeats (e.g. multiple identical imports), set `replace_all: true`.\n\
 \n\
 Common mistakes:\n\
-- Calling this without first calling `read_file` — your `old_string` will be a guess and won't match.\n\
+- Calling this without first calling `read_file` — the edit is REFUSED until you read the file this session (so `old_string` matches real bytes, not a guess).\n\
 - `old_string` that's a substring inside a longer line — whitespace, trailing punctuation, or tabs vs spaces will silently mismatch.\n\
 - Trying to match across many lines without preserving exact indentation/newlines.\n\
 \n\
@@ -408,7 +512,7 @@ Parameters:\n\
         })
     }
     async fn compute_preview(&self, args: &Value, _ctx: &ToolContext) -> Option<String> {
-        let a: EditArgs = serde_json::from_value(args.clone()).ok()?;
+        let a: EditArgs = super::parse_args("edit_file", args.clone()).ok()?;
         let trunc = |s: &str| -> String {
             let one = s.replace('\n', "/");
             if one.chars().count() > 60 {
@@ -430,7 +534,21 @@ Parameters:\n\
         if a.old_string.is_empty() {
             return Err(anyhow!("old_string must not be empty"));
         }
+        if a.old_string == a.new_string {
+            return Err(anyhow!(
+                "old_string and new_string are identical; nothing to change"
+            ));
+        }
         let path = resolve(&ctx.cwd, &a.path)?;
+        // Read-before-edit safety: old_string can only be trusted if the model
+        // actually read the file this session (write_file/read_file both record
+        // it). Refuse otherwise rather than edit against a guessed match.
+        if !ctx.session.lock().await.read_files.contains(&path) {
+            return Err(anyhow!(
+                "edit_file requires reading {} first so old_string matches the real bytes. Call read_file on it.",
+                path.display()
+            ));
+        }
         let original = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("read {}", path.display()))?;
@@ -451,12 +569,7 @@ Parameters:\n\
         // Atomic write: stage in a sibling tempfile, then rename. Prevents the
         // "killed mid-write -> file is now empty or half-written" failure mode.
         let tmp = path.with_extension(format!("edit-{}.tmp", rand_suffix()));
-        tokio::fs::write(&tmp, new_content.as_bytes())
-            .await
-            .with_context(|| format!("write temp {}", tmp.display()))?;
-        tokio::fs::rename(&tmp, &path)
-            .await
-            .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+        atomic_write_preserving_permissions(&path, &tmp, new_content.as_bytes()).await?;
         let (post_edit_mtime, post_edit_size) = snapshot_meta(&path);
         ctx.session.lock().await.push_undo_entry(super::UndoEntry {
             path: path.clone(),
@@ -474,6 +587,13 @@ Parameters:\n\
 
 #[derive(Deserialize)]
 struct ListArgs {
+    #[serde(
+        alias = "file_path",
+        alias = "filePath",
+        alias = "directory",
+        alias = "dir",
+        alias = "folder"
+    )]
     path: String,
 }
 
@@ -532,15 +652,22 @@ pub struct MultiEdit;
 
 #[derive(Deserialize)]
 struct MultiEditArgs {
+    #[serde(alias = "file_path", alias = "filePath")]
     path: String,
     edits: Vec<EditOp>,
 }
 
 #[derive(Deserialize)]
 struct EditOp {
+    #[serde(alias = "oldString", alias = "old_text", alias = "oldText")]
     old_string: String,
+    #[serde(alias = "newString", alias = "new_text", alias = "newText")]
     new_string: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "replaceAll",
+        deserialize_with = "super::deserialize_bool"
+    )]
     replace_all: bool,
 }
 
@@ -608,7 +735,7 @@ Parameters:\n\
         })
     }
     async fn compute_preview(&self, args: &Value, _ctx: &ToolContext) -> Option<String> {
-        let a: MultiEditArgs = serde_json::from_value(args.clone()).ok()?;
+        let a: MultiEditArgs = super::parse_args("multi_edit", args.clone()).ok()?;
         Some(format!("Multi-edit {} ({} edit(s))", a.path, a.edits.len()))
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
@@ -617,6 +744,14 @@ Parameters:\n\
             return Err(anyhow!("`edits` must contain at least one entry"));
         }
         let path = resolve(&ctx.cwd, &a.path)?;
+        // Read-before-edit safety (same as edit_file): refuse to touch a file
+        // the model never read this session.
+        if !ctx.session.lock().await.read_files.contains(&path) {
+            return Err(anyhow!(
+                "multi_edit requires reading {} first so each old_string matches the real bytes. Call read_file on it.",
+                path.display()
+            ));
+        }
         let mut content = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("read {}", path.display()))?;
@@ -625,6 +760,12 @@ Parameters:\n\
         for (i, edit) in a.edits.iter().enumerate() {
             if edit.old_string.is_empty() {
                 return Err(anyhow!("edit #{}: old_string must not be empty", i + 1));
+            }
+            if edit.old_string == edit.new_string {
+                return Err(anyhow!(
+                    "edit #{}: old_string and new_string are identical; nothing to change",
+                    i + 1
+                ));
             }
             let count = content.matches(&edit.old_string).count();
             if count == 0 {
@@ -649,12 +790,7 @@ Parameters:\n\
             };
         }
         let tmp = path.with_extension(format!("medit-{}.tmp", rand_suffix()));
-        tokio::fs::write(&tmp, content.as_bytes())
-            .await
-            .with_context(|| format!("write temp {}", tmp.display()))?;
-        tokio::fs::rename(&tmp, &path)
-            .await
-            .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+        atomic_write_preserving_permissions(&path, &tmp, content.as_bytes()).await?;
         let (post_edit_mtime, post_edit_size) = snapshot_meta(&path);
         ctx.session.lock().await.push_undo_entry(super::UndoEntry {
             path: path.clone(),
@@ -717,12 +853,7 @@ Parameters: none."
                 let tmp = entry
                     .path
                     .with_extension(format!("undo-{}.tmp", rand_suffix()));
-                tokio::fs::write(&tmp, content)
-                    .await
-                    .with_context(|| format!("write temp {}", tmp.display()))?;
-                tokio::fs::rename(&tmp, &entry.path)
-                    .await
-                    .with_context(|| format!("restore {}", entry.path.display()))?;
+                atomic_write_preserving_permissions(&entry.path, &tmp, &content).await?;
                 format!("Restored {}", entry.path.display())
             }
             None => {
@@ -751,18 +882,28 @@ pub(super) fn snapshot_meta(
     }
 }
 
-/// Resolve a model-supplied path against the sandbox `cwd`. Rejects absolute
-/// paths, lexical `..` escapes, and symlinks whose resolved target leaves `cwd`.
-/// Without this guard the LLM could read `/etc/shadow`, write to
-/// `~/.ssh/authorized_keys`, or otherwise escape the working tree.
+/// Resolve a model-supplied path against the sandbox `cwd`. Accepts either a
+/// relative path or a Claude-style absolute path that is lexically inside
+/// `cwd`. Rejects absolute paths outside `cwd`, lexical `..` escapes, and
+/// symlinks whose resolved target leaves `cwd`. Without this guard the LLM
+/// could read `/etc/shadow`, write to `~/.ssh/authorized_keys`, or otherwise
+/// escape the working tree.
 pub(crate) fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathBuf> {
-    let path = std::path::Path::new(p);
-    if path.is_absolute() {
-        return Err(anyhow!(
-            "absolute paths are not allowed inside the sandbox: {}",
-            path.display()
-        ));
-    }
+    let raw_path = std::path::Path::new(p);
+    let sandbox = cwd
+        .canonicalize()
+        .with_context(|| format!("resolve sandbox cwd {}", cwd.display()))?;
+    let path = if raw_path.is_absolute() {
+        raw_path.strip_prefix(&sandbox).map_err(|_| {
+            anyhow!(
+                "absolute path escapes the sandbox (cwd {}): {}",
+                sandbox.display(),
+                raw_path.display()
+            )
+        })?
+    } else {
+        raw_path
+    };
     let mut normalized = std::path::PathBuf::new();
     for comp in path.components() {
         use std::path::Component;
@@ -775,14 +916,10 @@ pub(crate) fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathB
             }
             Component::Normal(s) => normalized.push(s),
             Component::Prefix(_) | Component::RootDir => {
-                return Err(anyhow!("invalid path component: {}", path.display()));
+                return Err(anyhow!("invalid path component: {}", raw_path.display()));
             }
         }
     }
-
-    let sandbox = cwd
-        .canonicalize()
-        .with_context(|| format!("resolve sandbox cwd {}", cwd.display()))?;
 
     let mut existing = cwd.to_path_buf();
     let mut missing: Vec<OsString> = Vec::new();
@@ -829,8 +966,11 @@ mod tests {
         ToolContext {
             cwd,
             approval: ApprovalMode::Auto,
+            require_approval: false,
+            auto_approve_edits: false,
             session: Arc::new(Mutex::new(SessionState::default())),
             config: crate::config::Config::default(),
+            events: None,
         }
     }
 
@@ -926,6 +1066,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_file_accepts_string_offset_and_limit_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let content: String = (1..=5).map(|i| format!("L{i}\n")).collect();
+        std::fs::write(dir.path().join("small.txt"), &content).unwrap();
+
+        let out = ReadFile
+            .execute(
+                json!({"path": "small.txt", "offset": "2", "limit": "1"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.contains("\tL3\n"), "got: {out}");
+        assert!(!out.contains("\tL2\n"), "got: {out}");
+        assert!(!out.contains("\tL4\n"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn read_file_accepts_claude_file_path_alias_and_absolute_path_inside_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.txt");
+        std::fs::write(&path, "hello\n").unwrap();
+
+        let out = ReadFile
+            .execute(
+                json!({"file_path": path.to_string_lossy()}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.contains("\thello\n"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn absolute_path_outside_cwd_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = outside.path().join("secret.txt");
+        std::fs::write(&path, "secret\n").unwrap();
+
+        let err = ReadFile
+            .execute(
+                json!({"file_path": path.to_string_lossy()}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("escapes the sandbox"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn read_file_rejects_zero_limit() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("small.txt"), "hello\n").unwrap();
@@ -955,6 +1152,20 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("limit must be <= 2000"));
+    }
+
+    #[tokio::test]
+    async fn list_dir_accepts_common_directory_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "mod tests;\n").unwrap();
+
+        let out = ListDir
+            .execute(json!({"directory": "src"}), &ctx(dir.path().to_path_buf()))
+            .await
+            .unwrap();
+
+        assert_eq!(out.trim(), "lib.rs");
     }
 
     #[tokio::test]
@@ -1044,12 +1255,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("write-only.txt");
         std::fs::write(&path, "secret").unwrap();
+        let ctx = ctx(dir.path().to_path_buf());
+
+        // Read it first so the read-before-write guard is satisfied, then revoke
+        // read permission to exercise the "can't snapshot original" guard — a
+        // TOCTOU where the file becomes unreadable between read and write.
+        ReadFile
+            .execute(json!({"path": "write-only.txt"}), &ctx)
+            .await
+            .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o200)).unwrap();
 
         let err = WriteFile
             .execute(
                 json!({"path": "write-only.txt", "content": "replacement"}),
-                &ctx(dir.path().to_path_buf()),
+                &ctx,
             )
             .await
             .unwrap_err();
@@ -1057,5 +1277,292 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(err.to_string().contains("read original"), "got: {err}");
         assert_eq!(std::fs::read_to_string(path).unwrap(), "secret");
+    }
+
+    #[tokio::test]
+    async fn write_file_refuses_unread_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("keep.txt"), "important").unwrap();
+        let err = WriteFile
+            .execute(
+                json!({"path": "keep.txt", "content": "clobbered"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not read this session"),
+            "got: {err}"
+        );
+        // The original survives — the write was refused, not partially applied.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("keep.txt")).unwrap(),
+            "important"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_file_allows_new_file_without_read() {
+        let dir = tempfile::tempdir().unwrap();
+        WriteFile
+            .execute(
+                json!({"path": "fresh.txt", "content": "hello"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("fresh.txt")).unwrap(),
+            "hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_then_write_overwrites_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("doc.txt"), "v1").unwrap();
+        let ctx = ctx(dir.path().to_path_buf());
+        ReadFile
+            .execute(json!({"path": "doc.txt"}), &ctx)
+            .await
+            .unwrap();
+        WriteFile
+            .execute(json!({"path": "doc.txt", "content": "v2"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("doc.txt")).unwrap(),
+            "v2"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_edit_and_multi_edit_accept_common_argument_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx(dir.path().to_path_buf());
+        let path = dir.path().join("doc.txt");
+        let file_path = path.to_string_lossy();
+        let other_path = dir.path().join("other.txt");
+        let other_file_path = other_path.to_string_lossy();
+
+        WriteFile
+            .execute(
+                json!({"file_path": file_path, "text": "one two three"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        WriteFile
+            .execute(
+                json!({"filePath": other_file_path, "contents": "alias content"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        EditFile
+            .execute(
+                json!({"file_path": file_path, "old_text": "two", "new_text": "2"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        EditFile
+            .execute(
+                json!({
+                    "filePath": file_path,
+                    "oldText": "2",
+                    "newText": "two",
+                    "replaceAll": "false"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        MultiEdit
+            .execute(
+                json!({
+                    "filePath": file_path,
+                    "edits": [
+                        {"old_text": "one", "new_text": "1"},
+                        {"oldText": "three", "newText": "3"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "1 two 3");
+        assert_eq!(
+            std::fs::read_to_string(other_path).unwrap(),
+            "alias content"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_then_edit_without_reread_succeeds() {
+        // A file the model just authored counts as read, so a follow-up
+        // edit_file must not spuriously demand a read_file.
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ctx(dir.path().to_path_buf());
+        WriteFile
+            .execute(json!({"path": "gen.txt", "content": "fn main() {}"}), &ctx)
+            .await
+            .unwrap();
+        EditFile
+            .execute(
+                json!({"path": "gen.txt", "old_string": "main", "new_string": "run"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("gen.txt")).unwrap(),
+            "fn run() {}"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_refuses_unread_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("e.txt"), "foo").unwrap();
+        let err = EditFile
+            .execute(
+                json!({"path": "e.txt", "old_string": "foo", "new_string": "bar"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("requires reading"), "got: {err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("e.txt")).unwrap(),
+            "foo"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_rejects_identical_old_and_new() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("id.txt"), "same").unwrap();
+        let ctx = ctx(dir.path().to_path_buf());
+        ReadFile
+            .execute(json!({"path": "id.txt"}), &ctx)
+            .await
+            .unwrap();
+        let err = EditFile
+            .execute(
+                json!({"path": "id.txt", "old_string": "same", "new_string": "same"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("identical"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn read_file_describes_binary_instead_of_erroring() {
+        let dir = tempfile::tempdir().unwrap();
+        // PNG magic header + a 0xFF byte → not valid UTF-8.
+        let png = [
+            0x89u8, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0xFF, 0x00,
+        ];
+        std::fs::write(dir.path().join("logo.png"), png).unwrap();
+        let out = ReadFile
+            .execute(json!({"path": "logo.png"}), &ctx(dir.path().to_path_buf()))
+            .await
+            .unwrap();
+        assert!(out.contains("PNG image"), "got: {out}");
+        assert!(out.contains("recorded as read"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn read_binary_then_write_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = [
+            0x89u8, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0xFF, 0x00,
+        ];
+        std::fs::write(dir.path().join("img.png"), png).unwrap();
+        let ctx = ctx(dir.path().to_path_buf());
+        // Reading a binary records it as read even though contents aren't shown,
+        // so a deliberate overwrite is allowed (the read-before-write guard,
+        // which can't read binary as text, no longer blocks regeneration).
+        ReadFile
+            .execute(json!({"path": "img.png"}), &ctx)
+            .await
+            .unwrap();
+        WriteFile
+            .execute(json!({"path": "img.png", "content": "regenerated"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("img.png")).unwrap(),
+            "regenerated"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_file_preserves_existing_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("script.sh");
+        std::fs::write(&path, "#!/bin/sh\necho old\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ctx = ctx(dir.path().to_path_buf());
+
+        ReadFile
+            .execute(json!({"path": "script.sh"}), &ctx)
+            .await
+            .unwrap();
+        WriteFile
+            .execute(
+                json!({"path": "script.sh", "content": "#!/bin/sh\necho new\n"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn edit_and_undo_preserve_existing_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("script.sh");
+        std::fs::write(&path, "#!/bin/sh\necho old\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ctx = ctx(dir.path().to_path_buf());
+
+        ReadFile
+            .execute(json!({"path": "script.sh"}), &ctx)
+            .await
+            .unwrap();
+        EditFile
+            .execute(
+                json!({
+                    "path": "script.sh",
+                    "old_string": "old",
+                    "new_string": "new",
+                    "replace_all": false
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let mode_after_edit = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode_after_edit, 0o755);
+
+        UndoLastEdit.execute(json!({}), &ctx).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "#!/bin/sh\necho old\n"
+        );
+        let mode_after_undo = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode_after_undo, 0o755);
     }
 }

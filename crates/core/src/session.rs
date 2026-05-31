@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::config_dir;
 use crate::openai::{InputItem, MessageContent};
+use crate::tools::TodoItem;
 
 /// Lightweight metadata describing a stored session — enough to render in a
 /// picker without paying the cost of loading the full history.
@@ -31,7 +32,34 @@ pub struct SessionMeta {
 pub struct SessionRecord {
     #[serde(flatten)]
     pub meta: SessionMeta,
+    /// Runtime state that is safe to resume across processes. Handles such as
+    /// background shell processes and undo snapshots are intentionally not
+    /// persisted because they cannot be reconstructed safely after restart.
+    #[serde(default)]
+    pub state: SessionSnapshot,
     pub history: Vec<InputItem>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionSnapshot {
+    #[serde(default)]
+    pub todos: Vec<TodoItem>,
+    #[serde(default)]
+    pub read_files: Vec<PathBuf>,
+    #[serde(default)]
+    pub active_goal: Option<SessionGoalSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionGoalSnapshot {
+    pub objective: String,
+    pub turns_completed: u32,
+    #[serde(default)]
+    pub waiting_for_user: bool,
+    #[serde(default)]
+    pub last_summary: Option<String>,
+    #[serde(default)]
+    pub started_at_ms: u64,
 }
 
 pub fn sessions_root() -> PathBuf {

@@ -242,6 +242,7 @@ pub fn slash_commands() -> Vec<PickerItem> {
         item("status", "/status", "show auth status"),
         item("img", "/img", "attach an image to next message"),
         item("cwd", "/cwd", "show / set working directory"),
+        item("goal", "/goal", "work until an objective is complete"),
         item("clear", "/clear", "clear the conversation"),
         item("resume", "/resume", "pick a previous session to continue"),
         item("agents", "/agents", "list installed subagents"),
@@ -424,44 +425,47 @@ pub fn logout_targets() -> Vec<PickerItem> {
     items
 }
 
-pub fn efforts() -> Vec<PickerItem> {
-    vec![
-        PickerItem {
-            key: "none".into(),
-            title: "none".into(),
-            description: "no extra reasoning, fastest".into(),
-        },
-        PickerItem {
-            key: "minimal".into(),
-            title: "minimal".into(),
-            description: "GPT-5 minimal · Claude: same as none".into(),
-        },
-        PickerItem {
-            key: "low".into(),
-            title: "low".into(),
-            description: "light reasoning · latency-sensitive".into(),
-        },
-        PickerItem {
-            key: "medium".into(),
-            title: "medium".into(),
-            description: "balanced · default".into(),
-        },
-        PickerItem {
-            key: "high".into(),
-            title: "high".into(),
-            description: "deep reasoning for hard tasks".into(),
-        },
-        PickerItem {
-            key: "xhigh".into(),
-            title: "xhigh".into(),
-            description: "GPT-5 xhigh · Claude Opus 4.7 xhigh".into(),
-        },
-        PickerItem {
-            key: "max".into(),
-            title: "max".into(),
-            description: "Claude adaptive max — top thinking tier".into(),
-        },
-    ]
+/// Reasoning-effort options for the given model's provider. OpenAI and
+/// Anthropic expose different tiers, so the picker shows only the levels the
+/// current model actually honours — `xhigh` only on Opus 4.7+, and
+/// `max`/`ultracode` only on Anthropic. A single shared list for both providers
+/// left users unsure which levels existed where.
+pub fn efforts(model: &str) -> Vec<PickerItem> {
+    use opencli_core::catalog;
+    use opencli_core::provider::Provider;
+
+    let item = |key: &str, description: &str| PickerItem {
+        key: key.into(),
+        title: key.into(),
+        description: description.into(),
+    };
+
+    match Provider::from_model(model) {
+        // OpenAI Responses `reasoning.effort` enum: minimal|low|medium|high|xhigh.
+        Provider::OpenAi => vec![
+            item("minimal", "fastest · minimal reasoning"),
+            item("low", "light reasoning · latency-sensitive"),
+            item("medium", "balanced · default"),
+            item("high", "deep reasoning for hard tasks"),
+            item("xhigh", "maximum reasoning depth"),
+        ],
+        // Anthropic thinking tiers. `minimal` is omitted (same as `none` here);
+        // `xhigh` only appears on models that honour it (Opus 4.7+).
+        Provider::Anthropic => {
+            let mut items = vec![
+                item("none", "no extended thinking · fastest"),
+                item("low", "light thinking"),
+                item("medium", "balanced · default"),
+                item("high", "deep thinking for hard tasks"),
+            ];
+            if catalog::supports_xhigh(model) {
+                items.push(item("xhigh", "Opus 4.7+ · between high and max"));
+            }
+            items.push(item("max", "adaptive max · top thinking tier"));
+            items.push(item("ultracode", "Claude Code tier · xhigh + multi-agent"));
+            items
+        }
+    }
 }
 
 /// Build picker items from a snapshot of stored sessions for the current cwd.
@@ -540,5 +544,43 @@ mod scroll_tests {
         // the highlighted row stays on screen (it used to fall below the fold).
         assert_eq!(scroll_window(10, 14, 10), (1, 11));
         assert_eq!(scroll_window(13, 14, 10), (4, 14));
+    }
+}
+
+#[cfg(test)]
+mod effort_tests {
+    use super::efforts;
+
+    fn keys(model: &str) -> Vec<String> {
+        efforts(model).into_iter().map(|it| it.key).collect()
+    }
+
+    #[test]
+    fn openai_shows_only_openai_tiers() {
+        let k = keys("gpt-5.5");
+        assert_eq!(k, ["minimal", "low", "medium", "high", "xhigh"]);
+        // none/max/ultracode are not OpenAI effort levels.
+        for absent in ["none", "max", "ultracode"] {
+            assert!(
+                !k.iter().any(|s| s == absent),
+                "{absent} should be hidden for OpenAI"
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_gates_xhigh_by_model() {
+        // Opus 4.8 honours xhigh and the Anthropic-only tiers.
+        let opus = keys("claude-opus-4-8");
+        for present in ["none", "xhigh", "max", "ultracode"] {
+            assert!(
+                opus.iter().any(|s| s == present),
+                "{present} missing for Opus"
+            );
+        }
+        // Sonnet 4.6 clamps xhigh to high, so the picker hides xhigh but keeps max.
+        let sonnet = keys("claude-sonnet-4-6");
+        assert!(!sonnet.iter().any(|s| s == "xhigh"));
+        assert!(sonnet.iter().any(|s| s == "max"));
     }
 }

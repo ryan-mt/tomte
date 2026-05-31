@@ -250,7 +250,10 @@ fn flatten_tool_content(content: Option<&Value>, is_error: bool) -> String {
             let piece = match item.get("text").and_then(|v| v.as_str()) {
                 Some(text) => text.to_string(),
                 None => {
-                    let kind = item.get("type").and_then(|v| v.as_str()).unwrap_or("non-text");
+                    let kind = item
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("non-text");
                     format!("[{kind} content omitted]")
                 }
             };
@@ -358,12 +361,14 @@ impl McpState {
                 }
             }
         };
-        tokio::time::timeout(request_timeout, read).await.map_err(|_| {
-            anyhow!(
-                "MCP `{method}` timed out after {}s",
-                request_timeout.as_secs()
-            )
-        })?
+        tokio::time::timeout(request_timeout, read)
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "MCP `{method}` timed out after {}s",
+                    request_timeout.as_secs()
+                )
+            })?
     }
 
     async fn notify(&mut self, method: &str, params: Value) -> Result<()> {

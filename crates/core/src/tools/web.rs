@@ -11,8 +11,13 @@ pub struct WebFetch;
 
 #[derive(Deserialize)]
 struct WebFetchArgs {
+    #[serde(alias = "uri", alias = "link")]
     url: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "maxBytes",
+        deserialize_with = "super::deserialize_optional_u64"
+    )]
     max_bytes: Option<u64>,
 }
 
@@ -353,12 +358,28 @@ pub struct WebSearch;
 
 #[derive(Deserialize)]
 struct WebSearchArgs {
+    #[serde(alias = "q", alias = "search_query", alias = "searchQuery")]
     query: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "maxResults",
+        alias = "num_results",
+        alias = "numResults",
+        alias = "limit",
+        deserialize_with = "super::deserialize_optional_u64"
+    )]
     max_results: Option<u64>,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "allowedDomains",
+        deserialize_with = "super::deserialize_optional_string_vec"
+    )]
     allowed_domains: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "blockedDomains",
+        deserialize_with = "super::deserialize_optional_string_vec"
+    )]
     blocked_domains: Option<Vec<String>>,
 }
 
@@ -832,6 +853,57 @@ mod web_search_tests {
         let r = apply_filters(parse_ddg(SAMPLE), 10, None, Some(&["tokio.rs".to_string()]));
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].url, "https://github.com/tokio-rs/tokio");
+    }
+
+    #[test]
+    fn web_search_args_accept_string_domain_lists() {
+        let args: WebSearchArgs = serde_json::from_value(json!({
+            "query": "tokio",
+            "max_results": "5",
+            "allowed_domains": "tokio.rs, github.com",
+            "blocked_domains": "ads.example bad.example"
+        }))
+        .unwrap();
+
+        assert_eq!(args.max_results, Some(5));
+        assert_eq!(
+            args.allowed_domains,
+            Some(vec!["tokio.rs".to_string(), "github.com".to_string()])
+        );
+        assert_eq!(
+            args.blocked_domains,
+            Some(vec!["ads.example".to_string(), "bad.example".to_string()])
+        );
+    }
+
+    #[test]
+    fn web_args_accept_camel_case_aliases() {
+        let fetch: WebFetchArgs = serde_json::from_value(json!({
+            "uri": "https://example.com",
+            "maxBytes": "4096"
+        }))
+        .unwrap();
+        assert_eq!(fetch.url, "https://example.com");
+        assert_eq!(fetch.max_bytes, Some(4096));
+
+        let search: WebSearchArgs = serde_json::from_value(json!({
+            "searchQuery": "tokio",
+            "numResults": "5",
+            "allowedDomains": "tokio.rs github.com",
+            "blockedDomains": ["ads.example"]
+        }))
+        .unwrap();
+
+        assert_eq!(search.query, "tokio");
+        assert_eq!(search.max_results, Some(5));
+        assert_eq!(
+            search.allowed_domains,
+            Some(vec!["tokio.rs".to_string(), "github.com".to_string()])
+        );
+        assert_eq!(
+            search.blocked_domains,
+            Some(vec!["ads.example".to_string()])
+        );
     }
 
     #[test]

@@ -135,13 +135,12 @@ impl AnthropicClient {
         let mut body = to_messages_request(&req);
         body.stream = true;
         self.apply_oauth_identity(&mut body);
-        let resp = self
+        let builder = self
             .http
             .post(self.endpoint())
             .headers(self.headers(&body.model)?)
-            .json(&body)
-            .send()
-            .await?;
+            .json(&body);
+        let resp = crate::retry::send_with_retry(builder).await?;
         let status = resp.status();
         if !status.is_success() {
             let text = match resp.text().await {
@@ -157,13 +156,12 @@ impl AnthropicClient {
         let mut body = to_messages_request(&req);
         body.stream = false;
         self.apply_oauth_identity(&mut body);
-        let resp = self
+        let builder = self
             .http
             .post(self.endpoint())
             .headers(self.headers(&body.model)?)
-            .json(&body)
-            .send()
-            .await?;
+            .json(&body);
+        let resp = crate::retry::send_with_retry(builder).await?;
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {

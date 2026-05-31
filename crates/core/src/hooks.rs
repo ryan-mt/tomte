@@ -15,8 +15,9 @@
 //!   - `"*"`          — matches anything
 //!   - `"run_shell"`  — exact tool name (PreToolUse/PostToolUse only)
 //!   - `"re:^edit_"` — regex match on tool name
-//!   - `"file:**/*.rs"` — file-path glob (matched against `path`/`file_path`/
-//!     `notebook_path` fields in the args/result JSON; useful for file tools).
+//!   - `"file:**/*.rs"` — file-path glob (matched against path-style fields
+//!     such as `path`/`file_path`/`filePath`/`notebook_path`; useful for file
+//!     tools).
 //!
 //! Format (settings.json):
 //! ```json
@@ -38,8 +39,11 @@ use std::time::Duration;
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+
+const HOOK_STDOUT_MAX_BYTES: usize = 64 * 1024;
+const HOOK_READ_CHUNK_BYTES: usize = 8 * 1024;
 
 #[cfg(unix)]
 fn isolate_process_group(cmd: &mut Command) {
@@ -130,7 +134,7 @@ pub fn load() -> HookSet {
 /// only `"*"` matches).
 ///
 /// `path_hint`, when Some, is also considered for the `file:<glob>` matcher
-/// (we check args for `path`/`file_path`/`notebook_path`).
+/// (we check args for known file-path aliases).
 pub fn matches(matcher: &str, key: &str, path_hint: Option<&str>) -> bool {
     if matcher == "*" {
         return true;
@@ -210,10 +214,20 @@ impl HookSet {
     }
 
     fn path_hint_from_args(args: &Value) -> Option<String> {
-        args.get("path")
-            .or_else(|| args.get("file_path"))
-            .or_else(|| args.get("notebook_path"))
-            .and_then(|v| v.as_str())
+        const PATH_KEYS: &[&str] = &[
+            "path",
+            "file_path",
+            "filePath",
+            "notebook_path",
+            "notebookPath",
+            "directory",
+            "dir",
+            "folder",
+        ];
+        let obj = args.as_object()?;
+        PATH_KEYS
+            .iter()
+            .find_map(|key| obj.get(*key)?.as_str())
             .map(|s| s.to_string())
     }
 
@@ -353,18 +367,78 @@ async fn run_hook_with_timeout(
         let _ = stdin.flush().await;
         drop(stdin);
     }
-    let wait = child.wait_with_output();
-    let out = match tokio::time::timeout(timeout, wait).await {
-        Ok(Ok(out)) => out,
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_task = tokio::spawn(async move {
+        match stdout {
+            Some(out) => read_capped(out, HOOK_STDOUT_MAX_BYTES).await,
+            None => Ok(CappedOutput::default()),
+        }
+    });
+    let stderr_task = tokio::spawn(async move {
+        match stderr {
+            // Drain stderr so a noisy hook cannot block forever on a full pipe.
+            // We do not surface stderr in hook decisions.
+            Some(err) => read_capped(err, 0).await,
+            None => Ok(CappedOutput::default()),
+        }
+    });
+
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
         Ok(Err(e)) => return Err(e.into()),
         Err(e) => {
             kill_process_group(child_pid);
+            let _ = child.kill().await;
+            stdout_task.abort();
+            stderr_task.abort();
             return Err(e.into());
         }
     };
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    let code = out.status.code().unwrap_or(-1);
+    let stdout = stdout_task.await??.into_string("stdout");
+    let _ = stderr_task.await??;
+    let code = status.code().unwrap_or(-1);
     Ok((code, stdout))
+}
+
+#[derive(Default)]
+struct CappedOutput {
+    bytes: Vec<u8>,
+    omitted: usize,
+}
+
+impl CappedOutput {
+    fn into_string(self, label: &str) -> String {
+        let mut out = String::from_utf8_lossy(&self.bytes).to_string();
+        if self.omitted > 0 {
+            out.push_str(&format!(
+                "\n[opencli truncated hook {label}: omitted {} byte(s)]",
+                self.omitted
+            ));
+        }
+        out
+    }
+}
+
+async fn read_capped<R>(mut reader: R, limit: usize) -> std::io::Result<CappedOutput>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut out = CappedOutput::default();
+    let mut buf = [0u8; HOOK_READ_CHUNK_BYTES];
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(out.bytes.len());
+        let keep = remaining.min(n);
+        if keep > 0 {
+            out.bytes.extend_from_slice(&buf[..keep]);
+        }
+        out.omitted += n - keep;
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -410,6 +484,30 @@ mod tests {
     }
 
     #[test]
+    fn path_hint_from_args_includes_camel_case_and_directory_aliases() {
+        let args = serde_json::json!({
+            "filePath": "src/lib.rs"
+        });
+        assert_eq!(
+            HookSet::path_hint_from_args(&args).as_deref(),
+            Some("src/lib.rs")
+        );
+
+        let args = serde_json::json!({
+            "notebookPath": "analysis/demo.ipynb"
+        });
+        assert_eq!(
+            HookSet::path_hint_from_args(&args).as_deref(),
+            Some("analysis/demo.ipynb")
+        );
+
+        let args = serde_json::json!({
+            "directory": "src"
+        });
+        assert_eq!(HookSet::path_hint_from_args(&args).as_deref(), Some("src"));
+    }
+
+    #[test]
     fn glob_match_basic() {
         assert!(glob_match("*.rs", "main.rs"));
         assert!(glob_match("src/*.rs", "src/lib.rs"));
@@ -450,5 +548,37 @@ mod tests {
             !marker.exists(),
             "hook timeout killed only the shell; a background descendant survived"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_hook_caps_stdout_but_keeps_exit_code() {
+        let (code, stdout) = run_hook_with_timeout(
+            "head -c 70000 /dev/zero | tr '\\0' x",
+            &serde_json::json!({"hook": "test"}),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(code, 0);
+        assert!(stdout.starts_with("xxx"), "got: {stdout:?}");
+        assert!(stdout.contains("truncated hook stdout"), "got: {stdout:?}");
+        assert!(stdout.len() < HOOK_STDOUT_MAX_BYTES + 256);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_hook_drains_noisy_stderr_without_blocking() {
+        let (code, stdout) = run_hook_with_timeout(
+            "head -c 200000 /dev/zero >&2",
+            &serde_json::json!({"hook": "test"}),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(code, 0);
+        assert!(stdout.is_empty(), "stderr should not leak into stdout");
     }
 }

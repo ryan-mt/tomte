@@ -7,8 +7,20 @@ use serde::{Deserialize, Serialize};
 
 const CONFIG_DIR_NAME: &str = "opencli";
 static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-pub const VALID_REASONING_EFFORTS: &[&str] =
-    &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+// `ultracode` is Claude Code's top effort-menu entry. Per the Anthropic docs it
+// is not a distinct API effort level — it pairs `xhigh` thinking with standing
+// permission to launch multi-agent workflows. opencli accepts it as a selectable
+// effort and maps it onto `xhigh` on the wire (see translate.rs / openai client).
+pub const VALID_REASONING_EFFORTS: &[&str] = &[
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "ultracode",
+    "max",
+];
 pub const VALID_VERBOSITIES: &[&str] = &["low", "medium", "high"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +40,12 @@ pub struct Config {
     pub auto_approve_read: bool,
     #[serde(default)]
     pub auto_approve_write: bool,
+    /// Permission mode the TUI starts in, persisted across launches. One of
+    /// `default`, `acceptEdits`, `plan`, `bypassPermissions`. Shift+Tab in the
+    /// TUI cycles the mode and writes the new value here, so relaunching keeps
+    /// the last-chosen mode. Mirrors Claude Code's `permissions.defaultMode`.
+    #[serde(default = "default_permission_mode")]
+    pub default_permission_mode: String,
     /// Extra OpenAI-compatible providers, keyed by the id used in the `model`
     /// field as `<id>/<model>` (e.g. `groq/llama-3.3-70b`). Optional and empty
     /// by default, so existing configs are unaffected.
@@ -47,7 +65,22 @@ pub struct ProviderConfig {
     /// Name of an environment variable to read the API key from (checked first).
     #[serde(default)]
     pub api_key_env: Option<String>,
+    /// True input context window (in tokens) of this endpoint's model. opencli
+    /// cannot probe a custom OpenAI-compatible provider, so the catalog's
+    /// guess-by-model-name is usually wrong (it may claim 1M for a 128K model),
+    /// which makes auto-compaction fire too late and the provider reject the
+    /// request with "input exceeds the context window". Set this to the model's
+    /// real window so compaction triggers in time. Falls back to a conservative
+    /// [`DEFAULT_PROVIDER_CONTEXT_LIMIT`] when unset.
+    #[serde(default)]
+    pub context_limit: Option<u64>,
 }
+
+/// Conservative input-window assumed for a configured provider that does not
+/// declare `context_limit`. Most OpenAI-compatible models are 128K–256K, so
+/// 200K leaves headroom while still being low enough that auto-compaction
+/// fires before a real overflow. Users with a larger model raise it explicitly.
+pub const DEFAULT_PROVIDER_CONTEXT_LIMIT: u64 = 200_000;
 
 impl ProviderConfig {
     /// Resolve the API key: the env var named by `api_key_env` (if set and
@@ -65,6 +98,24 @@ impl ProviderConfig {
     }
 }
 
+impl Config {
+    /// Effective input context window (tokens) for the active model — the value
+    /// the warn/auto-compact thresholds and the status bar must use. A model
+    /// routed through a configured provider (`<id>/<model>` whose `<id>` is in
+    /// [`providers`](Config::providers)) takes that provider's declared
+    /// `context_limit`, or [`DEFAULT_PROVIDER_CONTEXT_LIMIT`] when unset, because
+    /// opencli can't infer a custom endpoint's real window from the model name.
+    /// Built-in OpenAI/Anthropic models use the catalog value.
+    pub fn effective_context_limit(&self) -> u64 {
+        if let Some((prefix, _)) = self.model.split_once('/') {
+            if let Some(pc) = self.providers.get(prefix) {
+                return pc.context_limit.unwrap_or(DEFAULT_PROVIDER_CONTEXT_LIMIT);
+            }
+        }
+        crate::catalog::context_limit(&self.model)
+    }
+}
+
 fn default_model() -> String {
     "gpt-5.5".to_string()
 }
@@ -76,6 +127,9 @@ fn default_verbosity() -> String {
 }
 fn default_auto_compact() -> bool {
     true
+}
+fn default_permission_mode() -> String {
+    "default".to_string()
 }
 
 /// Map legacy model names from earlier opencli versions to the real OpenAI
@@ -101,6 +155,7 @@ impl Default for Config {
             auto_compact: true,
             auto_approve_read: true,
             auto_approve_write: false,
+            default_permission_mode: default_permission_mode(),
             providers: HashMap::new(),
         }
     }

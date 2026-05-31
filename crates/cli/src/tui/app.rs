@@ -1,10 +1,11 @@
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -16,6 +17,7 @@ use opencli_core::auth::{self, AuthMode};
 use opencli_core::client::LlmClient;
 use opencli_core::config::{self, Config};
 use opencli_core::provider::Provider;
+use opencli_core::session::{SessionGoalSnapshot, SessionRecord};
 use opencli_core::tools::{ApprovalMode, TodoItem, TodoStatus};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -58,6 +60,26 @@ impl PermissionMode {
             Self::BypassPerms => "⚠ bypass permissions",
         }
     }
+    /// Stable string persisted to `config.default_permission_mode`. Matches the
+    /// names Claude Code uses for `permissions.defaultMode`.
+    pub fn config_str(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Default => "default",
+            Self::AcceptEdits => "acceptEdits",
+            Self::BypassPerms => "bypassPermissions",
+        }
+    }
+    /// Inverse of `config_str`. Unknown values fall back to `Default` so a
+    /// hand-edited or stale config can never wedge startup.
+    pub fn from_config_str(s: &str) -> Self {
+        match s {
+            "plan" => Self::Plan,
+            "acceptEdits" => Self::AcceptEdits,
+            "bypassPermissions" => Self::BypassPerms,
+            _ => Self::Default,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,23 +99,36 @@ pub enum Screen {
 }
 
 pub async fn run() -> Result<()> {
-    run_with(false).await
+    run_with(false, false).await
+}
+
+pub async fn run_plan_mode_required() -> Result<()> {
+    run_with(false, true).await
 }
 
 /// Same as [`run`] but opens the resume-session picker on first frame so
 /// `opencli resume` lands the user directly on the session list.
 pub async fn run_resume() -> Result<()> {
-    run_with(true).await
+    run_with(true, false).await
 }
 
-async fn run_with(start_with_resume_picker: bool) -> Result<()> {
+pub async fn run_resume_plan_mode_required() -> Result<()> {
+    run_with(true, true).await
+}
+
+async fn run_with(start_with_resume_picker: bool, plan_mode_required: bool) -> Result<()> {
     // Install a panic hook that restores the terminal before unwinding, so a
     // panic inside main_loop (or any library it pulls in) doesn't leave the
     // user's shell stuck in raw mode + alternate screen.
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(
+            io::stdout(),
+            DisableBracketedPaste,
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        );
         original_hook(info);
     }));
 
@@ -101,7 +136,7 @@ async fn run_with(start_with_resume_picker: bool) -> Result<()> {
     // SessionStart hook (best-effort, once per interactive session). Spawned so a
     // slow hook can't delay the first frame; its output/exit code is ignored.
     tokio::spawn(async { opencli_core::hooks::load().fire_session_start().await });
-    let res = main_loop(&mut terminal, start_with_resume_picker).await;
+    let res = main_loop(&mut terminal, start_with_resume_picker, plan_mode_required).await;
     restore_terminal(&mut terminal)?;
     res
 }
@@ -109,7 +144,17 @@ async fn run_with(start_with_resume_picker: bool) -> Result<()> {
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    // EnableBracketedPaste makes the terminal wrap pasted text in escape
+    // markers and deliver it as one `Event::Paste(String)` instead of a stream
+    // of individual key presses. Without it, a multi-line paste arrives as
+    // KeyCode::Char + KeyCode::Enter events, and the first Enter submits the
+    // (partial) message — the "long paste auto-sends" bug.
+    execute!(
+        out,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     let backend = CrosstermBackend::new(out);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
@@ -117,7 +162,12 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
 
 fn restore_terminal(t: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
     disable_raw_mode()?;
-    execute!(t.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        t.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     t.show_cursor()?;
     Ok(())
 }
@@ -146,6 +196,22 @@ pub enum Block {
     System(String),
 }
 
+/// One live sub-agent row in the fleet view, populated from `Subagent*` events
+/// forwarded by `dispatch_agent`. Mirrors Claude Code's sub-agent list.
+#[derive(Debug, Clone)]
+pub struct SubagentView {
+    pub id: String,
+    pub kind: String,
+    pub prompt: String,
+    pub activity: String,
+    pub steps: u64,
+    pub started_at: std::time::Instant,
+    /// None while running; `Some(ok)` once the sub-agent finishes.
+    pub done: Option<bool>,
+    /// Toggled by clicking the row — shows the full prompt + status detail.
+    pub expanded: bool,
+}
+
 pub struct App {
     pub screen: Screen,
     pub login: LoginScreen,
@@ -157,12 +223,23 @@ pub struct App {
     pub auth_mode: AuthMode,
     pub scroll: u16,
     pub auto_scroll: bool,
+    /// Screen rect of the clickable "Jump to bottom" hint. `render` sets it each
+    /// frame when the user has scrolled away from the tail (and clears it
+    /// otherwise); the mouse handler tests left-clicks against it to re-enable
+    /// auto-follow, mirroring Claude Code's click-to-jump affordance.
+    pub jump_to_bottom_hint: Option<ratatui::layout::Rect>,
+    /// Live sub-agents spawned by `dispatch_agent` during the current turn, in
+    /// start order. Rendered as a fleet-view panel above the input and cleared
+    /// when the turn ends.
+    pub subagents: Vec<SubagentView>,
+    /// Screen rect of each fleet row paired with its sub-agent id, set by
+    /// `render` each frame so a left-click can toggle the row's detail.
+    pub subagent_rows: Vec<(ratatui::layout::Rect, String)>,
     pub status_line: String,
     pub last_height: u16,
     pub last_width: u16,
     pub turn_started_at: Option<std::time::Instant>,
     pub spinner_word: String,
-    pub spinner_frame: usize,
     pub tokens_used: u64,
     /// Cumulative input tokens for the session — used by `/cost` to estimate
     /// USD spend and break down the bill.
@@ -237,6 +314,13 @@ pub struct App {
     /// Snapshot of the agent's session todo list, refreshed after every
     /// tool batch via `AgentEvent::TodosSnapshot`. Read by `/todos`.
     pub session_todos: Vec<TodoItem>,
+    /// Completion timestamps keyed by stable todo text. Used only for display
+    /// priority so newly completed items remain visible briefly in long lists.
+    pub todo_completed_at: HashMap<String, std::time::Instant>,
+    /// Whether the Claude-style live todo panel is expanded above the input.
+    /// Defaults on so users see progress as soon as the model writes todos;
+    /// Ctrl+T toggles it without touching the canonical todo state.
+    pub show_todos: bool,
     /// Memoised wrapped-line output from `render_chat`. Re-using the previous
     /// frame's lines when nothing relevant has changed (chat length, terminal
     /// width, last block size, expanded-tools toggle) keeps long sessions out
@@ -258,6 +342,18 @@ pub struct App {
     /// Draft text stashed when history browsing begins, restored when the user
     /// presses Down past the newest entry.
     pub history_draft: String,
+    /// Active `/goal` objective, if the host is automatically continuing turns
+    /// until the model reports complete or blocked via `goal_update`.
+    pub active_goal: Option<ActiveGoal>,
+    /// A new `/goal <objective>` submitted while another goal is active. The
+    /// user must confirm before the current goal is replaced.
+    pub pending_goal_replacement: Option<PendingGoalReplacement>,
+    /// Plan proposed by `exit_plan_mode`, waiting for the user to approve
+    /// leaving plan mode or reject and continue planning.
+    pub pending_plan_exit: Option<PendingPlanExit>,
+    /// Set whenever host-owned session state (currently `/goal`) changes and
+    /// should be merged into the persisted session record once the agent is idle.
+    pub pending_session_save: bool,
 }
 
 /// Snapshot of the last `render_chat` output along with the inputs that
@@ -294,6 +390,91 @@ pub struct PendingApproval {
     pub args_json: String,
     /// Optional diff/preview rendered in a second pane (e.g. write_file).
     pub diff_preview: Option<String>,
+    /// Highlighted menu option: 0 = allow once, 1 = allow this tool/command in
+    /// this project (persisted to .opencli/permissions.json), 2 = deny. Driven
+    /// by Up/Down; Enter commits it.
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveGoal {
+    pub objective: String,
+    pub turns_completed: u32,
+    pub waiting_for_user: bool,
+    pub last_summary: Option<String>,
+    pub started_at: std::time::Instant,
+    pub started_at_ms: u64,
+}
+
+impl ActiveGoal {
+    pub fn new(objective: String) -> Self {
+        Self {
+            objective,
+            turns_completed: 0,
+            waiting_for_user: false,
+            last_summary: None,
+            started_at: std::time::Instant::now(),
+            started_at_ms: opencli_core::session::now_ms(),
+        }
+    }
+
+    pub fn elapsed_label(&self) -> String {
+        format_goal_elapsed(self.started_at.elapsed())
+    }
+
+    pub fn to_session_snapshot(&self) -> SessionGoalSnapshot {
+        SessionGoalSnapshot {
+            objective: self.objective.clone(),
+            turns_completed: self.turns_completed,
+            waiting_for_user: self.waiting_for_user,
+            last_summary: self.last_summary.clone(),
+            started_at_ms: self.started_at_ms,
+        }
+    }
+
+    pub fn from_session_snapshot(snapshot: SessionGoalSnapshot) -> Self {
+        let elapsed = opencli_core::session::now_ms().saturating_sub(snapshot.started_at_ms);
+        let started_at = std::time::Instant::now()
+            .checked_sub(Duration::from_millis(elapsed))
+            .unwrap_or_else(std::time::Instant::now);
+        Self {
+            objective: snapshot.objective,
+            turns_completed: snapshot.turns_completed,
+            waiting_for_user: snapshot.waiting_for_user,
+            last_summary: snapshot.last_summary,
+            started_at,
+            started_at_ms: snapshot.started_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingGoalReplacement {
+    pub objective: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingPlanExit {
+    pub plan: String,
+}
+
+const GOAL_START_PREFIX: &str = "[opencli:/goal start]";
+const GOAL_CONTINUATION_PREFIX: &str = "[opencli:/goal continuation]";
+const PLAN_APPROVED_PREFIX: &str = "[opencli:/plan approved]";
+const PLAN_REJECTED_PREFIX: &str = "[opencli:/plan rejected]";
+pub const TODO_RECENT_COMPLETED_TTL: Duration = Duration::from_secs(30);
+
+pub fn todo_completion_key(todo: &TodoItem) -> String {
+    format!("{}\n{}", todo.content, todo.active_form)
+}
+
+pub fn format_goal_elapsed(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    if secs <= 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{}", secs / 60, secs % 60)
+    }
 }
 
 pub const SPINNER_WORDS: &[&str] = &[
@@ -413,6 +594,85 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Folding",
     "Layering",
     "Garnishing",
+    // More flavor — the spinner word is picked per turn, so a longer list means
+    // less repetition across a session.
+    "Conjuring",
+    "Summoning",
+    "Channeling",
+    "Manifesting",
+    "Tinkering",
+    "Wrangling",
+    "Untangling",
+    "Noodling",
+    "Percolating",
+    "Marinating",
+    "Simmering",
+    "Brewing",
+    "Distilling",
+    "Fermenting",
+    "Crystallizing",
+    "Synthesizing",
+    "Assembling",
+    "Engineering",
+    "Architecting",
+    "Sculpting",
+    "Chiseling",
+    "Whittling",
+    "Polishing",
+    "Buffing",
+    "Calibrating",
+    "Tuning",
+    "Orchestrating",
+    "Choreographing",
+    "Weaving",
+    "Spinning",
+    "Knitting",
+    "Stitching",
+    "Threading",
+    "Plotting",
+    "Scheming",
+    "Devising",
+    "Hatching",
+    "Concocting",
+    "Brainstorming",
+    "Daydreaming",
+    "Wondering",
+    "Speculating",
+    "Theorizing",
+    "Hypothesizing",
+    "Extrapolating",
+    "Computing",
+    "Crunching",
+    "Number-crunching",
+    "Processing",
+    "Parsing",
+    "Compiling",
+    "Optimizing",
+    "Refactoring",
+    "Debugging",
+    "Untangling spaghetti",
+    "Herding bits",
+    "Wrangling tokens",
+    "Chasing pointers",
+    "Greasing gears",
+    "Stoking the furnace",
+    "Charging flux",
+    "Spooling up",
+    "Warming up",
+    "Limbering up",
+    "Cranking",
+    "Whirring",
+    "Vibing",
+    "Grooving",
+    "Riffing",
+    "Jamming",
+    "Improvising",
+    "Freestyling",
+    "Doodling",
+    "Sketching",
+    "Drafting",
+    "Outlining",
+    "Storyboarding",
 ];
 
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -436,7 +696,7 @@ impl App {
         let cwd = std::env::current_dir().unwrap_or_default();
         let blocks = vec![Block::Welcome];
         let screen = initial_screen(auth_mode, has_supported_env_key());
-        Self {
+        let mut app = Self {
             screen,
             login: LoginScreen::new(),
             blocks,
@@ -447,12 +707,14 @@ impl App {
             auth_mode,
             scroll: 0,
             auto_scroll: true,
+            jump_to_bottom_hint: None,
+            subagents: Vec::new(),
+            subagent_rows: Vec::new(),
             status_line: String::new(),
             last_height: 0,
             last_width: 0,
             turn_started_at: None,
             spinner_word: String::new(),
-            spinner_frame: 0,
             tokens_used: 0,
             input_tokens_total: 0,
             output_tokens_total: 0,
@@ -479,13 +741,26 @@ impl App {
             compact_result_msg: None,
             start_with_resume_picker: false,
             session_todos: Vec::new(),
+            todo_completed_at: HashMap::new(),
+            show_todos: true,
             chat_render_cache: None,
             pending_approval: None,
             approval_handle: None,
             input_history: Vec::new(),
             history_pos: None,
             history_draft: String::new(),
-        }
+            active_goal: None,
+            pending_goal_replacement: None,
+            pending_plan_exit: None,
+            pending_session_save: false,
+        };
+        // Restore the last-persisted permission mode (Claude Code's
+        // `defaultMode`). Overrides the literal defaults above for the three
+        // approval fields via the canonical setter.
+        app.set_permission_mode(PermissionMode::from_config_str(
+            &app.config.default_permission_mode,
+        ));
+        app
     }
 
     /// Record a submitted prompt in the input history (skipping a consecutive
@@ -579,7 +854,7 @@ impl App {
                 p
             }
             OverlayKind::EffortPicker => {
-                let mut p = Picker::new("reasoning effort", picker::efforts());
+                let mut p = Picker::new("reasoning effort", picker::efforts(&self.config.model));
                 if let Some(i) = p
                     .items
                     .iter()
@@ -651,11 +926,66 @@ fn resolve_cwd_arg(current: &std::path::Path, arg: &str) -> Option<std::path::Pa
     Some(candidate.canonicalize().unwrap_or(candidate))
 }
 
+fn apply_host_state_to_session_record(app: &App, record: &mut SessionRecord) {
+    record.state.active_goal = app
+        .active_goal
+        .as_ref()
+        .map(ActiveGoal::to_session_snapshot);
+}
+
+fn set_permission_mode_and_save(app: &mut App, mode: PermissionMode) {
+    app.set_permission_mode(mode);
+    app.config.default_permission_mode = mode.config_str().to_string();
+    if let Err(e) = config::save(&app.config) {
+        app.blocks
+            .push(Block::System(format!("config save failed: {e}")));
+    }
+}
+
+fn permission_mode_after_plan_approval(app: &App) -> PermissionMode {
+    match PermissionMode::from_config_str(&app.config.default_permission_mode) {
+        PermissionMode::Plan => PermissionMode::Default,
+        mode => mode,
+    }
+}
+
+fn apply_plan_mode_required(app: &mut App) {
+    app.set_permission_mode(PermissionMode::Plan);
+    app.pending_plan_exit = None;
+    app.blocks.push(Block::System(
+        "plan mode required → on (read-only until a plan is approved)".into(),
+    ));
+    app.auto_scroll = true;
+}
+
+async fn save_current_session_record(
+    app: &mut App,
+    agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
+) {
+    let mut record = {
+        let guard = agent.lock().await;
+        let Some(a) = guard.as_ref() else {
+            app.pending_session_save = false;
+            return;
+        };
+        a.to_session_record().await
+    };
+    apply_host_state_to_session_record(app, &mut record);
+    if let Err(e) = opencli_core::session::save(&record) {
+        tracing::debug!(error = %e, "session save with host state failed");
+    }
+    app.pending_session_save = false;
+}
+
 async fn main_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     start_with_resume_picker: bool,
+    plan_mode_required: bool,
 ) -> Result<()> {
     let mut app = App::new();
+    if plan_mode_required {
+        apply_plan_mode_required(&mut app);
+    }
     if start_with_resume_picker && app.screen == Screen::Chat {
         app.start_with_resume_picker = true;
     }
@@ -725,6 +1055,9 @@ async fn main_loop(
             app.pending_compact = false;
             start_compaction(&mut app, &agent, &agent_tx);
         }
+        if app.pending_session_save && !app.busy && !app.compacting && app.screen == Screen::Chat {
+            save_current_session_record(&mut app, &agent).await;
+        }
         // After a successful compaction the bar holds at 100% briefly, then we
         // swap in the result line and tear the bar down. The 80ms select tick
         // keeps redrawing during the hold.
@@ -791,7 +1124,7 @@ async fn main_loop(
                         let mut requeue = vec![item.clone()];
                         requeue.extend(iter.by_ref());
                         app.message_queue = requeue;
-                        app.blocks.push(Block::User(combined.clone()));
+                        push_visible_user_block(&mut app, &combined);
                         app.auto_scroll = true;
                         launch_turn(&mut app, &agent, &agent_tx, combined).await;
                         launched = true;
@@ -803,7 +1136,7 @@ async fn main_loop(
             }
             if !launched && !normal.is_empty() {
                 let combined = normal.join("\n\n");
-                app.blocks.push(Block::User(combined.clone()));
+                push_visible_user_block(&mut app, &combined);
                 app.auto_scroll = true;
                 launch_turn(&mut app, &agent, &agent_tx, combined).await;
             }
@@ -832,6 +1165,8 @@ async fn main_loop(
                 login_render = Some((stage, login_err));
             }
         }
+
+        prune_expired_completed_todos(&mut app);
 
         if !app.busy || last_draw.elapsed() >= frame_budget {
             terminal.draw(|f| {
@@ -875,8 +1210,22 @@ async fn main_loop(
                         }
                     }
                     Ok(Event::Resize(_, _)) => {}
+                    // Bracketed paste: the whole clipboard arrives as one event,
+                    // so multi-line text lands in the composer for editing
+                    // instead of submitting on the first newline.
+                    Ok(Event::Paste(text))
+                        if app.screen == Screen::Chat && app.pending_approval.is_none() =>
+                    {
+                        for c in text.chars() {
+                            if c == '\r' {
+                                continue;
+                            }
+                            app.input.insert_char(c);
+                        }
+                        app.history_pos = None;
+                    }
                     Ok(Event::Mouse(m)) => {
-                        use crossterm::event::MouseEventKind;
+                        use crossterm::event::{MouseButton, MouseEventKind};
                         match m.kind {
                             MouseEventKind::ScrollUp => {
                                 app.scroll = app.scroll.saturating_sub(3);
@@ -884,6 +1233,28 @@ async fn main_loop(
                             }
                             MouseEventKind::ScrollDown => {
                                 app.scroll = app.scroll.saturating_add(3);
+                            }
+                            MouseEventKind::Down(MouseButton::Left) => {
+                                let (col, row) = (m.column, m.row);
+                                if app
+                                    .jump_to_bottom_hint
+                                    .is_some_and(|r| point_in(r, col, row))
+                                {
+                                    // Click the jump-to-bottom bar → resume tail-following.
+                                    app.auto_scroll = true;
+                                } else if let Some(id) = app
+                                    .subagent_rows
+                                    .iter()
+                                    .find(|(r, _)| point_in(*r, col, row))
+                                    .map(|(_, id)| id.clone())
+                                {
+                                    // Click a fleet row → toggle its detail.
+                                    if let Some(s) =
+                                        app.subagents.iter_mut().find(|s| s.id == id)
+                                    {
+                                        s.expanded = !s.expanded;
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -900,9 +1271,9 @@ async fn main_loop(
                 }
             }
             _ = tokio::time::sleep(Duration::from_millis(80)) => {
-                if app.busy {
-                    app.spinner_frame = app.spinner_frame.wrapping_add(1);
-                }
+                // Wake periodically so the spinner redraws while a turn runs and
+                // no agent events arrive; the glyph itself advances on elapsed
+                // wall-clock time in render_spinner, not on a counter.
             }
         }
     }
@@ -919,17 +1290,60 @@ async fn handle_key(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
 
-    if let Some(p) = app.pending_approval.clone() {
-        let decision = match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => Some(true),
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Some(false),
+    if app.pending_approval.is_some() {
+        // Three-option menu, navigable with Up/Down + Enter, with y/n/Esc kept
+        // as shortcuts. 0 = allow once, 1 = allow in this project (persisted to
+        // .opencli/permissions.json), 2 = deny.
+        const N_OPTS: usize = 3;
+        match key.code {
+            KeyCode::Up => {
+                if let Some(p) = app.pending_approval.as_mut() {
+                    p.selected = (p.selected + N_OPTS - 1) % N_OPTS;
+                }
+                return Ok(false);
+            }
+            KeyCode::Down => {
+                if let Some(p) = app.pending_approval.as_mut() {
+                    p.selected = (p.selected + 1) % N_OPTS;
+                }
+                return Ok(false);
+            }
+            _ => {}
+        }
+        let sel = app.pending_approval.as_ref().map_or(0, |p| p.selected);
+        let choice = match key.code {
+            KeyCode::Enter => Some(sel),
+            KeyCode::Char('y') | KeyCode::Char('Y') => Some(0),
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Some(2),
             _ => None,
         };
-        if let Some(granted) = decision {
-            app.pending_approval = None;
-            let label = if granted { "approved" } else { "denied" };
-            app.blocks
-                .push(Block::System(format!("{label}: {}", p.tool_name)));
+        if let Some(choice) = choice {
+            let p = app
+                .pending_approval
+                .take()
+                .expect("pending_approval present");
+            let granted = choice != 2;
+            // Option 1 = "allow in this project": persist a rule to
+            // .opencli/permissions.json so this tool/command never prompts again
+            // in this project (the agent re-reads the file on its next gate
+            // check). Unlike a session-wide bypass, it is scoped and durable.
+            if choice == 1 {
+                let args_val: serde_json::Value =
+                    serde_json::from_str(&p.args_json).unwrap_or(serde_json::Value::Null);
+                match opencli_core::permissions::allow_in_project(&app.cwd, &p.tool_name, &args_val)
+                {
+                    Ok(rule) => app.blocks.push(Block::System(format!(
+                        "✓ allowed in this project: {rule} — saved to .opencli/permissions.json"
+                    ))),
+                    Err(e) => app.blocks.push(Block::System(format!(
+                        "could not save project permission: {e}"
+                    ))),
+                }
+            } else {
+                let label = if granted { "approved" } else { "denied" };
+                app.blocks
+                    .push(Block::System(format!("{label}: {}", p.tool_name)));
+            }
             // CRITICAL: do NOT lock the outer agent mutex here — run_turn
             // holds it for the entire turn and is itself awaiting this
             // approval. Use the handle Arc captured at turn start instead.
@@ -945,8 +1359,26 @@ async fn handle_key(
                     }
                 });
             }
+        }
+        return Ok(false);
+    }
+
+    if app.pending_goal_replacement.is_some() {
+        if key.code == KeyCode::Char('c') && ctrl {
+            return Ok(true);
+        }
+        handle_goal_replacement_key(app, key);
+        return Ok(false);
+    }
+
+    if app.pending_plan_exit.is_some() {
+        if key.code == KeyCode::Char('c') && ctrl {
+            return Ok(true);
+        }
+        if app.busy {
             return Ok(false);
         }
+        handle_plan_exit_key(app, key);
         return Ok(false);
     }
 
@@ -956,15 +1388,12 @@ async fn handle_key(
 
     if matches!(key.code, KeyCode::BackTab) {
         let next = app.permission_mode().next();
-        app.set_permission_mode(next);
-        // Don't insert the mode block between assistant deltas while a turn
-        // is streaming — it pushes the open Assistant block up and reads as
-        // "reply disappeared". The footer label reflects the new mode either
-        // way, so visual feedback is preserved.
-        if !app.busy {
-            app.blocks
-                .push(Block::System(format!("mode → {}", next.label())));
-        }
+        // Persist so the mode survives quit/relaunch (mirrors how /model and
+        // /effort save on change). Errors are surfaced, not swallowed.
+        set_permission_mode_and_save(app, next);
+        // No chat notification: the status-bar footer already shows the active
+        // mode (see render_status), matching Claude Code, which only updates the
+        // indicator on Shift+Tab rather than printing a line.
         return Ok(false);
     }
     match key.code {
@@ -978,11 +1407,19 @@ async fn handle_key(
             app.history_pos = None;
         }
         KeyCode::Char('w') if ctrl => app.input.delete_word_left(),
+        KeyCode::Char('a') if ctrl => app.input.move_to_start(),
+        KeyCode::Char('k') if ctrl => {
+            app.input.kill_to_line_end();
+            app.history_pos = None;
+        }
         KeyCode::Char('v') if ctrl => {
             handle_paste(app).await;
         }
         KeyCode::Char('o') if ctrl => {
             app.expanded_tools = !app.expanded_tools;
+        }
+        KeyCode::Char('t') if ctrl => {
+            app.show_todos = !app.show_todos;
         }
         KeyCode::Char('/') if app.input.is_empty() => {
             // Trigger the slash menu overlay; also insert '/' into the input
@@ -1005,7 +1442,7 @@ async fn handle_key(
             }
             let text = app.input.take();
             app.record_history(&text);
-            if !app.busy {
+            if !app.busy && !app.compacting {
                 if let Some(rest) = text.strip_prefix('/') {
                     handle_slash(app, rest.trim()).await;
                     return Ok(false);
@@ -1014,8 +1451,11 @@ async fn handle_key(
                 app.auto_scroll = true;
                 launch_turn(app, agent, tx, text).await;
             } else {
-                // Busy: queue the message. Slash commands also queue, no special-casing,
-                // so the user's intent is preserved.
+                // Busy or compacting: queue the message. During compaction
+                // launch_turn would block on the agent mutex the compaction task
+                // holds, freezing the UI; the post-compaction queue flush picks
+                // it up instead. Slash commands queue too, no special-casing, so
+                // the user's intent is preserved.
                 app.message_queue.push(text);
             }
         }
@@ -1044,6 +1484,7 @@ async fn handle_key(
             }
         }
         KeyCode::Home => app.input.move_home(),
+        KeyCode::End if ctrl => app.auto_scroll = true,
         KeyCode::End => app.input.move_end(),
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
@@ -1091,6 +1532,75 @@ async fn handle_paste(app: &mut App) {
     }
 }
 
+fn handle_goal_replacement_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let Some(pending) = app.pending_goal_replacement.take() else {
+                return;
+            };
+            start_goal(app, pending.objective, true);
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            let Some(pending) = app.pending_goal_replacement.take() else {
+                return;
+            };
+            if let Some(goal) = &app.active_goal {
+                app.blocks.push(Block::System(format!(
+                    "Kept active goal: {}\nDiscarded new goal: {}",
+                    goal.objective, pending.objective
+                )));
+            }
+            queue_goal_continuation(app);
+            app.auto_scroll = true;
+        }
+        _ => {}
+    }
+}
+
+fn handle_plan_exit_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let Some(pending) = app.pending_plan_exit.take() else {
+                return;
+            };
+            if let Some(goal) = app.active_goal.as_mut() {
+                goal.waiting_for_user = false;
+                goal.last_summary = Some("plan approved".into());
+                app.pending_session_save = true;
+            }
+            app.set_permission_mode(permission_mode_after_plan_approval(app));
+            app.message_queue.push(format!(
+                "{PLAN_APPROVED_PREFIX}\n\nThe user approved this plan and exited plan mode. Implement it now and verify the result.\n\nApproved plan:\n{}",
+                pending.plan
+            ));
+            app.blocks.push(Block::System(
+                "Plan approved — leaving plan mode and continuing.".into(),
+            ));
+            app.auto_scroll = true;
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            let Some(pending) = app.pending_plan_exit.take() else {
+                return;
+            };
+            if let Some(goal) = app.active_goal.as_mut() {
+                goal.waiting_for_user = false;
+                goal.last_summary = Some("plan rejected; revising".into());
+                app.pending_session_save = true;
+            }
+            app.set_permission_mode(PermissionMode::Plan);
+            app.message_queue.push(format!(
+                "{PLAN_REJECTED_PREFIX}\n\nThe user rejected this plan. Stay in plan mode, revise the plan, and call exit_plan_mode again only when the revised plan is ready.\n\nRejected plan:\n{}",
+                pending.plan
+            ));
+            app.blocks.push(Block::System(
+                "Plan rejected — staying in plan mode.".into(),
+            ));
+            app.auto_scroll = true;
+        }
+        _ => {}
+    }
+}
+
 async fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     if key.code == KeyCode::Char('c') && ctrl {
@@ -1114,6 +1624,16 @@ async fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             let key_sel = picker.selected_key().unwrap_or_default();
             app.overlay = None;
             handle_overlay_select(app, kind, &key_sel).await;
+        }
+        KeyCode::Tab if kind == OverlayKind::SlashMenu => {
+            // Autocomplete the highlighted command into the input (like Claude
+            // Code's Tab), then close the menu. The completed `/<cmd> ` lands in
+            // the normal composer so the user can add arguments or press Enter
+            // to run it via the standard slash path.
+            if let Some(key_sel) = picker.selected_key() {
+                app.input.set_text(format!("/{key_sel} "));
+                app.overlay = None;
+            }
         }
         KeyCode::Backspace if kind == OverlayKind::SlashMenu => {
             app.input.backspace();
@@ -1238,6 +1758,8 @@ async fn apply_resume(
     };
     let preview = record.meta.preview.clone();
     let msg_count = record.meta.message_count;
+    let restored_todos = record.state.todos.clone();
+    let restored_goal = record.state.active_goal.clone();
 
     // Rebuild visible blocks BEFORE we hand the history off to the agent so
     // we still own the record's contents.
@@ -1278,6 +1800,21 @@ async fn apply_resume(
     app.blocks.push(Block::System(format!(
         "↻ resumed: {preview} ({msg_count} messages)"
     )));
+    app.session_todos = restored_todos;
+    app.todo_completed_at.clear();
+    app.active_goal = restored_goal.map(ActiveGoal::from_session_snapshot);
+    app.pending_goal_replacement = None;
+    app.pending_plan_exit = None;
+    if !app.session_todos.is_empty() {
+        app.show_todos = true;
+    }
+    if let Some(goal) = &app.active_goal {
+        if goal.waiting_for_user {
+            app.status_line = "(goal paused for user input)".into();
+        } else {
+            queue_goal_continuation(app);
+        }
+    }
     app.auto_scroll = true;
 }
 
@@ -1286,6 +1823,21 @@ async fn apply_resume(
 /// summary, persists, then reports back via `AgentEvent::CompactDone`. Running
 /// off the main loop is what keeps the UI responsive and the progress bar
 /// animating instead of freezing on the model call. Returns immediately.
+/// Heuristic match for a provider's "input too large for the context window"
+/// rejection, across OpenAI / Anthropic / OpenAI-compatible phrasings. Turns a
+/// raw API error into an actionable /compact recovery hint.
+fn is_context_overflow(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("context window")
+        || m.contains("context length")
+        || m.contains("context_length_exceeded")
+        || m.contains("maximum context")
+        || m.contains("prompt is too long")
+        || m.contains("too many tokens")
+        || m.contains("exceeds the context")
+        || m.contains("reduce the length")
+}
+
 fn start_compaction(
     app: &mut App,
     agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
@@ -1295,6 +1847,13 @@ fn start_compaction(
     app.compact_started_at = Some(std::time::Instant::now());
     app.compact_done_at = None;
     app.compact_result_msg = None;
+    let goal_snapshot = app
+        .active_goal
+        .as_ref()
+        .map(ActiveGoal::to_session_snapshot);
+    if goal_snapshot.is_some() {
+        app.pending_session_save = true;
+    }
     let agent = agent.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
@@ -1307,7 +1866,9 @@ fn start_compaction(
                     // smaller baseline (compaction runs outside the per-turn
                     // save path).
                     if r.is_ok() {
-                        if let Err(e) = opencli_core::session::save(&a.to_session_record()) {
+                        let mut record = a.to_session_record().await;
+                        record.state.active_goal = goal_snapshot.clone();
+                        if let Err(e) = opencli_core::session::save(&record) {
                             tracing::debug!(error = %e, "session save after compact failed");
                         }
                     }
@@ -1340,9 +1901,13 @@ fn rebuild_blocks_from_history(history: &[opencli_core::openai::InputItem]) -> V
 
     let mut outputs: HashMap<String, (String, bool)> = HashMap::new();
     for item in history {
-        if let InputItem::FunctionCallOutput { call_id, output } = item {
-            let is_err = output.starts_with("Error:");
-            outputs.insert(call_id.clone(), (output.clone(), is_err));
+        if let InputItem::FunctionCallOutput {
+            call_id,
+            output,
+            error,
+        } = item
+        {
+            outputs.insert(call_id.clone(), (output.clone(), *error));
         }
     }
 
@@ -1411,6 +1976,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  /clear              clear conversation\n  \
                  /resume             pick a previous session to continue\n  \
                  /cwd [path]         show / set working directory\n  \
+                 /goal <objective>   keep working until the objective is complete\n  \
                  /status             show auth status\n  \
                  /cost               show token usage and estimated cost\n  \
                  /config             show current configuration\n  \
@@ -1430,6 +1996,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  Keyboard shortcuts:\n  \
                  Esc                 cancel the running turn (while busy)\n  \
                  Ctrl+O              toggle tool-call detail view\n  \
+                 Ctrl+T              show / hide the live todo panel\n  \
                  Ctrl+L              clear the screen\n  \
                  Ctrl+V              paste text or image\n  \
                  Ctrl+C              quit"
@@ -1623,14 +2190,71 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 app.blocks.push(Block::System("Invalid path.".into()));
             }
         }
+        "goal" => {
+            let trimmed = arg.trim();
+            if trimmed.is_empty() {
+                match &app.active_goal {
+                    Some(goal) => {
+                        let mut msg = format!(
+                            "Active goal:\n  {}\n  turns completed: {}",
+                            goal.objective, goal.turns_completed
+                        );
+                        if goal.waiting_for_user {
+                            msg.push_str("\n  waiting for user input");
+                        }
+                        if let Some(summary) = &goal.last_summary {
+                            msg.push_str(&format!("\n  last update: {summary}"));
+                        }
+                        app.blocks.push(Block::System(msg));
+                    }
+                    None => app.blocks.push(Block::System(
+                        "Usage: /goal <objective>\nExample: /goal fix the failing tests and verify the build"
+                            .into(),
+                    )),
+                }
+            } else if matches!(trimmed, "stop" | "cancel") {
+                if let Some(goal) = app.active_goal.take() {
+                    app.pending_goal_replacement = None;
+                    remove_pending_goal_continuations(&mut app.message_queue);
+                    app.pending_session_save = true;
+                    app.blocks
+                        .push(Block::System(format!("Stopped goal: {}", goal.objective)));
+                } else {
+                    app.blocks
+                        .push(Block::System("No active goal to stop.".into()));
+                }
+            } else {
+                let objective = trimmed.to_string();
+                if let Some(goal) = &app.active_goal {
+                    if goal.objective == objective {
+                        app.blocks.push(Block::System(format!(
+                            "Goal already active: {}",
+                            goal.objective
+                        )));
+                    } else {
+                        app.pending_goal_replacement = Some(PendingGoalReplacement {
+                            objective: objective.clone(),
+                        });
+                        app.blocks.push(Block::System(format!(
+                            "A goal is already active:\n  current: {}\n  new: {}\n\nReplace the current goal? Press Y to replace, or N/Esc to keep the current goal.",
+                            goal.objective, objective
+                        )));
+                    }
+                    app.auto_scroll = true;
+                } else {
+                    start_goal(app, objective, false);
+                }
+            }
+        }
         "plan" => {
-            app.approval = ApprovalMode::Plan;
+            set_permission_mode_and_save(app, PermissionMode::Plan);
             app.blocks.push(Block::System(
                 "plan mode → on (read-only tools only; write/edit/shell will be blocked)".into(),
             ));
         }
         "normal" => {
-            app.approval = ApprovalMode::OnRequest;
+            set_permission_mode_and_save(app, PermissionMode::Default);
+            app.pending_plan_exit = None;
             app.blocks.push(Block::System("plan mode → off".into()));
         }
         "perms" | "approvals" => {
@@ -1663,6 +2287,12 @@ async fn handle_slash(app: &mut App, cmd: &str) {
         }
         "clear" => {
             app.blocks.clear();
+            if app.active_goal.take().is_some() {
+                app.pending_session_save = true;
+            }
+            app.pending_goal_replacement = None;
+            app.pending_plan_exit = None;
+            remove_pending_goal_continuations(&mut app.message_queue);
         }
         "resume" => {
             app.open_overlay(OverlayKind::ResumePicker);
@@ -1902,29 +2532,40 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                         .into(),
                 ));
             } else {
-                let mut msg = String::from("Session todos:\n");
-                for (i, t) in app.session_todos.iter().enumerate() {
-                    let marker = match t.status {
-                        TodoStatus::Completed => "[x]",
-                        TodoStatus::InProgress => "[~]",
-                        TodoStatus::Pending => "[ ]",
-                    };
-                    let label = match t.status {
-                        TodoStatus::InProgress => &t.active_form,
-                        _ => &t.content,
-                    };
-                    msg.push_str(&format!("  {} {}. {label}\n", marker, i + 1));
-                }
                 let done = app
                     .session_todos
                     .iter()
                     .filter(|t| matches!(t.status, TodoStatus::Completed))
                     .count();
-                msg.push_str(&format!(
-                    "\n  {} / {} completed",
+                let in_progress = app
+                    .session_todos
+                    .iter()
+                    .filter(|t| matches!(t.status, TodoStatus::InProgress))
+                    .count();
+                let pending = app
+                    .session_todos
+                    .iter()
+                    .filter(|t| matches!(t.status, TodoStatus::Pending))
+                    .count();
+                let mut msg = format!(
+                    "{} tasks ({} done, {} in progress, {} open)\n",
+                    app.session_todos.len(),
                     done,
-                    app.session_todos.len()
-                ));
+                    in_progress,
+                    pending
+                );
+                for t in &app.session_todos {
+                    let marker = match t.status {
+                        TodoStatus::Completed => "✓",
+                        TodoStatus::InProgress => "▪",
+                        TodoStatus::Pending => "□",
+                    };
+                    let label = match t.status {
+                        TodoStatus::InProgress => &t.active_form,
+                        _ => &t.content,
+                    };
+                    msg.push_str(&format!("  {marker} {label}\n"));
+                }
                 app.blocks.push(Block::System(msg));
             }
         }
@@ -2057,6 +2698,170 @@ fn split_slash_command(cmd: &str) -> (&str, &str) {
     (head, arg)
 }
 
+fn goal_start_prompt(objective: &str) -> String {
+    format!(
+        "{GOAL_START_PREFIX}\n\n\
+Active goal:\n{objective}\n\n\
+You are now in /goal mode. Work autonomously until this objective is genuinely complete.\n\n\
+Rules:\n\
+- Read the relevant codebase/context before changing code.\n\
+- Use tools to inspect, edit, and verify. Do not stop at planning or partial work.\n\
+- If the goal has 3+ concrete steps, maintain a todo list with todo_write and update it after each meaningful step.\n\
+- Before marking complete, run the most relevant tests/build/checks available, or state exactly why a check cannot run.\n\
+- Call goal_update with status \"complete\" only when the full objective is done and verified.\n\
+- Call goal_update with status \"blocked\" only when no meaningful progress is possible without user input or an external state change.\n\
+- If work remains at the end of a turn, call goal_update with status \"in_progress\" and summarize the next concrete action.\n\
+- Keep going; the host will continue automatically until complete or blocked."
+    )
+}
+
+fn goal_continuation_prompt(goal: &ActiveGoal) -> String {
+    let last = goal
+        .last_summary
+        .as_deref()
+        .unwrap_or("no explicit progress update yet");
+    format!(
+        "{GOAL_CONTINUATION_PREFIX}\n\n\
+Continue the active /goal until it is genuinely complete.\n\n\
+Goal:\n{}\n\n\
+Last goal_update summary:\n{last}\n\n\
+Keep working from the current repository state and conversation context. Do not ask whether to continue. \
+Use tools, make the remaining changes, and verify them. Call goal_update with status \"complete\" only after the goal is fully done and verified; call \"blocked\" only if you cannot make meaningful progress without user input or an external state change.",
+        goal.objective
+    )
+}
+
+fn remove_pending_goal_continuations(queue: &mut Vec<String>) {
+    queue.retain(|item| {
+        !item.starts_with(GOAL_START_PREFIX) && !item.starts_with(GOAL_CONTINUATION_PREFIX)
+    });
+}
+
+fn start_goal(app: &mut App, objective: String, replaced: bool) {
+    app.pending_goal_replacement = None;
+    remove_pending_goal_continuations(&mut app.message_queue);
+    app.active_goal = Some(ActiveGoal::new(objective.clone()));
+    app.pending_session_save = true;
+    app.message_queue.push(goal_start_prompt(&objective));
+    let prefix = if replaced {
+        "Replaced active goal"
+    } else {
+        "Started goal"
+    };
+    app.blocks
+        .push(Block::System(format!("{prefix}: {objective}")));
+    app.auto_scroll = true;
+}
+
+fn push_visible_user_block(app: &mut App, text: &str) {
+    if text.starts_with(GOAL_START_PREFIX) {
+        if let Some(goal) = &app.active_goal {
+            app.blocks
+                .push(Block::System(format!("Goal running: {}", goal.objective)));
+        } else {
+            app.blocks.push(Block::System("Goal running.".into()));
+        }
+    } else if text.starts_with(GOAL_CONTINUATION_PREFIX) {
+        if let Some(goal) = &app.active_goal {
+            app.blocks.push(Block::System(format!(
+                "Continuing goal: {} (turn {})",
+                goal.objective,
+                goal.turns_completed.saturating_add(1)
+            )));
+        } else {
+            app.blocks.push(Block::System("Continuing goal.".into()));
+        }
+    } else if text.starts_with(PLAN_APPROVED_PREFIX) {
+        app.blocks
+            .push(Block::System("Implementing approved plan.".into()));
+    } else if text.starts_with(PLAN_REJECTED_PREFIX) {
+        app.blocks
+            .push(Block::System("Revising rejected plan.".into()));
+    } else {
+        app.blocks.push(Block::User(text.to_string()));
+    }
+}
+
+fn queue_goal_continuation(app: &mut App) {
+    let Some(goal) = app.active_goal.as_ref() else {
+        return;
+    };
+    if goal.waiting_for_user {
+        app.status_line = "(goal paused for user input)".into();
+        return;
+    }
+    if !app.message_queue.is_empty() {
+        return;
+    }
+    let prompt = goal_continuation_prompt(goal);
+    app.message_queue.push(prompt);
+    app.status_line = "(continuing active goal...)".into();
+}
+
+fn schedule_goal_continuation(app: &mut App) {
+    let Some(goal) = app.active_goal.as_mut() else {
+        return;
+    };
+    goal.turns_completed = goal.turns_completed.saturating_add(1);
+    app.pending_session_save = true;
+    queue_goal_continuation(app);
+}
+
+fn update_todo_completion_timestamps(app: &mut App, next_todos: &[TodoItem]) {
+    let next_all_completed = all_todos_completed(next_todos);
+    let previous_completed: HashSet<String> = app
+        .session_todos
+        .iter()
+        .filter(|todo| matches!(todo.status, TodoStatus::Completed))
+        .map(todo_completion_key)
+        .collect();
+    let current_completed: HashSet<String> = next_todos
+        .iter()
+        .filter(|todo| matches!(todo.status, TodoStatus::Completed))
+        .map(todo_completion_key)
+        .collect();
+    app.todo_completed_at
+        .retain(|key, _| current_completed.contains(key));
+    let now = std::time::Instant::now();
+    for key in current_completed {
+        if !previous_completed.contains(&key)
+            || (next_all_completed && !app.todo_completed_at.contains_key(&key))
+        {
+            app.todo_completed_at.insert(key, now);
+        }
+    }
+}
+
+fn all_todos_completed(todos: &[TodoItem]) -> bool {
+    !todos.is_empty()
+        && todos
+            .iter()
+            .all(|todo| matches!(todo.status, TodoStatus::Completed))
+}
+
+fn has_recent_completed_todo(app: &App) -> bool {
+    let now = std::time::Instant::now();
+    app.session_todos.iter().any(|todo| {
+        app.todo_completed_at
+            .get(&todo_completion_key(todo))
+            .is_some_and(|completed_at| {
+                now.duration_since(*completed_at) < TODO_RECENT_COMPLETED_TTL
+            })
+    })
+}
+
+fn should_keep_recent_completed_todos_for_empty_snapshot(app: &App) -> bool {
+    all_todos_completed(&app.session_todos) && has_recent_completed_todo(app)
+}
+
+fn prune_expired_completed_todos(app: &mut App) {
+    if !all_todos_completed(&app.session_todos) || has_recent_completed_todo(app) {
+        return;
+    }
+    app.session_todos.clear();
+    app.todo_completed_at.clear();
+}
+
 /// Rough OpenAI Responses pricing per model — used by `/cost` for a local
 /// estimate. Returns `(input_$_per_million, output_$_per_million)`.
 /// Update when official pricing changes; an inexact estimate beats none.
@@ -2156,6 +2961,11 @@ async fn launch_turn(
             .push(Block::System(format!("⛔ prompt blocked: {reason}")));
         return;
     }
+    if let Some(goal) = app.active_goal.as_mut() {
+        goal.waiting_for_user = false;
+        app.pending_session_save = true;
+    }
+    let should_defer_session_save_to_host = app.active_goal.is_some();
     let client = match LlmClient::for_config(&app.config).await {
         Ok(c) => c,
         Err(e) => {
@@ -2207,10 +3017,16 @@ async fn launch_turn(
             app.approval_handle = Some(a.pending_approvals.clone());
         }
     }
+    if should_defer_session_save_to_host {
+        // Persist the just-queued user/goal prompt before the long-running
+        // model turn starts. The post-turn save is still deferred to the host
+        // so `goal_update complete|blocked` cannot be overwritten by the
+        // launch-time goal snapshot.
+        save_current_session_record(app, agent).await;
+    }
     app.busy = true;
     app.turn_started_at = Some(std::time::Instant::now());
     app.spinner_word = pick_spinner_word();
-    app.spinner_frame = 0;
     app.turn_count = app.turn_count.saturating_add(1);
     app.status_line.clear();
     app.blocks.push(Block::Assistant {
@@ -2232,9 +3048,16 @@ async fn launch_turn(
             // it up later. Failure to save is logged at debug level only —
             // we don't want to spam the chat with disk-error popups, and the
             // session is still safe in memory for the remainder of the run.
-            let record = a.to_session_record();
-            if let Err(e) = opencli_core::session::save(&record) {
-                tracing::debug!(error = %e, "session save failed");
+            //
+            // When `/goal` is active, host-owned state may change DURING the
+            // turn (for example `goal_update complete`). The TUI saves the
+            // latest host state immediately after the turn finishes, so avoid
+            // writing a stale launch-time goal snapshot here.
+            if !should_defer_session_save_to_host {
+                let record = a.to_session_record().await;
+                if let Err(e) = opencli_core::session::save(&record) {
+                    tracing::debug!(error = %e, "session save failed");
+                }
             }
         }
     });
@@ -2255,6 +3078,15 @@ async fn cancel_current_turn(app: &mut App) {
     app.is_thinking = false;
     app.turn_started_at = None;
     app.status_line.clear();
+    // The aborted turn won't emit TurnComplete, so collapse the fleet view here.
+    app.subagents.clear();
+    if let Some(goal) = app.active_goal.take() {
+        app.pending_goal_replacement = None;
+        remove_pending_goal_continuations(&mut app.message_queue);
+        app.blocks
+            .push(Block::System(format!("Stopped goal: {}", goal.objective)));
+        app.pending_session_save = true;
+    }
     // Drop any in-flight approval modal: leaving pending_approval=Some after
     // a cancel makes handle_key intercept every keystroke, locking the user
     // out of the input box with no way to recover short of restarting.
@@ -2277,6 +3109,15 @@ async fn cancel_current_turn(app: &mut App) {
     }
     app.blocks
         .push(Block::System("(cancelled — Esc)".to_string()));
+}
+
+/// True when the (col, row) terminal cell falls inside `r`. Mouse hit-test for
+/// the clickable jump-to-bottom bar and fleet-view rows.
+fn point_in(r: ratatui::layout::Rect, col: u16, row: u16) -> bool {
+    col >= r.x
+        && col < r.x.saturating_add(r.width)
+        && row >= r.y
+        && row < r.y.saturating_add(r.height)
 }
 
 fn apply_agent_event(app: &mut App, ev: AgentEvent) {
@@ -2361,6 +3202,7 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             error,
         } => {
             let mut ask_prompt = None;
+            let mut did_ask_user = false;
             if let Some(Block::Tool {
                 name,
                 output: o,
@@ -2371,6 +3213,7 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 *o = Some(output);
                 *e = error;
                 if name == "ask_user_question" && !error {
+                    did_ask_user = true;
                     ask_prompt = o
                         .as_deref()
                         .and_then(opencli_core::tools::ask::render_ask_envelope);
@@ -2378,6 +3221,13 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             }
             if let Some(prompt) = ask_prompt {
                 app.blocks.push(Block::System(prompt));
+            }
+            if did_ask_user {
+                if let Some(goal) = app.active_goal.as_mut() {
+                    goal.waiting_for_user = true;
+                    goal.last_summary = Some("waiting for user input".into());
+                    app.pending_session_save = true;
+                }
             }
             // Tool result terminates the reasoning phase too.
             collapse_reasoning_into_thought(app);
@@ -2404,6 +3254,10 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             app.turn_started_at = None;
             app.status_line.clear();
             app.current_turn = None;
+            // The fleet view is per-turn: clear finished sub-agents now that the
+            // turn is over so the panel collapses away.
+            app.subagents.clear();
+            schedule_goal_continuation(app);
 
             // Drain the message queue — send EVERYTHING as one combined prompt.
             if !app.message_queue.is_empty() {
@@ -2412,27 +3266,123 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 app.status_line = "(flushing queued messages…)".into();
             }
         }
+        AgentEvent::GoalStatusUpdated { status, summary } => {
+            let status = status.trim().to_ascii_lowercase();
+            match status.as_str() {
+                "complete" => {
+                    if let Some(goal) = app.active_goal.take() {
+                        app.pending_goal_replacement = None;
+                        remove_pending_goal_continuations(&mut app.message_queue);
+                        app.pending_session_save = true;
+                        app.blocks.push(Block::System(format!(
+                            "Goal complete: {}\n{summary}",
+                            goal.objective
+                        )));
+                    }
+                }
+                "blocked" => {
+                    if let Some(goal) = app.active_goal.take() {
+                        app.pending_goal_replacement = None;
+                        remove_pending_goal_continuations(&mut app.message_queue);
+                        app.pending_session_save = true;
+                        app.blocks.push(Block::System(format!(
+                            "Goal blocked: {}\n{summary}",
+                            goal.objective
+                        )));
+                    }
+                }
+                "in_progress" => {
+                    if let Some(goal) = app.active_goal.as_mut() {
+                        goal.last_summary = Some(summary);
+                        app.pending_session_save = true;
+                    }
+                }
+                _ => {
+                    if let Some(goal) = app.active_goal.as_mut() {
+                        goal.last_summary = Some(format!("unknown goal status `{status}`"));
+                        app.pending_session_save = true;
+                    }
+                }
+            }
+        }
+        AgentEvent::PlanExitRequested { plan } => {
+            if let Some(goal) = app.active_goal.as_mut() {
+                goal.waiting_for_user = true;
+                goal.last_summary = Some("waiting for plan approval".into());
+                app.pending_session_save = true;
+            }
+            app.pending_plan_exit = Some(PendingPlanExit { plan: plan.clone() });
+            app.blocks.push(Block::System(format!(
+                "Plan ready for approval:\n{plan}\n\nPress Y to approve and leave plan mode, or N/Esc to keep planning."
+            )));
+            app.auto_scroll = true;
+        }
+        AgentEvent::PlanModeRequested => {
+            app.set_permission_mode(PermissionMode::Plan);
+            app.pending_plan_exit = None;
+            if let Some(goal) = app.active_goal.as_mut() {
+                goal.last_summary = Some("entered plan mode".into());
+                app.pending_session_save = true;
+            }
+            app.blocks.push(Block::System(
+                "plan mode → on (read-only tools only; write/edit/shell will be blocked)".into(),
+            ));
+            app.auto_scroll = true;
+        }
         AgentEvent::Usage {
             input_tokens,
             output_tokens,
-            total_tokens,
+            total_tokens: _,
         } => {
-            app.tokens_used = app.tokens_used.saturating_add(total_tokens);
+            // Current context occupancy, NOT a running total. Each agentic step
+            // resends the whole history, so summing across steps balloons into
+            // the millions and reads as runaway spend. Claude Code shows the
+            // live context size instead; `input_tokens` already folds in cache
+            // read/creation, so it is the true window usage of the last request.
+            app.tokens_used = input_tokens;
             app.input_tokens_total = app.input_tokens_total.saturating_add(input_tokens);
             app.output_tokens_total = app.output_tokens_total.saturating_add(output_tokens);
         }
         AgentEvent::TodosSnapshot { todos } => {
+            if todos.is_empty() && should_keep_recent_completed_todos_for_empty_snapshot(app) {
+                return;
+            }
+            let was_empty = app.session_todos.is_empty();
+            update_todo_completion_timestamps(app, &todos);
             app.session_todos = todos;
+            if was_empty && !app.session_todos.is_empty() {
+                app.show_todos = true;
+            }
         }
         AgentEvent::Error { message } => {
             collapse_reasoning_into_thought(app);
             finish_open_assistant_block(&mut app.blocks);
-            app.blocks.push(Block::System(format!("error: {message}")));
+            if is_context_overflow(&message) {
+                // The provider rejected the request because the conversation
+                // outgrew its real context window before compaction could free
+                // space — usually because a custom provider's true window is
+                // smaller than the catalog's guess-by-model-name. Surface an
+                // actionable recovery path instead of a raw API error.
+                let mut msg = String::from(
+                    "⚠ context overflow — this conversation is larger than the model's context window.\n   \
+                     Run /compact to summarize older history, then resend your message.",
+                );
+                if app.config.model.split_once('/').is_some() {
+                    msg.push_str(&format!(
+                        "\n   opencli assumed a {}-token window for this provider; set its real `context_limit` in config.json so it compacts in time.",
+                        app.config.effective_context_limit()
+                    ));
+                }
+                app.blocks.push(Block::System(msg));
+            } else {
+                app.blocks.push(Block::System(format!("error: {message}")));
+            }
             app.busy = false;
             app.is_thinking = false;
             app.turn_started_at = None;
             app.status_line.clear();
             app.current_turn = None;
+            app.subagents.clear();
         }
         AgentEvent::ContextWarning { used, limit } => {
             let pct = (used as f64 / limit.max(1) as f64 * 100.0) as u64;
@@ -2498,6 +3448,7 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 tool_name,
                 args_json,
                 diff_preview,
+                selected: 0,
             });
         }
         AgentEvent::ApprovalGranted { call_id } => {
@@ -2516,6 +3467,34 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 .is_some_and(|p| p.call_id == call_id)
             {
                 app.pending_approval = None;
+            }
+        }
+        AgentEvent::SubagentStarted {
+            id,
+            subagent_type,
+            prompt,
+        } => {
+            app.subagents.push(SubagentView {
+                id,
+                kind: subagent_type,
+                prompt,
+                activity: "starting".into(),
+                steps: 0,
+                started_at: std::time::Instant::now(),
+                done: None,
+                expanded: false,
+            });
+        }
+        AgentEvent::SubagentActivity { id, summary } => {
+            if let Some(s) = app.subagents.iter_mut().find(|s| s.id == id) {
+                s.activity = summary;
+                s.steps = s.steps.saturating_add(1);
+            }
+        }
+        AgentEvent::SubagentDone { id, ok } => {
+            if let Some(s) = app.subagents.iter_mut().find(|s| s.id == id) {
+                s.done = Some(ok);
+                s.activity = if ok { "done".into() } else { "failed".into() };
             }
         }
     }
@@ -2619,6 +3598,14 @@ mod tests {
         path
     }
 
+    fn todo(content: &str, status: TodoStatus) -> TodoItem {
+        TodoItem {
+            content: content.to_string(),
+            status,
+            active_form: format!("Doing {content}"),
+        }
+    }
+
     #[test]
     fn initial_screen_allows_any_supported_env_key() {
         assert_eq!(initial_screen(AuthMode::None, false), Screen::Login);
@@ -2651,6 +3638,65 @@ mod tests {
         assert_eq!(split_slash_command("status"), ("status", ""));
     }
 
+    #[test]
+    fn goal_elapsed_formats_seconds_then_minutes() {
+        assert_eq!(format_goal_elapsed(Duration::from_secs(0)), "0s");
+        assert_eq!(format_goal_elapsed(Duration::from_secs(60)), "60s");
+        assert_eq!(format_goal_elapsed(Duration::from_secs(62)), "1m2");
+        assert_eq!(format_goal_elapsed(Duration::from_secs(92)), "1m32");
+    }
+
+    #[test]
+    fn active_goal_session_snapshot_roundtrips_state() {
+        let mut goal = ActiveGoal::new("finish verification".to_string());
+        goal.turns_completed = 7;
+        goal.waiting_for_user = true;
+        goal.last_summary = Some("waiting on approval".to_string());
+        goal.started_at_ms = opencli_core::session::now_ms().saturating_sub(92_000);
+
+        let restored = ActiveGoal::from_session_snapshot(goal.to_session_snapshot());
+
+        assert_eq!(restored.objective, "finish verification");
+        assert_eq!(restored.turns_completed, 7);
+        assert!(restored.waiting_for_user);
+        assert_eq!(
+            restored.last_summary.as_deref(),
+            Some("waiting on approval")
+        );
+        assert_eq!(restored.started_at_ms, goal.started_at_ms);
+        assert!(restored.started_at.elapsed() >= Duration::from_secs(90));
+    }
+
+    #[test]
+    fn host_state_session_record_includes_active_goal() {
+        let mut app = App::new();
+        app.active_goal = Some(ActiveGoal::new("finish verification".to_string()));
+        let mut record = opencli_core::session::SessionRecord {
+            meta: opencli_core::session::SessionMeta {
+                id: "test".to_string(),
+                cwd: app.cwd.clone(),
+                model: "gpt-5".to_string(),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                message_count: 0,
+                preview: "test".to_string(),
+            },
+            state: opencli_core::session::SessionSnapshot::default(),
+            history: Vec::new(),
+        };
+
+        apply_host_state_to_session_record(&app, &mut record);
+
+        assert_eq!(
+            record
+                .state
+                .active_goal
+                .as_ref()
+                .map(|g| g.objective.as_str()),
+            Some("finish verification")
+        );
+    }
+
     #[tokio::test]
     async fn login_slash_opens_login_screen_instead_of_detached_task() {
         let mut app = App::new();
@@ -2662,6 +3708,483 @@ mod tests {
         assert_eq!(app.screen, Screen::Login);
         assert!(matches!(app.login.stage().await, LoginStage::PickMode));
         assert!(app.status_line.is_empty());
+    }
+
+    #[tokio::test]
+    async fn goal_slash_starts_active_goal_and_queues_prompt() {
+        let mut app = App::new();
+
+        handle_slash(&mut app, "goal stabilize the release flow").await;
+
+        let goal = app.active_goal.as_ref().expect("goal should be active");
+        assert_eq!(goal.objective, "stabilize the release flow");
+        assert_eq!(goal.turns_completed, 0);
+        assert_eq!(app.message_queue.len(), 1);
+        assert!(app.message_queue[0].contains("stabilize the release flow"));
+        assert!(app.message_queue[0].contains("goal_update"));
+        assert!(app.pending_session_save);
+    }
+
+    #[tokio::test]
+    async fn goal_slash_asks_before_replacing_active_goal() {
+        let mut app = App::new();
+        app.active_goal = Some(ActiveGoal::new("finish verification".to_string()));
+
+        handle_slash(&mut app, "goal ship a different feature").await;
+
+        assert_eq!(
+            app.active_goal.as_ref().map(|g| g.objective.as_str()),
+            Some("finish verification")
+        );
+        assert_eq!(
+            app.pending_goal_replacement
+                .as_ref()
+                .map(|p| p.objective.as_str()),
+            Some("ship a different feature")
+        );
+        assert!(app.message_queue.is_empty());
+        match app.blocks.last() {
+            Some(Block::System(text)) => {
+                assert!(text.contains("Replace the current goal?"));
+                assert!(text.contains("Press Y"));
+                assert!(text.contains("N/Esc"));
+            }
+            other => panic!("expected replacement confirmation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn confirming_goal_replacement_starts_new_goal() {
+        let mut app = App::new();
+        app.active_goal = Some(ActiveGoal::new("old goal".to_string()));
+        app.pending_goal_replacement = Some(PendingGoalReplacement {
+            objective: "new goal".to_string(),
+        });
+
+        handle_goal_replacement_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            app.active_goal.as_ref().map(|g| g.objective.as_str()),
+            Some("new goal")
+        );
+        assert!(app.pending_goal_replacement.is_none());
+        assert_eq!(app.message_queue.len(), 1);
+        assert!(app.message_queue[0].starts_with(GOAL_START_PREFIX));
+        assert!(app.message_queue[0].contains("new goal"));
+    }
+
+    #[test]
+    fn declining_goal_replacement_keeps_goal_and_continues() {
+        let mut app = App::new();
+        app.active_goal = Some(ActiveGoal::new("old goal".to_string()));
+        app.pending_goal_replacement = Some(PendingGoalReplacement {
+            objective: "new goal".to_string(),
+        });
+
+        handle_goal_replacement_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            app.active_goal.as_ref().map(|g| g.objective.as_str()),
+            Some("old goal")
+        );
+        assert!(app.pending_goal_replacement.is_none());
+        assert_eq!(app.message_queue.len(), 1);
+        assert!(app.message_queue[0].starts_with(GOAL_CONTINUATION_PREFIX));
+        assert!(app.message_queue[0].contains("old goal"));
+    }
+
+    #[test]
+    fn active_goal_queues_continuation_after_turn_complete() {
+        let mut app = App::new();
+        app.active_goal = Some(ActiveGoal::new("finish verification".to_string()));
+
+        apply_agent_event(&mut app, AgentEvent::TurnComplete);
+
+        let goal = app.active_goal.as_ref().expect("goal should remain active");
+        assert_eq!(goal.turns_completed, 1);
+        assert_eq!(app.message_queue.len(), 1);
+        assert!(app.message_queue[0].contains("Continue the active /goal"));
+        assert!(app.message_queue[0].contains("finish verification"));
+        assert!(app.pending_session_save);
+    }
+
+    #[test]
+    fn active_goal_keeps_continuing_past_previous_turn_cap() {
+        let mut app = App::new();
+        let mut goal = ActiveGoal::new("finish a long migration".to_string());
+        goal.turns_completed = 50;
+        app.active_goal = Some(goal);
+
+        apply_agent_event(&mut app, AgentEvent::TurnComplete);
+
+        let goal = app.active_goal.as_ref().expect("goal should remain active");
+        assert_eq!(goal.turns_completed, 51);
+        assert_eq!(app.message_queue.len(), 1);
+        assert!(app.message_queue[0].contains("finish a long migration"));
+    }
+
+    #[test]
+    fn todo_snapshot_tracks_recent_completion_transitions() {
+        let mut app = App::new();
+        apply_agent_event(
+            &mut app,
+            AgentEvent::TodosSnapshot {
+                todos: vec![todo("run tests", TodoStatus::Pending)],
+            },
+        );
+        assert!(app.todo_completed_at.is_empty());
+
+        apply_agent_event(
+            &mut app,
+            AgentEvent::TodosSnapshot {
+                todos: vec![todo("run tests", TodoStatus::Completed)],
+            },
+        );
+        assert!(app
+            .todo_completed_at
+            .contains_key(&todo_completion_key(&todo(
+                "run tests",
+                TodoStatus::Completed
+            ))));
+
+        apply_agent_event(
+            &mut app,
+            AgentEvent::TodosSnapshot {
+                todos: vec![todo("new task", TodoStatus::Pending)],
+            },
+        );
+        assert!(app.todo_completed_at.is_empty());
+    }
+
+    #[test]
+    fn empty_todo_snapshot_keeps_recent_completed_todos_until_ttl() {
+        let mut app = App::new();
+        apply_agent_event(
+            &mut app,
+            AgentEvent::TodosSnapshot {
+                todos: vec![todo("run tests", TodoStatus::Completed)],
+            },
+        );
+        assert_eq!(app.session_todos.len(), 1);
+        assert!(!app.todo_completed_at.is_empty());
+
+        apply_agent_event(&mut app, AgentEvent::TodosSnapshot { todos: Vec::new() });
+
+        assert_eq!(app.session_todos.len(), 1);
+        assert!(matches!(app.session_todos[0].status, TodoStatus::Completed));
+
+        let expired_at =
+            std::time::Instant::now() - (TODO_RECENT_COMPLETED_TTL + Duration::from_secs(1));
+        for completed_at in app.todo_completed_at.values_mut() {
+            *completed_at = expired_at;
+        }
+        prune_expired_completed_todos(&mut app);
+
+        assert!(app.session_todos.is_empty());
+        assert!(app.todo_completed_at.is_empty());
+    }
+
+    #[test]
+    fn completed_todos_without_recent_timestamp_are_pruned() {
+        let mut app = App::new();
+        app.session_todos = vec![todo("run tests", TodoStatus::Completed)];
+
+        prune_expired_completed_todos(&mut app);
+
+        assert!(app.session_todos.is_empty());
+        assert!(app.todo_completed_at.is_empty());
+    }
+
+    #[test]
+    fn empty_todo_snapshot_clears_non_completed_todos() {
+        let mut app = App::new();
+        apply_agent_event(
+            &mut app,
+            AgentEvent::TodosSnapshot {
+                todos: vec![todo("run tests", TodoStatus::InProgress)],
+            },
+        );
+
+        apply_agent_event(&mut app, AgentEvent::TodosSnapshot { todos: Vec::new() });
+
+        assert!(app.session_todos.is_empty());
+        assert!(app.todo_completed_at.is_empty());
+    }
+
+    #[test]
+    fn goal_update_complete_clears_active_goal_before_continuation() {
+        let mut app = App::new();
+        app.active_goal = Some(ActiveGoal::new("finish verification".to_string()));
+
+        apply_agent_event(
+            &mut app,
+            AgentEvent::GoalStatusUpdated {
+                status: "complete".to_string(),
+                summary: "verified".to_string(),
+            },
+        );
+        apply_agent_event(&mut app, AgentEvent::TurnComplete);
+
+        assert!(app.active_goal.is_none());
+        assert!(app.message_queue.is_empty());
+        assert!(app.pending_session_save);
+    }
+
+    #[test]
+    fn plan_mode_required_forces_session_plan_without_persisting_config_mode() {
+        let mut app = App::new();
+        let persisted_mode = app.config.default_permission_mode.clone();
+
+        apply_plan_mode_required(&mut app);
+
+        assert_eq!(app.permission_mode(), PermissionMode::Plan);
+        assert_eq!(app.config.default_permission_mode, persisted_mode);
+        match app.blocks.last() {
+            Some(Block::System(text)) => assert!(text.contains("plan mode required")),
+            other => panic!("expected plan mode required system block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn model_enter_plan_mode_is_session_only_and_does_not_persist_config_mode() {
+        let mut app = App::new();
+        app.config.default_permission_mode = PermissionMode::Default.config_str().to_string();
+        app.set_permission_mode(PermissionMode::Default);
+        app.pending_plan_exit = Some(PendingPlanExit {
+            plan: "old plan".to_string(),
+        });
+
+        apply_agent_event(&mut app, AgentEvent::PlanModeRequested);
+
+        assert_eq!(app.permission_mode(), PermissionMode::Plan);
+        assert_eq!(
+            app.config.default_permission_mode,
+            PermissionMode::Default.config_str()
+        );
+        assert!(app.pending_plan_exit.is_none());
+        match app.blocks.last() {
+            Some(Block::System(text)) => assert!(text.contains("plan mode")),
+            other => panic!("expected plan mode system block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn active_goal_pauses_when_agent_requests_user_input() {
+        let mut app = App::new();
+        app.active_goal = Some(ActiveGoal::new("choose a safe path".to_string()));
+        apply_agent_event(
+            &mut app,
+            AgentEvent::ToolCallStarted {
+                name: "ask_user_question".to_string(),
+                call_id: "ask_1".to_string(),
+            },
+        );
+
+        apply_agent_event(
+            &mut app,
+            AgentEvent::ToolResult {
+                call_id: "ask_1".to_string(),
+                output: "{}".to_string(),
+                error: false,
+            },
+        );
+        apply_agent_event(&mut app, AgentEvent::TurnComplete);
+
+        let goal = app.active_goal.as_ref().expect("goal should remain active");
+        assert!(goal.waiting_for_user);
+        assert!(app.message_queue.is_empty());
+        assert!(app.pending_session_save);
+    }
+
+    #[test]
+    fn plan_exit_request_waits_for_user_approval() {
+        let mut app = App::new();
+        app.set_permission_mode(PermissionMode::Plan);
+
+        apply_agent_event(
+            &mut app,
+            AgentEvent::PlanExitRequested {
+                plan: "1. Patch\n2. Test".to_string(),
+            },
+        );
+
+        assert_eq!(
+            app.pending_plan_exit.as_ref().map(|p| p.plan.as_str()),
+            Some("1. Patch\n2. Test")
+        );
+        match app.blocks.last() {
+            Some(Block::System(text)) => {
+                assert!(text.contains("Plan ready for approval"));
+                assert!(text.contains("Press Y"));
+            }
+            other => panic!("expected plan approval prompt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_exit_request_pauses_active_goal_continuation() {
+        let mut app = App::new();
+        app.set_permission_mode(PermissionMode::Plan);
+        app.active_goal = Some(ActiveGoal::new("ship the feature".to_string()));
+
+        apply_agent_event(
+            &mut app,
+            AgentEvent::PlanExitRequested {
+                plan: "1. Patch\n2. Test".to_string(),
+            },
+        );
+        apply_agent_event(&mut app, AgentEvent::TurnComplete);
+
+        let goal = app.active_goal.as_ref().expect("goal should remain active");
+        assert!(goal.waiting_for_user);
+        assert_eq!(
+            goal.last_summary.as_deref(),
+            Some("waiting for plan approval")
+        );
+        assert!(app.message_queue.is_empty());
+        assert!(app.pending_session_save);
+    }
+
+    #[test]
+    fn approving_plan_exit_leaves_plan_mode_and_queues_implementation() {
+        let mut app = App::new();
+        app.config.default_permission_mode = PermissionMode::Default.config_str().to_string();
+        app.set_permission_mode(PermissionMode::Plan);
+        let mut goal = ActiveGoal::new("ship the feature".to_string());
+        goal.waiting_for_user = true;
+        goal.last_summary = Some("waiting for plan approval".to_string());
+        app.active_goal = Some(goal);
+        app.pending_plan_exit = Some(PendingPlanExit {
+            plan: "1. Patch\n2. Test".to_string(),
+        });
+
+        handle_plan_exit_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(app.permission_mode(), PermissionMode::Default);
+        assert!(app.pending_plan_exit.is_none());
+        assert_eq!(app.message_queue.len(), 1);
+        assert!(app.message_queue[0].starts_with(PLAN_APPROVED_PREFIX));
+        assert!(app.message_queue[0].contains("Approved plan"));
+        let goal = app.active_goal.as_ref().expect("goal should stay active");
+        assert!(!goal.waiting_for_user);
+        assert_eq!(goal.last_summary.as_deref(), Some("plan approved"));
+        assert!(app.pending_session_save);
+    }
+
+    #[test]
+    fn approving_plan_exit_restores_configured_non_plan_mode() {
+        let mut app = App::new();
+        app.config.default_permission_mode = PermissionMode::AcceptEdits.config_str().to_string();
+        app.set_permission_mode(PermissionMode::Plan);
+        app.pending_plan_exit = Some(PendingPlanExit {
+            plan: "1. Patch\n2. Test".to_string(),
+        });
+
+        handle_plan_exit_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(app.permission_mode(), PermissionMode::AcceptEdits);
+        assert_eq!(
+            app.config.default_permission_mode,
+            PermissionMode::AcceptEdits.config_str()
+        );
+    }
+
+    #[test]
+    fn approving_plan_exit_never_keeps_session_in_plan_mode() {
+        let mut app = App::new();
+        app.config.default_permission_mode = PermissionMode::Plan.config_str().to_string();
+        app.set_permission_mode(PermissionMode::Plan);
+        app.pending_plan_exit = Some(PendingPlanExit {
+            plan: "1. Patch\n2. Test".to_string(),
+        });
+
+        handle_plan_exit_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(app.permission_mode(), PermissionMode::Default);
+        assert_eq!(
+            app.config.default_permission_mode,
+            PermissionMode::Plan.config_str()
+        );
+    }
+
+    #[test]
+    fn rejecting_plan_exit_stays_in_plan_mode_and_queues_revision() {
+        let mut app = App::new();
+        app.set_permission_mode(PermissionMode::Plan);
+        let mut goal = ActiveGoal::new("ship the feature".to_string());
+        goal.waiting_for_user = true;
+        goal.last_summary = Some("waiting for plan approval".to_string());
+        app.active_goal = Some(goal);
+        app.pending_plan_exit = Some(PendingPlanExit {
+            plan: "1. Patch\n2. Test".to_string(),
+        });
+
+        handle_plan_exit_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(app.permission_mode(), PermissionMode::Plan);
+        assert!(app.pending_plan_exit.is_none());
+        assert_eq!(app.message_queue.len(), 1);
+        assert!(app.message_queue[0].starts_with(PLAN_REJECTED_PREFIX));
+        assert!(app.message_queue[0].contains("Rejected plan"));
+        let goal = app.active_goal.as_ref().expect("goal should stay active");
+        assert!(!goal.waiting_for_user);
+        assert_eq!(
+            goal.last_summary.as_deref(),
+            Some("plan rejected; revising")
+        );
+        assert!(app.pending_session_save);
+    }
+
+    #[test]
+    fn internal_goal_prompt_renders_as_system_progress_not_full_user_message() {
+        let mut app = App::new();
+        app.active_goal = Some(ActiveGoal::new("finish verification".to_string()));
+
+        push_visible_user_block(&mut app, &goal_start_prompt("finish verification"));
+
+        match app.blocks.last() {
+            Some(Block::System(text)) => assert!(text.contains("Goal running")),
+            other => panic!("expected system goal progress block, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tab_autocompletes_highlighted_slash_command() {
+        let mut app = App::new();
+        app.input.set_text("/".to_string());
+        app.open_overlay(OverlayKind::SlashMenu);
+        // Filter to a single command so the highlight is deterministic.
+        if let Some((_, p)) = app.overlay.as_mut() {
+            p.query = "model".to_string();
+            p.ensure_visible_selected();
+        }
+
+        handle_overlay_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        // The command is completed into the composer and the menu closes, so
+        // the user can add arguments or press Enter to run it.
+        assert!(app.overlay.is_none(), "menu should close after Tab");
+        assert_eq!(app.input.buffer, "/model ");
     }
 
     #[test]
@@ -2735,6 +4258,7 @@ mod tests {
             tool_name: "run_shell".to_string(),
             args_json: "{}".to_string(),
             diff_preview: None,
+            selected: 0,
         });
 
         let approvals =

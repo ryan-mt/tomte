@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use crate::tool_args::normalize_argument_fragment;
+
 /// Wrapper around a streaming SSE response from the Responses API.
 pub struct StreamHandle {
     pub rx: mpsc::Receiver<anyhow::Result<ResponseStreamEvent>>,
@@ -46,6 +48,9 @@ pub enum ResponseStreamEvent {
     },
     ReasoningDone {
         text: String,
+        /// Anthropic thinking-block signature, when present. `None` for OpenAI
+        /// (its reasoning continuity is handled server-side / via store).
+        signature: Option<String>,
     },
     Completed {
         response: Value,
@@ -132,16 +137,8 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let s = |k: &str| -> String {
-        value
-            .get(k)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
-    };
-    let opt_s = |k: &str| -> Option<String> {
-        value.get(k).and_then(|v| v.as_str()).map(|s| s.to_string())
-    };
+    let s = |k: &str| -> String { string_value(value.get(k)).unwrap_or_default() };
+    let opt_s = |k: &str| -> Option<String> { string_value(value.get(k)) };
     let u = |k: &str| -> u32 { value.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as u32 };
 
     let ev = match kind.as_str() {
@@ -149,11 +146,11 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
             response: value.get("response").cloned().unwrap_or(Value::Null),
         },
         "response.output_item.added" => ResponseStreamEvent::OutputItemAdded {
-            item: value.get("item").cloned().unwrap_or(Value::Null),
+            item: event_item(&value),
             output_index: u("output_index"),
         },
         "response.output_item.done" => ResponseStreamEvent::OutputItemDone {
-            item: value.get("item").cloned().unwrap_or(Value::Null),
+            item: event_item(&value),
             output_index: u("output_index"),
         },
         // Text deltas — handle multiple naming styles that have appeared
@@ -173,8 +170,32 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         // Function/tool call streaming.
         "response.function_call_arguments.delta" | "response.tool_call.delta" => {
             ResponseStreamEvent::FunctionCallArgsDelta {
-                item_id: s("item_id"),
-                delta: s("delta"),
+                item_id: function_call_event_id(&value),
+                delta: first_argument_string(
+                    &value,
+                    &[
+                        "delta",
+                        "arguments_delta",
+                        "argumentsDelta",
+                        "arguments",
+                        "arguments_json",
+                        "argumentsJson",
+                        "partial_json",
+                        "partialJson",
+                        "input_json_delta",
+                        "inputJsonDelta",
+                        "input_json",
+                        "inputJson",
+                        "tool_input",
+                        "toolInput",
+                        "args",
+                        "input",
+                        "parameters",
+                        "parameters_json",
+                        "parametersJson",
+                    ],
+                )
+                .unwrap_or_default(),
             }
         }
         "response.function_call_arguments.done" | "response.tool_call.done" => {
@@ -184,8 +205,32 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
             // the agent keep its accumulated buffer (it only overwrites when the
             // done event actually carried args).
             ResponseStreamEvent::FunctionCallArgsDone {
-                item_id: s("item_id"),
-                arguments: s("arguments"),
+                item_id: function_call_event_id(&value),
+                arguments: first_argument_string(
+                    &value,
+                    &[
+                        "arguments",
+                        "arguments_json",
+                        "argumentsJson",
+                        "delta",
+                        "arguments_delta",
+                        "argumentsDelta",
+                        "partial_json",
+                        "partialJson",
+                        "input_json_delta",
+                        "inputJsonDelta",
+                        "input_json",
+                        "inputJson",
+                        "tool_input",
+                        "toolInput",
+                        "args",
+                        "input",
+                        "parameters",
+                        "parameters_json",
+                        "parametersJson",
+                    ],
+                )
+                .unwrap_or_default(),
             }
         }
         // Reasoning summary — multiple shapes.
@@ -198,7 +243,10 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         "response.reasoning_summary_text.done"
         | "response.reasoning_summary.done"
         | "response.reasoning.done"
-        | "response.reasoning_text.done" => ResponseStreamEvent::ReasoningDone { text: s("text") },
+        | "response.reasoning_text.done" => ResponseStreamEvent::ReasoningDone {
+            text: s("text"),
+            signature: None,
+        },
         "response.completed" => ResponseStreamEvent::Completed {
             response: value.get("response").cloned().unwrap_or(Value::Null),
         },
@@ -219,6 +267,92 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         other => ResponseStreamEvent::Other { kind: other.into() },
     };
     Ok(ev)
+}
+
+fn event_item(value: &Value) -> Value {
+    value
+        .get("item")
+        .or_else(|| value.get("output_item"))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+fn function_call_event_id(value: &Value) -> String {
+    let keys = &[
+        "item_id",
+        "itemId",
+        "call_id",
+        "callId",
+        "tool_call_id",
+        "toolCallId",
+        "tool_use_id",
+        "toolUseId",
+        "id",
+    ];
+    first_string(value, keys)
+        .or_else(|| value.get("item").and_then(|item| first_string(item, keys)))
+        .or_else(|| {
+            value
+                .get("output_item")
+                .and_then(|item| first_string(item, keys))
+        })
+        .unwrap_or_default()
+}
+
+fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| string_value(value.get(*key)))
+}
+
+fn first_argument_string(value: &Value, keys: &[&str]) -> Option<String> {
+    first_argument_value(value, keys)
+        .or_else(|| {
+            value
+                .get("function")
+                .and_then(|f| first_argument_value(f, keys))
+        })
+        .or_else(|| {
+            value
+                .get("tool")
+                .and_then(|t| first_argument_value(t, keys))
+        })
+        .or_else(|| {
+            value
+                .get("item")
+                .and_then(|item| first_argument_string(item, keys))
+        })
+        .or_else(|| {
+            value
+                .get("output_item")
+                .and_then(|item| first_argument_string(item, keys))
+        })
+}
+
+fn first_argument_value(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| argument_string_value(value.get(*key)))
+}
+
+fn argument_string_value(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::Null => None,
+        Value::String(s) => normalize_argument_fragment(s).map(str::to_string),
+        Value::Array(arr) if arr.is_empty() => None,
+        Value::Object(map) if map.is_empty() => None,
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Array(_) | Value::Object(_) => value.and_then(|v| serde_json::to_string(v).ok()),
+    }
+}
+
+fn string_value(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::Null => None,
+        Value::String(s) if s.is_empty() => None,
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Array(_) | Value::Object(_) => value.and_then(|v| serde_json::to_string(v).ok()),
+    }
 }
 
 fn is_terminal_event(ev: &ResponseStreamEvent) -> bool {
@@ -291,5 +425,166 @@ mod tests {
             .await
             .unwrap();
         assert!(next.is_none(), "got: {next:?}");
+    }
+
+    #[test]
+    fn parse_function_delta_accepts_call_id_and_arguments_delta() {
+        let ev = parse_event(
+            r#"{"type":"response.function_call_arguments.delta","call_id":"call_123","arguments_delta":"{\"path\""}"#,
+        )
+        .unwrap();
+
+        match ev {
+            ResponseStreamEvent::FunctionCallArgsDelta { item_id, delta } => {
+                assert_eq!(item_id, "call_123");
+                assert_eq!(delta, r#"{"path""#);
+            }
+            other => panic!("expected FunctionCallArgsDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_function_delta_accepts_camel_case_partial_json() {
+        let ev = parse_event(
+            r#"{"type":"response.tool_call.delta","id":"call_123","partialJson":"{\"path\""}"#,
+        )
+        .unwrap();
+
+        match ev {
+            ResponseStreamEvent::FunctionCallArgsDelta { item_id, delta } => {
+                assert_eq!(item_id, "call_123");
+                assert_eq!(delta, r#"{"path""#);
+            }
+            other => panic!("expected FunctionCallArgsDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_function_done_accepts_tool_call_id_and_object_arguments() {
+        let ev = parse_event(
+            r#"{"type":"response.function_call_arguments.done","tool_call_id":"call_123","arguments":{"path":"Cargo.toml"}}"#,
+        )
+        .unwrap();
+
+        match ev {
+            ResponseStreamEvent::FunctionCallArgsDone { item_id, arguments } => {
+                assert_eq!(item_id, "call_123");
+                assert_eq!(arguments, r#"{"path":"Cargo.toml"}"#);
+            }
+            other => panic!("expected FunctionCallArgsDone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_function_done_accepts_nested_tool_input() {
+        let ev = parse_event(
+            r#"{"type":"response.tool_call.done","id":"call_123","tool":{"input":{"path":"Cargo.toml"}}}"#,
+        )
+        .unwrap();
+
+        match ev {
+            ResponseStreamEvent::FunctionCallArgsDone { item_id, arguments } => {
+                assert_eq!(item_id, "call_123");
+                assert_eq!(arguments, r#"{"path":"Cargo.toml"}"#);
+            }
+            other => panic!("expected FunctionCallArgsDone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_function_done_accepts_camel_case_id_and_tool_input() {
+        let ev = parse_event(
+            r#"{"type":"response.tool_call.done","callId":"call_123","toolInput":{"path":"Cargo.toml"}}"#,
+        )
+        .unwrap();
+
+        match ev {
+            ResponseStreamEvent::FunctionCallArgsDone { item_id, arguments } => {
+                assert_eq!(item_id, "call_123");
+                assert_eq!(arguments, r#"{"path":"Cargo.toml"}"#);
+            }
+            other => panic!("expected FunctionCallArgsDone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_function_done_skips_empty_wrapper_arguments_for_nested_tool_input() {
+        let ev = parse_event(
+            r#"{"type":"response.tool_call.done","id":"call_123","arguments":{},"tool":{"input":{"path":"Cargo.toml"}}}"#,
+        )
+        .unwrap();
+
+        match ev {
+            ResponseStreamEvent::FunctionCallArgsDone { item_id, arguments } => {
+                assert_eq!(item_id, "call_123");
+                assert_eq!(arguments, r#"{"path":"Cargo.toml"}"#);
+            }
+            other => panic!("expected FunctionCallArgsDone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_function_delta_accepts_nested_item_wrapper() {
+        let ev = parse_event(
+            r#"{"type":"response.tool_call.delta","item":{"id":"call_123","function":{"partialJson":"{\"path\""}}}"#,
+        )
+        .unwrap();
+
+        match ev {
+            ResponseStreamEvent::FunctionCallArgsDelta { item_id, delta } => {
+                assert_eq!(item_id, "call_123");
+                assert_eq!(delta, r#"{"path""#);
+            }
+            other => panic!("expected FunctionCallArgsDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_function_done_accepts_parameters_arguments() {
+        let ev = parse_event(
+            r#"{"type":"response.tool_call.done","id":"call_123","function":{"parameters":{"path":"Cargo.toml"}}}"#,
+        )
+        .unwrap();
+
+        match ev {
+            ResponseStreamEvent::FunctionCallArgsDone { item_id, arguments } => {
+                assert_eq!(item_id, "call_123");
+                assert_eq!(arguments, r#"{"path":"Cargo.toml"}"#);
+            }
+            other => panic!("expected FunctionCallArgsDone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_function_done_accepts_anthropic_tool_use_id_alias() {
+        let ev = parse_event(
+            r#"{"type":"response.tool_call.done","tool_use_id":"toolu_123","toolInput":{"path":"Cargo.toml"}}"#,
+        )
+        .unwrap();
+
+        match ev {
+            ResponseStreamEvent::FunctionCallArgsDone { item_id, arguments } => {
+                assert_eq!(item_id, "toolu_123");
+                assert_eq!(arguments, r#"{"path":"Cargo.toml"}"#);
+            }
+            other => panic!("expected FunctionCallArgsDone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_output_item_added_accepts_output_item_wrapper() {
+        let ev = parse_event(
+            r#"{"type":"response.output_item.added","output_index":2,"output_item":{"type":"tool_use","id":"call_123","name":"read_file","input":{"path":"Cargo.toml"}}}"#,
+        )
+        .unwrap();
+
+        match ev {
+            ResponseStreamEvent::OutputItemAdded { item, output_index } => {
+                assert_eq!(output_index, 2);
+                assert_eq!(item["type"], "tool_use");
+                assert_eq!(item["id"], "call_123");
+            }
+            other => panic!("expected OutputItemAdded, got {other:?}"),
+        }
     }
 }

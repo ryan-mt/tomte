@@ -16,25 +16,61 @@ struct GrepArgs {
     path: Option<String>,
     #[serde(default)]
     glob: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "-i",
+        alias = "ignore_case",
+        alias = "ignoreCase",
+        alias = "caseInsensitive",
+        deserialize_with = "super::deserialize_bool"
+    )]
     case_insensitive: bool,
     /// "content" (default), "files_with_matches", or "count".
-    #[serde(default)]
+    #[serde(default, alias = "outputMode")]
     output_mode: Option<String>,
     /// Cap on lines of output after the byte cap.
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "headLimit",
+        deserialize_with = "super::deserialize_optional_usize"
+    )]
     head_limit: Option<usize>,
+    /// Skip this many output lines before applying head_limit.
+    #[serde(default, deserialize_with = "super::deserialize_optional_usize")]
+    offset: Option<usize>,
     /// Lines of context after each match (rg -A).
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "-A",
+        alias = "contextAfter",
+        deserialize_with = "super::deserialize_optional_usize"
+    )]
     context_after: Option<usize>,
     /// Lines of context before each match (rg -B).
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "-B",
+        alias = "contextBefore",
+        deserialize_with = "super::deserialize_optional_usize"
+    )]
     context_before: Option<usize>,
+    /// Lines of context before and after each match (rg -C).
+    #[serde(
+        default,
+        alias = "-C",
+        alias = "contextLines",
+        deserialize_with = "super::deserialize_optional_usize"
+    )]
+    context: Option<usize>,
     /// rg --multiline. Allows patterns to span newlines.
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "multiLine",
+        deserialize_with = "super::deserialize_optional_bool"
+    )]
     multiline: Option<bool>,
     /// rg --type filter, e.g. "rust", "ts", "py".
-    #[serde(default)]
+    #[serde(default, alias = "type", alias = "fileType")]
     file_type: Option<String>,
 }
 
@@ -78,6 +114,7 @@ Parameters:\n\
 - `case_insensitive`: When true, ignore case.\n\
 - `output_mode`: `content` | `files_with_matches` | `count`; defaults to `content` when null.\n\
 - `head_limit`: Max output lines; `null` for no per-line cap (byte cap still applies).\n\
+- `offset`: Skip this many output lines before applying `head_limit`; useful for paging broad results.\n\
 - `context_after`: Lines of context AFTER each match (content mode only); `null` for none.\n\
 - `context_before`: Lines of context BEFORE each match (content mode only); `null` for none.\n\
 - `multiline`: Enable `--multiline` so `.` and patterns span newlines; default false.\n\
@@ -93,6 +130,7 @@ Parameters:\n\
                 "case_insensitive": {"type": "boolean", "description": "Match case-insensitively when true."},
                 "output_mode": {"type": ["string", "null"], "enum": ["content", "files_with_matches", "count", null], "description": "Output shape; defaults to content."},
                 "head_limit": {"type": ["integer", "null"], "description": "Cap on output lines; null for no per-line cap."},
+                "offset": {"type": ["integer", "null"], "description": "Skip this many output lines before applying head_limit; null for none."},
                 "context_after": {"type": ["integer", "null"], "description": "Lines AFTER each match (content mode); null for none."},
                 "context_before": {"type": ["integer", "null"], "description": "Lines BEFORE each match (content mode); null for none."},
                 "multiline": {"type": ["boolean", "null"], "description": "Enable --multiline so patterns span newlines."},
@@ -100,7 +138,7 @@ Parameters:\n\
             },
             "required": [
                 "pattern", "path", "glob", "case_insensitive",
-                "output_mode", "head_limit", "context_after", "context_before",
+                "output_mode", "head_limit", "offset", "context_after", "context_before",
                 "multiline", "file_type"
             ],
             "additionalProperties": false
@@ -121,12 +159,14 @@ async fn execute_grep_with_commands(
     rg_program: &str,
     grep_program: &str,
 ) -> Result<String> {
-    let mode = a.output_mode.as_deref().unwrap_or("content");
-    if !matches!(mode, "content" | "files_with_matches" | "count") {
+    let Some(mode) = normalize_grep_output_mode(a.output_mode.as_deref()) else {
+        let mode = a.output_mode.as_deref().unwrap_or("<null>");
         return Err(anyhow::anyhow!(
             "output_mode must be 'content', 'files_with_matches', or 'count' (got '{mode}')"
         ));
-    }
+    };
+    let context_after = a.context_after.or(a.context);
+    let context_before = a.context_before.or(a.context);
 
     let mut cmd = Command::new(rg_program);
     cmd.arg("--color=never");
@@ -139,10 +179,10 @@ async fn execute_grep_with_commands(
         }
         _ => {
             cmd.arg("--no-heading").arg("--line-number");
-            if let Some(n) = a.context_after {
+            if let Some(n) = context_after {
                 cmd.arg("-A").arg(n.to_string());
             }
-            if let Some(n) = a.context_before {
+            if let Some(n) = context_before {
                 cmd.arg("-B").arg(n.to_string());
             }
         }
@@ -183,7 +223,7 @@ async fn execute_grep_with_commands(
             ));
         }
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        return Ok(apply_limits(&stdout, a.head_limit, 8000));
+        return Ok(apply_limits(&stdout, a.head_limit, a.offset, 8000));
     }
     if a.multiline.unwrap_or(false) {
         return Err(grep_fallback_unsupported("multiline"));
@@ -206,10 +246,10 @@ async fn execute_grep_with_commands(
         }
         _ => {
             grep.arg("-n");
-            if let Some(n) = a.context_after {
+            if let Some(n) = context_after {
                 grep.arg("-A").arg(n.to_string());
             }
-            if let Some(n) = a.context_before {
+            if let Some(n) = context_before {
                 grep.arg("-B").arg(n.to_string());
             }
         }
@@ -240,7 +280,21 @@ async fn execute_grep_with_commands(
     } else {
         stdout
     };
-    Ok(apply_limits(&stdout, a.head_limit, 8000))
+    Ok(apply_limits(&stdout, a.head_limit, a.offset, 8000))
+}
+
+fn normalize_grep_output_mode(mode: Option<&str>) -> Option<&'static str> {
+    let Some(mode) = mode else {
+        return Some("content");
+    };
+    let normalized = mode.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    match normalized.as_str() {
+        "" | "null" | "content" | "match" | "matches" | "lines" => Some("content"),
+        "files_with_matches" | "fileswithmatches" | "files" | "paths" | "filenames"
+        | "files_only" | "filesonly" | "paths_only" | "pathsonly" => Some("files_with_matches"),
+        "count" | "counts" | "count_matches" | "countmatches" => Some("count"),
+        _ => None,
+    }
 }
 
 fn grep_fallback_unsupported(feature: &str) -> anyhow::Error {
@@ -280,7 +334,7 @@ struct GlobArgs {
     #[serde(default)]
     sort: Option<String>,
     /// Cap on output lines.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::deserialize_optional_usize")]
     limit: Option<usize>,
 }
 
@@ -333,12 +387,12 @@ Parameters:\n\
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: GlobArgs = super::parse_args("glob", args)?;
-        let sort = a.sort.as_deref().unwrap_or("name");
-        if !matches!(sort, "name" | "mtime") {
+        let Some(sort) = normalize_glob_sort(a.sort.as_deref()) else {
+            let sort = a.sort.as_deref().unwrap_or("<null>");
             return Err(anyhow::anyhow!(
                 "sort must be 'name' or 'mtime' (got '{sort}')"
             ));
-        }
+        };
         let root = ctx.cwd.canonicalize().unwrap_or_else(|_| ctx.cwd.clone());
         let cwd = match a.path.as_deref() {
             Some(p) => super::fs::resolve(&ctx.cwd, p)?,
@@ -418,7 +472,21 @@ Parameters:\n\
             ordered.sort();
         }
 
-        Ok(apply_limits(&ordered.join("\n"), a.limit, 8000))
+        Ok(apply_limits(&ordered.join("\n"), a.limit, None, 8000))
+    }
+}
+
+fn normalize_glob_sort(sort: Option<&str>) -> Option<&'static str> {
+    let Some(sort) = sort else {
+        return Some("name");
+    };
+    let normalized = sort.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    match normalized.as_str() {
+        "" | "null" | "name" | "names" | "alpha" | "alphabetical" | "alphabetic" | "filename"
+        | "file_name" | "path" | "paths" => Some("name"),
+        "mtime" | "modified" | "modified_time" | "modtime" | "time" | "recent" | "recently"
+        | "newest" | "date" => Some("mtime"),
+        _ => None,
     }
 }
 
@@ -453,38 +521,54 @@ fn glob_fallback_matches(pattern: &str, rel_path: &str) -> bool {
     }
 }
 
-/// Cap an output string by both lines (`head_limit`) and bytes (`byte_cap`).
+/// Cap an output string by offset, lines (`head_limit`), and bytes (`byte_cap`).
 /// The byte cut walks back to a char boundary so we never slice mid-codepoint.
-fn apply_limits(s: &str, head_limit: Option<usize>, byte_cap: usize) -> String {
-    let head_clipped: String = match head_limit {
-        Some(n) => {
-            let mut lines: Vec<&str> = s.lines().collect();
-            let total = lines.len();
-            if total > n {
-                lines.truncate(n);
-                let mut out = lines.join("\n");
-                out.push_str(&format!(
-                    "\n…(head_limit hit, {} more line(s) omitted)",
-                    total - n
-                ));
-                out
+fn apply_limits(
+    s: &str,
+    head_limit: Option<usize>,
+    offset: Option<usize>,
+    byte_cap: usize,
+) -> String {
+    let offset = offset.unwrap_or(0);
+    let line_clipped: String = if offset > 0 || head_limit.is_some() {
+        let lines: Vec<&str> = s.lines().collect();
+        let total = lines.len();
+        let start = offset.min(total);
+        let mut end = total;
+        if let Some(n) = head_limit {
+            end = (start + n).min(total);
+        }
+        let mut out = lines[start..end].join("\n");
+        if offset > 0 {
+            let skipped = start;
+            let note = format!("…(offset skipped {skipped} line(s))");
+            if out.is_empty() {
+                out = note;
             } else {
-                s.to_string()
+                out = format!("{note}\n{out}");
             }
         }
-        None => s.to_string(),
+        if end < total {
+            out.push_str(&format!(
+                "\n…(head_limit hit, {} more line(s) omitted)",
+                total - end
+            ));
+        }
+        out
+    } else {
+        s.to_string()
     };
-    if head_clipped.len() <= byte_cap {
-        return head_clipped;
+    if line_clipped.len() <= byte_cap {
+        return line_clipped;
     }
     let mut cut = byte_cap;
-    while cut > 0 && !head_clipped.is_char_boundary(cut) {
+    while cut > 0 && !line_clipped.is_char_boundary(cut) {
         cut -= 1;
     }
     format!(
         "{}\n…(truncated, {} bytes remaining)",
-        &head_clipped[..cut],
-        head_clipped.len() - cut
+        &line_clipped[..cut],
+        line_clipped.len() - cut
     )
 }
 
@@ -499,8 +583,11 @@ mod tests {
         ToolContext {
             cwd,
             approval: ApprovalMode::Auto,
+            require_approval: false,
+            auto_approve_edits: false,
             session: Arc::new(Mutex::new(SessionState::default())),
             config: crate::config::Config::default(),
+            events: None,
         }
     }
 
@@ -536,11 +623,56 @@ mod tests {
             case_insensitive: false,
             output_mode: None,
             head_limit: None,
+            offset: None,
             context_after: None,
             context_before: None,
+            context: None,
             multiline: None,
             file_type: None,
         }
+    }
+
+    #[test]
+    fn grep_args_accept_camel_case_aliases() {
+        let args: GrepArgs = serde_json::from_value(json!({
+            "pattern": "needle",
+            "caseInsensitive": "true",
+            "outputMode": "files-with-matches",
+            "headLimit": "10",
+            "offset": "3",
+            "contextAfter": "2",
+            "contextBefore": 1,
+            "contextLines": null,
+            "multiLine": "yes",
+            "fileType": "rust"
+        }))
+        .unwrap();
+
+        assert!(args.case_insensitive);
+        assert_eq!(args.output_mode.as_deref(), Some("files-with-matches"));
+        assert_eq!(args.head_limit, Some(10));
+        assert_eq!(args.offset, Some(3));
+        assert_eq!(args.context_after, Some(2));
+        assert_eq!(args.context_before, Some(1));
+        assert_eq!(args.context, None);
+        assert_eq!(args.multiline, Some(true));
+        assert_eq!(args.file_type.as_deref(), Some("rust"));
+    }
+
+    #[test]
+    fn grep_output_mode_accepts_common_model_aliases() {
+        assert_eq!(normalize_grep_output_mode(None), Some("content"));
+        assert_eq!(normalize_grep_output_mode(Some("matches")), Some("content"));
+        assert_eq!(
+            normalize_grep_output_mode(Some("files-with-matches")),
+            Some("files_with_matches")
+        );
+        assert_eq!(
+            normalize_grep_output_mode(Some("paths_only")),
+            Some("files_with_matches")
+        );
+        assert_eq!(normalize_grep_output_mode(Some("counts")), Some("count"));
+        assert_eq!(normalize_grep_output_mode(Some("wat")), None);
     }
 
     fn missing_rg(dir: &std::path::Path) -> String {
@@ -617,7 +749,7 @@ mod tests {
                     "pattern": "x",
                     "path": null, "glob": null, "case_insensitive": false,
                     "output_mode": "count",
-                    "head_limit": null, "context_after": null, "context_before": null,
+                    "head_limit": null, "offset": null, "context_after": null, "context_before": null,
                     "multiline": null, "file_type": null,
                 }),
                 &ctx(dir.path().to_path_buf()),
@@ -688,6 +820,7 @@ mod tests {
                     "path": null, "glob": null, "case_insensitive": false,
                     "output_mode": "content",
                     "head_limit": 5,
+                    "offset": null,
                     "context_after": null, "context_before": null,
                     "multiline": null, "file_type": null,
                 }),
@@ -697,6 +830,36 @@ mod tests {
             .unwrap();
         assert!(out.contains("head_limit hit"), "got: {out}");
         // First 5 lines present, line 6+ NOT.
+        assert!(out.contains("hit line 5"), "got: {out}");
+        assert!(!out.contains("hit line 6"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn grep_offset_skips_lines_before_head_limit() {
+        if !rg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let body: String = (1..=8).map(|i| format!("hit line {i}\n")).collect();
+        write(dir.path(), "big.txt", &body);
+        let out = Grep
+            .execute(
+                json!({
+                    "pattern": "hit",
+                    "path": null, "glob": null, "case_insensitive": false,
+                    "output_mode": "content",
+                    "head_limit": 2,
+                    "offset": 3,
+                    "context_after": null, "context_before": null,
+                    "multiline": null, "file_type": null,
+                }),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("offset skipped 3"), "got: {out}");
+        assert!(!out.contains("hit line 3"), "got: {out}");
+        assert!(out.contains("hit line 4"), "got: {out}");
         assert!(out.contains("hit line 5"), "got: {out}");
         assert!(!out.contains("hit line 6"), "got: {out}");
     }
@@ -715,6 +878,7 @@ mod tests {
                     "path": null, "glob": null, "case_insensitive": false,
                     "output_mode": "content",
                     "head_limit": null,
+                    "offset": null,
                     "context_after": 2,
                     "context_before": null,
                     "multiline": null, "file_type": null,
@@ -727,6 +891,32 @@ mod tests {
         assert!(out.contains("line2"), "got: {out}");
         assert!(out.contains("line3"), "got: {out}");
         assert!(!out.contains("line4"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn grep_accepts_claude_flag_aliases() {
+        if !rg_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "f.txt", "before\nALPHA\nafter\n");
+
+        let out = Grep
+            .execute(
+                json!({
+                    "pattern": "alpha",
+                    "output_mode": "content",
+                    "-i": "true",
+                    "-C": "1"
+                }),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.contains("before"), "got: {out}");
+        assert!(out.contains("ALPHA"), "got: {out}");
+        assert!(out.contains("after"), "got: {out}");
     }
 
     #[tokio::test]
@@ -743,6 +933,7 @@ mod tests {
                     "case_insensitive": false,
                     "output_mode": "content",
                     "head_limit": null,
+                    "offset": null,
                     "context_after": null,
                     "context_before": null,
                     "multiline": null,
@@ -806,6 +997,17 @@ mod tests {
         let old_idx = lines.iter().position(|l| l.contains("old.txt"));
         assert!(new_idx.is_some() && old_idx.is_some(), "got: {out}");
         assert!(new_idx < old_idx, "new.txt should come first; got: {out}");
+    }
+
+    #[test]
+    fn glob_sort_accepts_common_model_aliases() {
+        assert_eq!(normalize_glob_sort(None), Some("name"));
+        assert_eq!(normalize_glob_sort(Some("alphabetical")), Some("name"));
+        assert_eq!(normalize_glob_sort(Some("file-name")), Some("name"));
+        assert_eq!(normalize_glob_sort(Some("modified")), Some("mtime"));
+        assert_eq!(normalize_glob_sort(Some("recent")), Some("mtime"));
+        assert_eq!(normalize_glob_sort(Some("newest")), Some("mtime"));
+        assert_eq!(normalize_glob_sort(Some("random")), None);
     }
 
     #[tokio::test]
@@ -878,7 +1080,7 @@ mod tests {
                     "pattern": "-rf",
                     "path": null, "glob": null, "case_insensitive": false,
                     "output_mode": "content",
-                    "head_limit": null, "context_after": null, "context_before": null,
+                    "head_limit": null, "offset": null, "context_after": null, "context_before": null,
                     "multiline": null, "file_type": null,
                 }),
                 &ctx(dir.path().to_path_buf()),
@@ -906,7 +1108,7 @@ mod tests {
                     "pattern": "(",
                     "path": null, "glob": null, "case_insensitive": false,
                     "output_mode": "content",
-                    "head_limit": null, "context_after": null, "context_before": null,
+                    "head_limit": null, "offset": null, "context_after": null, "context_before": null,
                     "multiline": null, "file_type": null,
                 }),
                 &ctx(dir.path().to_path_buf()),

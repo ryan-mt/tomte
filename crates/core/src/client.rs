@@ -93,6 +93,7 @@ mod tests {
                     base_url: "https://api.groq.com/openai/v1".to_string(),
                     api_key: Some("sk-test".to_string()),
                     api_key_env: None,
+                    context_limit: None,
                 },
             )]),
             ..Config::default()

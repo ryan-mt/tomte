@@ -1,7 +1,9 @@
 pub mod ask;
 pub mod dispatch;
 pub mod fs;
+pub mod goal;
 pub mod notebook;
+pub mod plan;
 pub mod search;
 pub mod shell;
 pub mod skill;
@@ -19,12 +21,150 @@ pub fn parse_args<T: serde::de::DeserializeOwned>(
         .map_err(|e| anyhow::anyhow!("tool `{tool}` argument schema mismatch: {e}"))
 }
 
+pub fn deserialize_bool<'de, D>(deserializer: D) -> std::result::Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(
+        parse_optional_bool_value(Some(serde_json::Value::deserialize(deserializer)?))?
+            .unwrap_or(false),
+    )
+}
+
+pub fn deserialize_optional_bool<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    parse_optional_bool_value(value)
+}
+
+pub fn deserialize_optional_usize<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    let Some(n) = parse_optional_u64_value(value)? else {
+        return Ok(None);
+    };
+    usize::try_from(n)
+        .map(Some)
+        .map_err(|_| serde::de::Error::custom("integer is too large for this platform"))
+}
+
+pub fn deserialize_optional_u64<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    parse_optional_u64_value(value)
+}
+
+pub fn deserialize_optional_string_vec<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Array(items) => {
+            let mut out = Vec::new();
+            for item in items {
+                match item {
+                    serde_json::Value::String(s) => {
+                        let trimmed = s.trim();
+                        if !trimmed.is_empty() {
+                            out.push(trimmed.to_string());
+                        }
+                    }
+                    _ => return Err(serde::de::Error::custom("expected string array")),
+                }
+            }
+            Ok(if out.is_empty() { None } else { Some(out) })
+        }
+        serde_json::Value::String(s) => {
+            let out = split_string_list(&s);
+            Ok(if out.is_empty() { None } else { Some(out) })
+        }
+        _ => Err(serde::de::Error::custom(
+            "expected string, string array, or null",
+        )),
+    }
+}
+
+fn parse_optional_bool_value<E: serde::de::Error>(
+    value: Option<serde_json::Value>,
+) -> std::result::Result<Option<bool>, E> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Bool(b) => Ok(Some(b)),
+        serde_json::Value::Number(n) => match n.as_u64() {
+            Some(0) => Ok(Some(false)),
+            Some(1) => Ok(Some(true)),
+            _ => Err(E::custom("expected boolean or 0/1")),
+        },
+        serde_json::Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "" | "null" => Ok(None),
+            "true" | "1" | "yes" => Ok(Some(true)),
+            "false" | "0" | "no" => Ok(Some(false)),
+            _ => Err(E::custom("expected boolean string")),
+        },
+        _ => Err(E::custom("expected boolean, boolean string, 0/1, or null")),
+    }
+}
+
+fn parse_optional_u64_value<E: serde::de::Error>(
+    value: serde_json::Value,
+) -> std::result::Result<Option<u64>, E> {
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(n) => n
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| E::custom("expected a non-negative integer")),
+        serde_json::Value::String(s) => match s.trim() {
+            "" | "null" => Ok(None),
+            trimmed => trimmed
+                .parse::<u64>()
+                .map(Some)
+                .map_err(|_| E::custom("expected a non-negative integer")),
+        },
+        _ => Err(E::custom("expected an integer, integer string, or null")),
+    }
+}
+
+fn split_string_list(value: &str) -> Vec<String> {
+    value
+        .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{oneshot, Mutex};
 
@@ -56,7 +196,7 @@ pub trait BuiltinTool: Send + Sync {
 }
 
 /// Status of a single todo item.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
     Pending,
@@ -66,10 +206,11 @@ pub enum TodoStatus {
 
 impl TodoStatus {
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "pending" => Some(Self::Pending),
-            "in_progress" => Some(Self::InProgress),
-            "completed" => Some(Self::Completed),
+        let normalized = s.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        match normalized.as_str() {
+            "pending" | "todo" | "open" | "not_started" => Some(Self::Pending),
+            "in_progress" | "inprogress" | "active" | "doing" | "started" => Some(Self::InProgress),
+            "completed" | "complete" | "done" | "finished" => Some(Self::Completed),
             _ => None,
         }
     }
@@ -77,7 +218,7 @@ impl TodoStatus {
 
 /// One entry in the session todo list. Mirrors Claude Code's TodoWrite shape
 /// closely so existing prompts and skills transfer.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoItem {
     pub content: String,
     pub status: TodoStatus,
@@ -146,6 +287,12 @@ pub struct SessionState {
     pub todos: Vec<TodoItem>,
     pub background_shells: HashMap<String, Arc<BackgroundShellState>>,
     pub undo_stack: std::collections::VecDeque<UndoEntry>,
+    /// Canonical paths read this session, keyed exactly as `fs::resolve`
+    /// produces them. Powers Claude Code's read-before-write safety:
+    /// `write_file` refuses to overwrite, and `edit_file`/`multi_edit` refuse
+    /// to touch, a file that was never read — so the model can't clobber
+    /// content it has not seen. A successful write/edit also records the path.
+    pub read_files: std::collections::HashSet<std::path::PathBuf>,
 }
 
 impl SessionState {
@@ -158,14 +305,101 @@ impl SessionState {
     }
 }
 
+#[cfg(test)]
+mod scalar_arg_tests {
+    use super::TodoStatus;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Deserialize)]
+    struct Args {
+        #[serde(default, deserialize_with = "crate::tools::deserialize_bool")]
+        flag: bool,
+        #[serde(default, deserialize_with = "crate::tools::deserialize_optional_bool")]
+        maybe_flag: Option<bool>,
+        #[serde(default, deserialize_with = "crate::tools::deserialize_optional_usize")]
+        count: Option<usize>,
+        #[serde(default, deserialize_with = "crate::tools::deserialize_optional_u64")]
+        bytes: Option<u64>,
+        #[serde(
+            default,
+            deserialize_with = "crate::tools::deserialize_optional_string_vec"
+        )]
+        list: Option<Vec<String>>,
+    }
+
+    #[test]
+    fn semantic_scalar_deserializers_accept_common_model_spellings() {
+        let args: Args = serde_json::from_value(json!({
+            "flag": "yes",
+            "maybe_flag": 0,
+            "count": "42",
+            "bytes": "9000",
+            "list": "docs.rs, crates.io example.com"
+        }))
+        .unwrap();
+
+        assert!(args.flag);
+        assert_eq!(args.maybe_flag, Some(false));
+        assert_eq!(args.count, Some(42));
+        assert_eq!(args.bytes, Some(9000));
+        assert_eq!(
+            args.list,
+            Some(vec![
+                "docs.rs".to_string(),
+                "crates.io".to_string(),
+                "example.com".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn semantic_scalar_deserializers_treat_blank_and_null_as_none() {
+        let args: Args = serde_json::from_value(json!({
+            "flag": null,
+            "maybe_flag": "",
+            "count": "null",
+            "bytes": null,
+            "list": ""
+        }))
+        .unwrap();
+
+        assert!(!args.flag);
+        assert_eq!(args.maybe_flag, None);
+        assert_eq!(args.count, None);
+        assert_eq!(args.bytes, None);
+        assert_eq!(args.list, None);
+    }
+
+    #[test]
+    fn todo_status_parse_accepts_common_model_spellings() {
+        assert_eq!(TodoStatus::parse("pending"), Some(TodoStatus::Pending));
+        assert_eq!(TodoStatus::parse("todo"), Some(TodoStatus::Pending));
+        assert_eq!(
+            TodoStatus::parse("in progress"),
+            Some(TodoStatus::InProgress)
+        );
+        assert_eq!(TodoStatus::parse("active"), Some(TodoStatus::InProgress));
+        assert_eq!(TodoStatus::parse("done"), Some(TodoStatus::Completed));
+        assert_eq!(TodoStatus::parse("complete"), Some(TodoStatus::Completed));
+    }
+}
+
 /// Per-call execution context: working directory, approval policy, and a
 /// handle to mutable session state (todos, …).
 #[derive(Clone)]
 pub struct ToolContext {
     pub cwd: std::path::PathBuf,
     pub approval: ApprovalMode,
+    pub require_approval: bool,
+    pub auto_approve_edits: bool,
     pub session: Arc<Mutex<SessionState>>,
     pub config: crate::config::Config,
+    /// Parent agent's live UI event channel, present only while running inside
+    /// an interactive turn. Tools that spawn sub-agents (`dispatch_agent`)
+    /// forward sub-agent lifecycle events here so the TUI can render a live
+    /// fleet view. `None` in headless tool tests and non-interactive paths.
+    pub events: Option<tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
 }
 
 impl ToolContext {
@@ -175,8 +409,11 @@ impl ToolContext {
         Self {
             cwd,
             approval,
+            require_approval: false,
+            auto_approve_edits: false,
             session: Arc::new(Mutex::new(SessionState::default())),
             config: crate::config::Config::default(),
+            events: None,
         }
     }
 }
@@ -216,9 +453,12 @@ impl Registry {
                 Box::new(shell::BashOutput),
                 Box::new(shell::KillShell),
                 Box::new(todo::TodoWrite),
+                Box::new(goal::GoalUpdate),
                 Box::new(web::WebFetch),
                 Box::new(web::WebSearch),
                 Box::new(notebook::NotebookEdit),
+                Box::new(plan::EnterPlanMode),
+                Box::new(plan::ExitPlanMode),
                 Box::new(skill::LoadSkill),
                 Box::new(ask::AskUserQuestion),
                 Box::new(dispatch::DispatchAgent),
@@ -231,9 +471,14 @@ impl Registry {
     }
 
     pub fn find(&self, name: &str) -> Option<&dyn BuiltinTool> {
+        let trimmed = name.trim();
         self.tools
             .iter()
-            .find(|t| t.name() == name)
+            .find(|t| t.name() == trimmed)
+            .or_else(|| {
+                let canon = canonical_tool_name(trimmed)?;
+                self.tools.iter().find(|t| t.name() == canon)
+            })
             .map(|b| b.as_ref())
     }
 
@@ -252,8 +497,16 @@ impl Registry {
         let wildcard = allowed.is_empty() || allowed.iter().any(|t| t == "*");
         if wildcard {
             let mut s = Self::standard();
-            s.tools
-                .retain(|t| !matches!(t.name(), "dispatch_agent" | "ask_user_question"));
+            s.tools.retain(|t| {
+                !matches!(
+                    t.name(),
+                    "dispatch_agent"
+                        | "ask_user_question"
+                        | "goal_update"
+                        | "enter_plan_mode"
+                        | "exit_plan_mode"
+                )
+            });
             return s;
         }
         let mut tools: Vec<Box<dyn BuiltinTool>> = Vec::new();
@@ -265,7 +518,14 @@ impl Registry {
             };
             // Tools that need parent-level orchestration are stripped from
             // sub-agents even when explicitly whitelisted.
-            if matches!(canon, "dispatch_agent" | "ask_user_question") {
+            if matches!(
+                canon,
+                "dispatch_agent"
+                    | "ask_user_question"
+                    | "goal_update"
+                    | "enter_plan_mode"
+                    | "exit_plan_mode"
+            ) {
                 continue;
             }
             // Dedup: aliases that canonicalise to the same built-in (e.g.
@@ -288,9 +548,12 @@ impl Registry {
                 "bash_output" => Box::new(shell::BashOutput),
                 "kill_shell" => Box::new(shell::KillShell),
                 "todo_write" => Box::new(todo::TodoWrite),
+                "goal_update" => Box::new(goal::GoalUpdate),
                 "web_fetch" => Box::new(web::WebFetch),
                 "web_search" => Box::new(web::WebSearch),
                 "notebook_edit" => Box::new(notebook::NotebookEdit),
+                "enter_plan_mode" => Box::new(plan::EnterPlanMode),
+                "exit_plan_mode" => Box::new(plan::ExitPlanMode),
                 "skill" => Box::new(skill::LoadSkill),
                 "ask_user_question" => Box::new(ask::AskUserQuestion),
                 _ => continue,
@@ -314,27 +577,45 @@ impl Registry {
 /// names with no opencli equivalent. `Task` maps to `dispatch_agent`, which
 /// the caller always strips.
 fn canonical_tool_name(name: &str) -> Option<&'static str> {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "read_file" | "read" => Some("read_file"),
-        "write_file" | "write" => Some("write_file"),
-        "edit_file" | "edit" => Some("edit_file"),
+    let lowered = name.trim().to_ascii_lowercase();
+    let name = strip_tool_namespace(&lowered);
+    match name {
+        "read_file" | "readfile" | "read" => Some("read_file"),
+        "write_file" | "writefile" | "write" => Some("write_file"),
+        "edit_file" | "editfile" | "edit" => Some("edit_file"),
         "multi_edit" | "multiedit" => Some("multi_edit"),
-        "undo_last_edit" => Some("undo_last_edit"),
-        "list_dir" | "ls" => Some("list_dir"),
+        "undo_last_edit" | "undolastedit" => Some("undo_last_edit"),
+        "list_dir" | "listdir" | "list_directory" | "listdirectory" | "listfiles" | "ls" => {
+            Some("list_dir")
+        }
         "grep" => Some("grep"),
         "glob" => Some("glob"),
-        "run_shell" | "bash" | "shell" => Some("run_shell"),
-        "bash_output" => Some("bash_output"),
-        "kill_shell" => Some("kill_shell"),
+        "run_shell" | "runshell" | "bash" | "shell" => Some("run_shell"),
+        "bash_output" | "bashoutput" => Some("bash_output"),
+        "kill_shell" | "killshell" => Some("kill_shell"),
         "todo_write" | "todowrite" => Some("todo_write"),
+        "goal_update" | "goalupdate" | "update_goal" | "updategoal" | "goal_status"
+        | "goalstatus" => Some("goal_update"),
+        "enter_plan_mode" | "enterplanmode" | "enter_plan" | "enterplan" | "plan_mode"
+        | "planmode" => Some("enter_plan_mode"),
+        "exit_plan_mode" | "exitplanmode" | "exit_plan" | "exitplan" => Some("exit_plan_mode"),
         "web_fetch" | "webfetch" => Some("web_fetch"),
         "web_search" | "websearch" => Some("web_search"),
         "notebook_edit" | "notebookedit" => Some("notebook_edit"),
-        "skill" => Some("skill"),
+        "skill" | "load_skill" | "loadskill" => Some("skill"),
         "ask_user_question" | "askuserquestion" => Some("ask_user_question"),
-        "dispatch_agent" | "task" => Some("dispatch_agent"),
+        "dispatch_agent" | "dispatchagent" | "agent" | "task" => Some("dispatch_agent"),
         _ => None,
     }
+}
+
+fn strip_tool_namespace(name: &str) -> &str {
+    for prefix in ["functions.", "function.", "tools.", "tool.", "builtin."] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            return rest;
+        }
+    }
+    name
 }
 
 #[cfg(test)]
@@ -347,13 +628,19 @@ mod registry_tests {
 
     #[test]
     fn filtered_maps_claude_code_tool_names() {
-        // A Claude Code agent whitelist: PascalCase names + `Task`.
-        let reg = Registry::filtered(&["Read".into(), "Grep".into(), "Bash".into(), "Task".into()]);
+        // A Claude Code agent whitelist: PascalCase names + `Task`/`Agent`.
+        let reg = Registry::filtered(&[
+            "Read".into(),
+            "Grep".into(),
+            "Bash".into(),
+            "Task".into(),
+            "Agent".into(),
+        ]);
         let n = names(&reg);
         assert!(n.contains(&"read_file"));
         assert!(n.contains(&"grep"));
         assert!(n.contains(&"run_shell"));
-        // Task → dispatch_agent, which is always stripped.
+        // Task/Agent -> dispatch_agent, which is always stripped.
         assert!(!n.contains(&"dispatch_agent"));
         assert_eq!(n.len(), 3);
     }
@@ -365,12 +652,66 @@ mod registry_tests {
     }
 
     #[test]
+    fn find_accepts_provider_aliases_for_builtin_tools() {
+        let reg = Registry::standard();
+
+        let cases = [
+            (" Read ", "read_file"),
+            ("ReadFile", "read_file"),
+            ("Write", "write_file"),
+            ("WriteFile", "write_file"),
+            ("Edit", "edit_file"),
+            ("EditFile", "edit_file"),
+            ("MultiEdit", "multi_edit"),
+            ("UndoLastEdit", "undo_last_edit"),
+            ("ListDir", "list_dir"),
+            ("ListDirectory", "list_dir"),
+            ("Grep", "grep"),
+            ("Glob", "glob"),
+            ("Bash", "run_shell"),
+            ("RunShell", "run_shell"),
+            ("BashOutput", "bash_output"),
+            ("KillShell", "kill_shell"),
+            ("TodoWrite", "todo_write"),
+            ("GoalUpdate", "goal_update"),
+            ("UpdateGoal", "goal_update"),
+            ("functions.update_goal", "goal_update"),
+            ("functions.GoalUpdate", "goal_update"),
+            ("EnterPlanMode", "enter_plan_mode"),
+            ("functions.EnterPlanMode", "enter_plan_mode"),
+            ("ExitPlanMode", "exit_plan_mode"),
+            ("functions.ExitPlanMode", "exit_plan_mode"),
+            ("tool.BashOutput", "bash_output"),
+            ("builtin.Agent", "dispatch_agent"),
+            ("WebFetch", "web_fetch"),
+            ("WebSearch", "web_search"),
+            ("NotebookEdit", "notebook_edit"),
+            ("LoadSkill", "skill"),
+            ("AskUserQuestion", "ask_user_question"),
+            ("Agent", "dispatch_agent"),
+            ("Task", "dispatch_agent"),
+            ("DispatchAgent", "dispatch_agent"),
+            ("goalupdate", "goal_update"),
+            ("goalstatus", "goal_update"),
+            ("enterplanmode", "enter_plan_mode"),
+            ("exitplanmode", "exit_plan_mode"),
+        ];
+
+        for (alias, canonical) in cases {
+            assert_eq!(reg.find(alias).unwrap().name(), canonical, "{alias}");
+        }
+    }
+
+    #[test]
     fn wildcard_includes_skill_but_not_dispatch() {
         let reg = Registry::filtered(&[]);
         let n = names(&reg);
         assert!(n.contains(&"skill"));
         assert!(!n.contains(&"dispatch_agent"));
         assert!(!n.contains(&"ask_user_question"));
+        assert!(!n.contains(&"goal_update"));
+        assert!(!n.contains(&"enter_plan_mode"));
+        assert!(!n.contains(&"exit_plan_mode"));
     }
 
     #[test]
@@ -384,6 +725,9 @@ mod registry_tests {
         let n = names(&Registry::standard());
         assert!(n.contains(&"skill"));
         assert!(n.contains(&"dispatch_agent"));
+        assert!(n.contains(&"goal_update"));
+        assert!(n.contains(&"enter_plan_mode"));
+        assert!(n.contains(&"exit_plan_mode"));
     }
 
     #[test]

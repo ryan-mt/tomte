@@ -7,7 +7,10 @@
 //! a single function so the env override is set once and used serially.
 
 use opencli_core::openai::{InputItem, MessageContent};
-use opencli_core::session::{self, SessionMeta, SessionRecord};
+use opencli_core::session::{
+    self, SessionGoalSnapshot, SessionMeta, SessionRecord, SessionSnapshot,
+};
+use opencli_core::tools::{TodoItem, TodoStatus};
 use std::path::{Path, PathBuf};
 
 fn sample_history(prompt: &str) -> Vec<InputItem> {
@@ -36,6 +39,7 @@ fn record(cwd: &Path, id: &str, ts: u64) -> SessionRecord {
             message_count: 2,
             preview: id.into(),
         },
+        state: SessionSnapshot::default(),
         history: sample_history(id),
     }
 }
@@ -49,13 +53,37 @@ fn session_save_load_list_and_missing_id() {
     let cwd_b = PathBuf::from("/tmp/opencli-test-proj-b");
 
     // --- save/load roundtrip ---------------------------------------------
-    let r = record(&cwd_a, "alpha", 1_000);
+    let mut r = record(&cwd_a, "alpha", 1_000);
+    r.state.todos.push(TodoItem {
+        content: "Run tests".to_string(),
+        status: TodoStatus::InProgress,
+        active_form: "Running tests".to_string(),
+    });
+    r.state.read_files.push(cwd_a.join("src/lib.rs"));
+    r.state.active_goal = Some(SessionGoalSnapshot {
+        objective: "finish release".to_string(),
+        turns_completed: 3,
+        waiting_for_user: false,
+        last_summary: Some("tests next".to_string()),
+        started_at_ms: 123,
+    });
     session::save(&r).expect("save alpha");
     let loaded = session::load(&cwd_a, "alpha").expect("load alpha");
     assert_eq!(loaded.meta.id, "alpha");
     assert_eq!(loaded.meta.cwd, cwd_a);
     assert_eq!(loaded.meta.message_count, 2);
     assert_eq!(loaded.history.len(), 2);
+    assert_eq!(loaded.state.todos.len(), 1);
+    assert_eq!(loaded.state.todos[0].active_form, "Running tests");
+    assert_eq!(loaded.state.read_files, vec![cwd_a.join("src/lib.rs")]);
+    let loaded_goal = loaded
+        .state
+        .active_goal
+        .as_ref()
+        .expect("active goal should roundtrip");
+    assert_eq!(loaded_goal.objective, "finish release");
+    assert_eq!(loaded_goal.turns_completed, 3);
+    assert_eq!(loaded_goal.last_summary.as_deref(), Some("tests next"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -92,6 +120,27 @@ fn session_save_load_list_and_missing_id() {
     assert_eq!(la.len(), 3);
     assert_eq!(lb.len(), 1);
     assert_eq!(lb[0].id, "delta");
+
+    // --- legacy records without persisted state still load ----------------
+    let legacy = serde_json::json!({
+        "id": "legacy",
+        "cwd": cwd_a.clone(),
+        "model": "gpt-5",
+        "created_at_ms": 7_000,
+        "updated_at_ms": 7_000,
+        "message_count": 2,
+        "preview": "legacy",
+        "history": sample_history("legacy")
+    });
+    std::fs::write(
+        session::sessions_dir_for(&cwd_a).join("legacy.json"),
+        serde_json::to_string(&legacy).unwrap(),
+    )
+    .unwrap();
+    let legacy_loaded = session::load(&cwd_a, "legacy").expect("load legacy session");
+    assert!(legacy_loaded.state.todos.is_empty());
+    assert!(legacy_loaded.state.read_files.is_empty());
+    assert!(legacy_loaded.state.active_goal.is_none());
 
     // --- missing id is NotFound -----------------------------------------
     let err = session::load(&cwd_a, "does-not-exist").unwrap_err();

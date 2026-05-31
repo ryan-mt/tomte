@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
 use super::{BuiltinTool, ToolContext};
@@ -14,17 +14,61 @@ struct Args {
 
 #[derive(Deserialize)]
 struct Question {
+    #[serde(alias = "prompt", alias = "text")]
     question: String,
-    header: String,
+    #[serde(default, alias = "title")]
+    header: Option<String>,
+    #[serde(alias = "choices")]
     options: Vec<Opt>,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "multiSelect",
+        deserialize_with = "super::deserialize_optional_bool"
+    )]
     multi_select: Option<bool>,
 }
 
-#[derive(Deserialize)]
 struct Opt {
     label: String,
     description: String,
+}
+
+impl<'de> Deserialize<'de> for Opt {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        match value {
+            Value::String(s) => {
+                let label = s.trim().to_string();
+                if label.is_empty() {
+                    return Err(serde::de::Error::custom("option label must not be empty"));
+                }
+                Ok(Self {
+                    description: label.clone(),
+                    label,
+                })
+            }
+            Value::Object(obj) => {
+                let label = first_string(&obj, &["label", "value", "name", "title"])
+                    .or_else(|| first_string(&obj, &["description", "detail", "details", "text"]))
+                    .ok_or_else(|| serde::de::Error::custom("option label is required"))?;
+                let description = first_string(&obj, &["description", "detail", "details", "text"])
+                    .unwrap_or_else(|| label.clone());
+                Ok(Self { label, description })
+            }
+            _ => Err(serde::de::Error::custom("expected option string or object")),
+        }
+    }
+}
+
+fn first_string(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| obj.get(*key)?.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
 }
 
 #[async_trait]
@@ -103,6 +147,7 @@ Parameters:\n\
         true
     }
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<String> {
+        let args = normalize_args(args);
         let a: Args = super::parse_args("ask_user_question", args)?;
         if a.questions.is_empty() || a.questions.len() > 4 {
             return Err(anyhow!("must supply 1..=4 questions"));
@@ -120,7 +165,7 @@ Parameters:\n\
             "kind": "ask_user_question",
             "questions": a.questions.iter().map(|q| json!({
                 "question": q.question,
-                "header": q.header,
+                "header": q.header.as_deref().unwrap_or("Choice"),
                 "options": q.options.iter().map(|o| json!({
                     "label": o.label,
                     "description": o.description,
@@ -129,6 +174,26 @@ Parameters:\n\
             })).collect::<Vec<_>>(),
         });
         Ok(serde_json::to_string(&envelope)?)
+    }
+}
+
+fn normalize_args(args: Value) -> Value {
+    let Some(obj) = args.as_object() else {
+        return args;
+    };
+    if obj.get("questions").is_some() {
+        return args;
+    }
+    let has_question = obj
+        .get("question")
+        .or_else(|| obj.get("prompt"))
+        .or_else(|| obj.get("text"))
+        .is_some();
+    let has_options = obj.get("options").or_else(|| obj.get("choices")).is_some();
+    if has_question && has_options {
+        json!({ "questions": [args] })
+    } else {
+        args
     }
 }
 
@@ -180,8 +245,11 @@ mod tests {
         ToolContext {
             cwd: std::env::current_dir().unwrap(),
             approval: ApprovalMode::Auto,
+            require_approval: false,
+            auto_approve_edits: false,
             session: Arc::new(Mutex::new(SessionState::default())),
             config: crate::config::Config::default(),
+            events: None,
         }
     }
 
@@ -209,6 +277,78 @@ mod tests {
         assert_eq!(v["questions"][0]["header"], "Approach");
         assert_eq!(v["questions"][0]["options"][1]["label"], "B");
         assert_eq!(v["questions"][0]["multi_select"], false);
+    }
+
+    #[tokio::test]
+    async fn accepts_camel_case_multi_select_alias() {
+        let out = AskUserQuestion
+            .execute(
+                json!({
+                    "questions": [{
+                        "question": "Which options?",
+                        "header": "Opts",
+                        "options": [
+                            {"label": "A", "description": "do A"},
+                            {"label": "B", "description": "do B"}
+                        ],
+                        "multiSelect": "true"
+                    }]
+                }),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["questions"][0]["multi_select"], true);
+    }
+
+    #[tokio::test]
+    async fn accepts_top_level_question_and_choice_aliases() {
+        let out = AskUserQuestion
+            .execute(
+                json!({
+                    "prompt": "Replace active goal?",
+                    "title": "Goal",
+                    "choices": [
+                        "Replace",
+                        {"value": "Keep", "details": "Keep the current goal running"}
+                    ],
+                    "multiSelect": "false"
+                }),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["questions"][0]["question"], "Replace active goal?");
+        assert_eq!(v["questions"][0]["header"], "Goal");
+        assert_eq!(v["questions"][0]["options"][0]["label"], "Replace");
+        assert_eq!(v["questions"][0]["options"][0]["description"], "Replace");
+        assert_eq!(v["questions"][0]["options"][1]["label"], "Keep");
+        assert_eq!(
+            v["questions"][0]["options"][1]["description"],
+            "Keep the current goal running"
+        );
+        assert_eq!(v["questions"][0]["multi_select"], false);
+    }
+
+    #[tokio::test]
+    async fn defaults_missing_header_for_single_question_alias() {
+        let out = AskUserQuestion
+            .execute(
+                json!({
+                    "question": "Which branch?",
+                    "options": ["main", "feature"],
+                    "multi_select": false
+                }),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["questions"][0]["header"], "Choice");
     }
 
     #[tokio::test]

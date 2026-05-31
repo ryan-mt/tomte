@@ -23,6 +23,7 @@ use super::models::{InputItem, MessageContent, ResponsesRequest, Tool, ToolChoic
 use super::stream::{ResponseStreamEvent, StreamHandle};
 use crate::client::ProviderClient;
 use crate::provider::Provider;
+use crate::tool_args::normalize_argument_fragment;
 
 /// Build a Chat Completions request body from the shared IR. Reasoning/verbosity
 /// and the Responses-only fields are intentionally dropped: most compatible
@@ -77,7 +78,9 @@ pub fn translate_chat_request(req: &ResponsesRequest) -> Value {
                     "tool_calls": [call],
                 }));
             }
-            InputItem::FunctionCallOutput { call_id, output } => {
+            InputItem::FunctionCallOutput {
+                call_id, output, ..
+            } => {
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,
@@ -173,7 +176,204 @@ fn normalize_usage(usage: &Value) -> Value {
 
 struct ToolAcc {
     id: String,
+    name: Option<String>,
     args: String,
+    args_truncated: bool,
+    added: bool,
+    emitted_args_len: usize,
+}
+
+const CHAT_TOOL_ARGUMENT_MAX_BYTES: usize = 2 * 1024 * 1024;
+const CHAT_TOOL_ARGUMENT_BUFFER_BYTES: usize = CHAT_TOOL_ARGUMENT_MAX_BYTES + 1;
+
+async fn apply_tool_delta(
+    tools: &mut BTreeMap<u32, ToolAcc>,
+    index: u32,
+    id: Option<String>,
+    name: Option<String>,
+    args_fragment: Option<String>,
+    tx: &mpsc::Sender<anyhow::Result<ResponseStreamEvent>>,
+) {
+    let acc = tools.entry(index).or_insert_with(|| ToolAcc {
+        id: id.clone().unwrap_or_else(|| format!("call_{index}")),
+        name: None,
+        args: String::new(),
+        args_truncated: false,
+        added: false,
+        emitted_args_len: 0,
+    });
+    if !acc.added {
+        if let Some(id) = id {
+            acc.id = id;
+        }
+    }
+    if acc.name.is_none() {
+        acc.name = name;
+    }
+    if let Some(frag) = args_fragment {
+        append_tool_args_capped(acc, &frag);
+    }
+    if !acc.added {
+        if let Some(name) = acc.name.as_deref() {
+            let item = json!({
+                "type": "function_call",
+                "id": acc.id.clone(),
+                "call_id": acc.id.clone(),
+                "name": name,
+                "arguments": "",
+            });
+            let _ = tx
+                .send(Ok(ResponseStreamEvent::OutputItemAdded {
+                    item,
+                    output_index: index,
+                }))
+                .await;
+            acc.added = true;
+        }
+    }
+    if acc.added && acc.args.len() > acc.emitted_args_len {
+        let delta = acc.args[acc.emitted_args_len..].to_string();
+        acc.emitted_args_len = acc.args.len();
+        let _ = tx
+            .send(Ok(ResponseStreamEvent::FunctionCallArgsDelta {
+                item_id: acc.id.clone(),
+                delta,
+            }))
+            .await;
+    }
+}
+
+fn append_tool_args_capped(acc: &mut ToolAcc, fragment: &str) {
+    let Some(fragment) = normalize_argument_fragment(fragment) else {
+        return;
+    };
+    if acc.args_truncated {
+        return;
+    }
+    let remaining = CHAT_TOOL_ARGUMENT_BUFFER_BYTES.saturating_sub(acc.args.len());
+    if remaining == 0 {
+        acc.args_truncated = true;
+        return;
+    }
+    if fragment.len() <= remaining {
+        acc.args.push_str(fragment);
+        return;
+    }
+    let mut cut = remaining;
+    while cut > 0 && !fragment.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    if cut == 0 {
+        acc.args.push_str(&" ".repeat(remaining));
+    } else {
+        acc.args.push_str(&fragment[..cut]);
+    }
+    acc.args_truncated = true;
+}
+
+fn tool_call_values(value: &Value) -> Vec<&Value> {
+    match value {
+        Value::Array(arr) => arr.iter().collect(),
+        Value::Object(_) => vec![value],
+        _ => Vec::new(),
+    }
+}
+
+fn chat_string_value(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::Null => None,
+        Value::String(s) if s.is_empty() => None,
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Array(_) | Value::Object(_) => value.and_then(|v| serde_json::to_string(v).ok()),
+    }
+}
+
+fn chat_value_from_keys(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| chat_string_value(value.get(*key)))
+}
+
+fn chat_argument_value_from_keys(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| chat_argument_string_value(value.get(*key)))
+}
+
+fn chat_argument_string_value(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::Null => None,
+        Value::String(s) => normalize_argument_fragment(s).map(str::to_string),
+        Value::Array(arr) if arr.is_empty() => None,
+        Value::Object(map) if map.is_empty() => None,
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Array(_) | Value::Object(_) => value.and_then(|v| serde_json::to_string(v).ok()),
+    }
+}
+
+fn chat_tool_name(function: Option<&Value>, tool_call: &Value) -> Option<String> {
+    const NAME_KEYS: &[&str] = &[
+        "name",
+        "tool_name",
+        "toolName",
+        "function_name",
+        "functionName",
+        "recipient_name",
+        "recipientName",
+    ];
+    function
+        .and_then(|f| chat_value_from_keys(f, NAME_KEYS))
+        .or_else(|| chat_value_from_keys(tool_call, NAME_KEYS))
+        .or_else(|| {
+            tool_call
+                .get("tool")
+                .and_then(|t| chat_value_from_keys(t, NAME_KEYS))
+        })
+}
+
+fn chat_argument_value(function: Option<&Value>, tool_call: &Value) -> Option<String> {
+    const ARG_KEYS: &[&str] = &[
+        "arguments",
+        "arguments_json",
+        "argumentsJson",
+        "args",
+        "input",
+        "input_json",
+        "inputJson",
+        "tool_input",
+        "toolInput",
+        "parameters",
+        "parameters_json",
+        "parametersJson",
+        "partial_json",
+        "partialJson",
+        "input_json_delta",
+        "inputJsonDelta",
+    ];
+    function
+        .and_then(|f| chat_argument_value_from_keys(f, ARG_KEYS))
+        .or_else(|| chat_argument_value_from_keys(tool_call, ARG_KEYS))
+        .or_else(|| {
+            tool_call
+                .get("tool")
+                .and_then(|t| chat_argument_value_from_keys(t, ARG_KEYS))
+        })
+}
+
+fn chat_tool_call_id(tool_call: &Value) -> Option<String> {
+    chat_value_from_keys(
+        tool_call,
+        &[
+            "id",
+            "call_id",
+            "callId",
+            "tool_call_id",
+            "toolCallId",
+            "tool_use_id",
+            "toolUseId",
+        ],
+    )
 }
 
 /// Bridge a Chat Completions SSE response onto a `StreamHandle` carrying
@@ -228,14 +428,19 @@ pub fn handle_chat_response(resp: reqwest::Response) -> StreamHandle {
                         .and_then(|m| m.as_str())
                         .unwrap_or("Chat Completions stream error")
                         .to_string();
-                    let _ = tx.send(Ok(ResponseStreamEvent::Error { message: msg })).await;
+                    let _ = tx
+                        .send(Ok(ResponseStreamEvent::Error { message: msg }))
+                        .await;
                     break;
                 }
                 if response_id.is_none() {
                     response_id = chunk.get("id").and_then(|v| v.as_str()).map(String::from);
                 }
                 if response_model.is_none() {
-                    response_model = chunk.get("model").and_then(|v| v.as_str()).map(String::from);
+                    response_model = chunk
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
                 }
                 if let Some(u) = chunk.get("usage") {
                     if u.is_object() {
@@ -256,8 +461,11 @@ pub fn handle_chat_response(resp: reqwest::Response) -> StreamHandle {
                 {
                     saw_finish = true;
                 }
-                let delta = choice.get("delta");
-                if let Some(text) = delta.and_then(|d| d.get("content")).and_then(|v| v.as_str()) {
+                let message_part = choice.get("delta").or_else(|| choice.get("message"));
+                if let Some(text) = message_part
+                    .and_then(|d| d.get("content"))
+                    .and_then(|v| v.as_str())
+                {
                     if !text.is_empty() {
                         content_buf.push_str(text);
                         let _ = tx
@@ -268,62 +476,31 @@ pub fn handle_chat_response(resp: reqwest::Response) -> StreamHandle {
                             .await;
                     }
                 }
-                if let Some(calls) = delta.and_then(|d| d.get("tool_calls")).and_then(|v| v.as_array())
-                {
-                    for tc in calls {
+                if let Some(calls) = message_part.and_then(|d| d.get("tool_calls")) {
+                    for tc in tool_call_values(calls) {
                         let index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        let name = tc
-                            .get("function")
-                            .and_then(|f| f.get("name"))
-                            .and_then(|v| v.as_str());
-                        let id = tc.get("id").and_then(|v| v.as_str());
-                        // Register the call the first time we see its index,
-                        // synthesizing an id if the provider streamed only an index.
-                        let mut added: Option<Value> = None;
-                        if let std::collections::btree_map::Entry::Vacant(slot) =
-                            tools.entry(index)
-                        {
-                            let call_id = id
-                                .map(String::from)
-                                .unwrap_or_else(|| format!("call_{index}"));
-                            added = Some(json!({
-                                "type": "function_call",
-                                "id": call_id,
-                                "call_id": call_id,
-                                "name": name.unwrap_or(""),
-                                "arguments": "",
-                            }));
-                            slot.insert(ToolAcc {
-                                id: call_id,
-                                args: String::new(),
-                            });
-                        }
-                        if let Some(item) = added {
-                            let _ = tx
-                                .send(Ok(ResponseStreamEvent::OutputItemAdded {
-                                    item,
-                                    output_index: index,
-                                }))
-                                .await;
-                        }
-                        if let Some(frag) = tc
-                            .get("function")
-                            .and_then(|f| f.get("arguments"))
-                            .and_then(|v| v.as_str())
-                        {
-                            if !frag.is_empty() {
-                                if let Some(acc) = tools.get_mut(&index) {
-                                    acc.args.push_str(frag);
-                                    let _ = tx
-                                        .send(Ok(ResponseStreamEvent::FunctionCallArgsDelta {
-                                            item_id: acc.id.clone(),
-                                            delta: frag.to_string(),
-                                        }))
-                                        .await;
-                                }
-                            }
-                        }
+                        let function = tc.get("function");
+                        apply_tool_delta(
+                            &mut tools,
+                            index,
+                            chat_tool_call_id(tc),
+                            chat_tool_name(function, tc),
+                            chat_argument_value(function, tc),
+                            &tx,
+                        )
+                        .await;
                     }
+                }
+                if let Some(function_call) = message_part.and_then(|d| d.get("function_call")) {
+                    apply_tool_delta(
+                        &mut tools,
+                        0,
+                        None,
+                        chat_tool_name(Some(function_call), function_call),
+                        chat_argument_value(Some(function_call), function_call),
+                        &tx,
+                    )
+                    .await;
                 }
             }
 
@@ -340,6 +517,21 @@ pub fn handle_chat_response(resp: reqwest::Response) -> StreamHandle {
             }
             // Finalize: close each tool call, then the text, then complete.
             for acc in tools.into_values() {
+                if !acc.added {
+                    let item = json!({
+                        "type": "function_call",
+                        "id": acc.id,
+                        "call_id": acc.id,
+                        "name": acc.name.unwrap_or_default(),
+                        "arguments": "",
+                    });
+                    let _ = tx
+                        .send(Ok(ResponseStreamEvent::OutputItemAdded {
+                            item,
+                            output_index: 0,
+                        }))
+                        .await;
+                }
                 let _ = tx
                     .send(Ok(ResponseStreamEvent::FunctionCallArgsDone {
                         item_id: acc.id,
@@ -367,7 +559,9 @@ pub fn handle_chat_response(resp: reqwest::Response) -> StreamHandle {
         if let Err(e) = pump.await {
             if e.is_panic() {
                 let _ = tx_supervisor
-                    .send(Err(anyhow::anyhow!("Chat Completions SSE pump panicked: {e}")))
+                    .send(Err(anyhow::anyhow!(
+                        "Chat Completions SSE pump panicked: {e}"
+                    )))
                     .await;
             }
         }
@@ -420,7 +614,7 @@ impl ChatCompletionsClient {
         if !self.api_key.is_empty() {
             builder = builder.header(AUTHORIZATION, format!("Bearer {}", self.api_key));
         }
-        Ok(builder.send().await?)
+        Ok(crate::retry::send_with_retry(builder).await?)
     }
 }
 
@@ -467,6 +661,32 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[test]
+    fn chat_tool_helpers_accept_camel_case_aliases() {
+        let tool_call = json!({
+            "callId": "call_123",
+            "toolName": "Read",
+            "toolInput": {"filePath": "Cargo.toml"}
+        });
+
+        assert_eq!(chat_tool_call_id(&tool_call).as_deref(), Some("call_123"));
+        assert_eq!(chat_tool_name(None, &tool_call).as_deref(), Some("Read"));
+        assert_eq!(
+            chat_argument_value(None, &tool_call).as_deref(),
+            Some(r#"{"filePath":"Cargo.toml"}"#)
+        );
+    }
+
+    #[test]
+    fn chat_tool_id_accepts_anthropic_tool_use_alias() {
+        let tool_call = json!({
+            "tool_use_id": "toolu_123",
+            "function": {"name": "read_file", "arguments": {"path": "Cargo.toml"}}
+        });
+
+        assert_eq!(chat_tool_call_id(&tool_call).as_deref(), Some("toolu_123"));
+    }
+
+    #[test]
     fn translate_groups_tool_calls_and_results() {
         let req = ResponsesRequest::new(
             "llama-3.3-70b",
@@ -489,6 +709,7 @@ mod tests {
                 InputItem::FunctionCallOutput {
                     call_id: "call_1".into(),
                     output: "contents".into(),
+                    error: false,
                 },
             ],
         )
@@ -596,6 +817,354 @@ mod tests {
         assert_eq!(usage["input_tokens"], 10);
         assert_eq!(usage["output_tokens"], 5);
         assert_eq!(usage["total_tokens"], 15);
+    }
+
+    #[tokio::test]
+    async fn chat_tool_argument_buffer_is_capped_before_agent() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut tools = BTreeMap::new();
+
+        apply_tool_delta(
+            &mut tools,
+            0,
+            Some("call_x".to_string()),
+            Some("read_file".to_string()),
+            Some("x".repeat(CHAT_TOOL_ARGUMENT_BUFFER_BYTES + 8192)),
+            &tx,
+        )
+        .await;
+
+        let acc = tools.get(&0).unwrap();
+        assert_eq!(acc.args.len(), CHAT_TOOL_ARGUMENT_BUFFER_BYTES);
+        assert!(acc.args_truncated);
+
+        let _started = rx.recv().await.unwrap().unwrap();
+        match rx.recv().await.unwrap().unwrap() {
+            ResponseStreamEvent::FunctionCallArgsDelta { delta, .. } => {
+                assert_eq!(delta.len(), CHAT_TOOL_ARGUMENT_BUFFER_BYTES);
+            }
+            other => panic!("expected FunctionCallArgsDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chat_tool_argument_cap_preserves_utf8_boundary() {
+        let mut acc = ToolAcc {
+            id: "call_x".into(),
+            name: Some("read_file".into()),
+            args: "x".repeat(CHAT_TOOL_ARGUMENT_BUFFER_BYTES - 1),
+            args_truncated: false,
+            added: true,
+            emitted_args_len: 0,
+        };
+
+        append_tool_args_capped(&mut acc, "é");
+
+        assert_eq!(acc.args.len(), CHAT_TOOL_ARGUMENT_BUFFER_BYTES);
+        assert!(acc.args.is_char_boundary(acc.args.len()));
+        assert!(acc.args_truncated);
+    }
+
+    #[tokio::test]
+    async fn stream_waits_for_tool_name_split_across_deltas() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let chunks = vec![
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"arguments":""}}]}}]}"#,
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file"}}]}}]}"#,
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"x\"}"}}]}}]}"#,
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+                ];
+                let events: Vec<Result<Event, Infallible>> = chunks
+                    .into_iter()
+                    .map(|c| Ok(Event::default().data(c)))
+                    .chain(std::iter::once(Ok(Event::default().data("[DONE]"))))
+                    .collect();
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_chat_response(resp);
+        let mut added_name = None;
+        let mut args = String::new();
+        while let Some(ev) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            match ev.unwrap() {
+                ResponseStreamEvent::OutputItemAdded { item, .. } => {
+                    added_name = item.get("name").and_then(|v| v.as_str()).map(String::from);
+                }
+                ResponseStreamEvent::FunctionCallArgsDone { arguments, .. } => args = arguments,
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert_eq!(added_name.as_deref(), Some("read_file"));
+        assert_eq!(args, "{\"path\":\"x\"}");
+    }
+
+    #[tokio::test]
+    async fn stream_maps_legacy_function_call_deltas() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let chunks = vec![
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"function_call":{"name":"read_file","arguments":""}}}]}"#,
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"function_call":{"arguments":"{\"path\":\"x\"}"}}}]}"#,
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"function_call"}]}"#,
+                ];
+                let events: Vec<Result<Event, Infallible>> = chunks
+                    .into_iter()
+                    .map(|c| Ok(Event::default().data(c)))
+                    .chain(std::iter::once(Ok(Event::default().data("[DONE]"))))
+                    .collect();
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_chat_response(resp);
+        let mut added_name = None;
+        let mut args = String::new();
+        while let Some(ev) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            match ev.unwrap() {
+                ResponseStreamEvent::OutputItemAdded { item, .. } => {
+                    added_name = item.get("name").and_then(|v| v.as_str()).map(String::from);
+                }
+                ResponseStreamEvent::FunctionCallArgsDone { arguments, .. } => args = arguments,
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert_eq!(added_name.as_deref(), Some("read_file"));
+        assert_eq!(args, "{\"path\":\"x\"}");
+    }
+
+    #[tokio::test]
+    async fn stream_accepts_tool_call_object_and_object_arguments() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let chunks = vec![
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":{"index":0,"id":"call_x","type":"function","function":{"name":"read_file","arguments":{"path":"x"}}}}}]}"#,
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+                ];
+                let events: Vec<Result<Event, Infallible>> = chunks
+                    .into_iter()
+                    .map(|c| Ok(Event::default().data(c)))
+                    .chain(std::iter::once(Ok(Event::default().data("[DONE]"))))
+                    .collect();
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_chat_response(resp);
+        let mut args = String::new();
+        while let Some(ev) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            if let ResponseStreamEvent::FunctionCallArgsDone { arguments, .. } = ev.unwrap() {
+                args = arguments;
+            }
+        }
+        server.abort();
+
+        assert_eq!(args, r#"{"path":"x"}"#);
+    }
+
+    #[tokio::test]
+    async fn stream_accepts_parameters_as_tool_arguments() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let chunks = vec![
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"read_file","parameters":{"path":"Cargo.toml"}}}]}}]}"#,
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+                ];
+                let events: Vec<Result<Event, Infallible>> = chunks
+                    .into_iter()
+                    .map(|c| Ok(Event::default().data(c)))
+                    .chain(std::iter::once(Ok(Event::default().data("[DONE]"))))
+                    .collect();
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_chat_response(resp);
+        let mut args = String::new();
+        while let Some(ev) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            if let ResponseStreamEvent::FunctionCallArgsDone { arguments, .. } = ev.unwrap() {
+                args = arguments;
+            }
+        }
+        server.abort();
+
+        assert_eq!(args, r#"{"path":"Cargo.toml"}"#);
+    }
+
+    #[tokio::test]
+    async fn stream_accepts_message_shape_chunks() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let chunks = vec![
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"message":{"content":"Hi","tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"read_file","arguments":{"path":"Cargo.toml"}}}]},"finish_reason":"tool_calls"}]}"#,
+                ];
+                let events: Vec<Result<Event, Infallible>> = chunks
+                    .into_iter()
+                    .map(|c| Ok(Event::default().data(c)))
+                    .chain(std::iter::once(Ok(Event::default().data("[DONE]"))))
+                    .collect();
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_chat_response(resp);
+        let mut text = String::new();
+        let mut args = String::new();
+        while let Some(ev) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            match ev.unwrap() {
+                ResponseStreamEvent::OutputTextDelta { delta, .. } => text.push_str(&delta),
+                ResponseStreamEvent::FunctionCallArgsDone { arguments, .. } => args = arguments,
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert_eq!(text, "Hi");
+        assert_eq!(args, r#"{"path":"Cargo.toml"}"#);
+    }
+
+    #[tokio::test]
+    async fn stream_accepts_provider_tool_name_and_partial_json_aliases() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let chunks = vec![
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"recipient_name":"functions.Read","partialJson":"{\"path\":\"Cargo.toml\"}"}}]}}]}"#,
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+                ];
+                let events: Vec<Result<Event, Infallible>> = chunks
+                    .into_iter()
+                    .map(|c| Ok(Event::default().data(c)))
+                    .chain(std::iter::once(Ok(Event::default().data("[DONE]"))))
+                    .collect();
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_chat_response(resp);
+        let mut name = String::new();
+        let mut args = String::new();
+        while let Some(ev) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            match ev.unwrap() {
+                ResponseStreamEvent::OutputItemAdded { item, .. } => {
+                    name = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                ResponseStreamEvent::FunctionCallArgsDone { arguments, .. } => args = arguments,
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert_eq!(name, "functions.Read");
+        assert_eq!(args, r#"{"path":"Cargo.toml"}"#);
+    }
+
+    #[tokio::test]
+    async fn stream_ignores_empty_arg_placeholder_before_real_tool_arguments() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let chunks = vec![
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"read_file","arguments":"{}"}}]}}]}"#,
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"Cargo.toml\"}"}}]}}]}"#,
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+                ];
+                let events: Vec<Result<Event, Infallible>> = chunks
+                    .into_iter()
+                    .map(|c| Ok(Event::default().data(c)))
+                    .chain(std::iter::once(Ok(Event::default().data("[DONE]"))))
+                    .collect();
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_chat_response(resp);
+        let mut args = String::new();
+        while let Some(ev) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            if let ResponseStreamEvent::FunctionCallArgsDone { arguments, .. } = ev.unwrap() {
+                args = arguments;
+            }
+        }
+        server.abort();
+
+        assert_eq!(args, r#"{"path":"Cargo.toml"}"#);
     }
 
     #[test]

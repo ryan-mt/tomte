@@ -138,6 +138,37 @@ pub fn supports_adaptive_thinking(model: &str) -> bool {
     family_supports_adaptive_thinking(model)
 }
 
+/// Whether a model accepts the `xhigh` adaptive effort tier (the level between
+/// `high` and `max`). Today only Opus 4.7+; other adaptive models clamp `xhigh`
+/// down to `high`. Version-gated so future Opus ids (4.9, 5.x) inherit it
+/// without a catalog edit; Sonnet and Haiku never get `xhigh`.
+pub fn supports_xhigh(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    if !m.contains("opus") {
+        return false;
+    }
+    matches!(claude_version(&m), Some((major, minor)) if major > 4 || (major == 4 && minor >= 7))
+}
+
+/// Whether a model uses the legacy budget-based extended-thinking shape
+/// (`thinking:{type:"enabled", budget_tokens:N}`) rather than adaptive. These
+/// are the pre-adaptive thinking Claude models — Opus/Sonnet below 4.6, plus
+/// Haiku (which supports extended but never adaptive). Adaptive-capable models
+/// (4.6+) also accept the legacy shape, but `translate.rs` prefers adaptive for
+/// them, so this only needs to identify the legacy-only set. Unknown future ids
+/// (4.6+) are deliberately NOT matched: they route to adaptive, because Opus
+/// 4.7+ reject `type:"enabled"` with a 400.
+pub fn supports_extended_thinking(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    if !m.starts_with("claude") {
+        return false;
+    }
+    if m.contains("haiku") {
+        return true;
+    }
+    matches!(claude_version(&m), Some((4, minor)) if minor <= 5)
+}
+
 // ---- Family fallbacks (single home for the id-substring rules) ----
 //
 // Per the Claude API docs (May 2026): Opus 4.6/4.7/4.8, Sonnet 4.6 and the
@@ -180,15 +211,34 @@ fn family_context_limit(model: &str) -> u64 {
 
 fn family_supports_adaptive_thinking(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
-    // Haiku and pre-4.6 models don't support adaptive thinking.
+    if !(m.starts_with("claude") || m.contains("mythos")) {
+        return false;
+    }
+    // The Mythos preview is adaptive; Haiku never is.
+    if m.contains("mythos") {
+        return true;
+    }
     if m.contains("haiku") {
         return false;
     }
-    m.contains("opus-4-8")
-        || m.contains("opus-4-7")
-        || m.contains("opus-4-6")
-        || m.contains("sonnet-4-6")
-        || m.contains("mythos")
+    // Adaptive thinking landed in Claude 4.6. Version-gated so future ids
+    // (4.9, 5.x) stay adaptive — the forward-compatible shape — instead of
+    // falling through to the deprecated `type:"enabled"` form that 4.7+ reject.
+    matches!(claude_version(&m), Some((major, minor)) if major > 4 || (major == 4 && minor >= 6))
+}
+
+/// Parse the `(major, minor)` version from a `claude-<tier>-<major>-<minor>` id
+/// — the shape every Claude model opencli surfaces uses (a trailing date
+/// snapshot is ignored). Returns `None` for ids that don't fit, so callers fall
+/// back to a safe default rather than guessing.
+fn claude_version(model_lc: &str) -> Option<(u32, u32)> {
+    let parts: Vec<&str> = model_lc.split('-').collect();
+    let tier = parts
+        .iter()
+        .position(|p| matches!(*p, "opus" | "sonnet" | "haiku"))?;
+    let major = parts.get(tier + 1)?.parse().ok()?;
+    let minor = parts.get(tier + 2)?.parse().ok()?;
+    Some((major, minor))
 }
 
 #[cfg(test)]
@@ -252,5 +302,35 @@ mod tests {
     fn lookup_finds_known_and_misses_unknown() {
         assert!(lookup("claude-opus-4-8").is_some());
         assert!(lookup("claude-opus-4-8-20260101").is_none());
+    }
+
+    #[test]
+    fn future_claude_versions_prefer_adaptive_over_legacy() {
+        // Un-cataloged future ids must route to adaptive, never the deprecated
+        // legacy shape (Opus 4.7+ reject `type:"enabled"` with a 400).
+        for id in ["claude-opus-4-9", "claude-opus-5-0", "claude-sonnet-5-0"] {
+            assert!(supports_adaptive_thinking(id), "{id} should be adaptive");
+            assert!(!supports_extended_thinking(id), "{id} should not be legacy");
+        }
+        // Pre-adaptive thinking models still use the budget shape.
+        assert!(supports_extended_thinking("claude-opus-4-5"));
+        assert!(supports_extended_thinking("claude-sonnet-4-5"));
+        assert!(supports_extended_thinking("claude-haiku-4-5"));
+        assert!(!supports_adaptive_thinking("claude-haiku-4-5"));
+    }
+
+    #[test]
+    fn xhigh_is_opus_4_7_plus_only() {
+        for id in [
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-opus-4-9", // future
+            "claude-opus-5-0", // future
+        ] {
+            assert!(supports_xhigh(id), "{id} should support xhigh");
+        }
+        for id in ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"] {
+            assert!(!supports_xhigh(id), "{id} should clamp xhigh to high");
+        }
     }
 }

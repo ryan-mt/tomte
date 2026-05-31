@@ -8,10 +8,13 @@ pub mod config;
 pub mod hooks;
 pub mod mcp;
 pub mod openai;
+pub mod permissions;
 pub mod provider;
+mod retry;
 pub mod session;
 pub mod skill;
 pub mod subagent;
+mod tool_args;
 pub mod tools;
 
 pub use anyhow::{Error, Result};

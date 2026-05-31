@@ -25,12 +25,81 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::openai::stream::{ResponseStreamEvent, StreamHandle};
+use crate::tool_args::normalize_argument_fragment;
 
 struct PendingBlock {
     kind: String,
     item_id: String,
     args_buf: String,
+    args_truncated: bool,
     text_buf: String,
+    /// Accumulated `signature_delta` for a thinking block — the encrypted
+    /// reasoning the API needs back when this turn's tool_use is replayed.
+    signature_buf: String,
+}
+
+const ANTHROPIC_TOOL_ARGUMENT_MAX_BYTES: usize = 2 * 1024 * 1024;
+const ANTHROPIC_TOOL_ARGUMENT_BUFFER_BYTES: usize = ANTHROPIC_TOOL_ARGUMENT_MAX_BYTES + 1;
+
+fn append_tool_args_capped(
+    buf: &mut String,
+    truncated: &mut bool,
+    fragment: &str,
+) -> Option<String> {
+    let fragment = normalize_argument_fragment(fragment)?;
+    if *truncated {
+        return None;
+    }
+    let remaining = ANTHROPIC_TOOL_ARGUMENT_BUFFER_BYTES.saturating_sub(buf.len());
+    if remaining == 0 {
+        *truncated = true;
+        return None;
+    }
+    if fragment.len() <= remaining {
+        buf.push_str(fragment);
+        return Some(fragment.to_string());
+    }
+
+    let mut cut = remaining;
+    while cut > 0 && !fragment.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let appended = if cut == 0 {
+        " ".repeat(remaining)
+    } else {
+        fragment[..cut].to_string()
+    };
+    buf.push_str(&appended);
+    *truncated = true;
+    Some(appended)
+}
+
+fn non_empty_tool_input(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::Array(arr) if arr.is_empty() => None,
+        Value::Object(map) if map.is_empty() => None,
+        Value::String(s) => normalize_argument_fragment(s).map(str::to_string),
+        other => serde_json::to_string(other).ok(),
+    }
+}
+
+fn partial_json_delta(delta: Option<&Value>) -> String {
+    const KEYS: &[&str] = &[
+        "partial_json",
+        "partialJson",
+        "input_json_delta",
+        "inputJsonDelta",
+        "arguments_delta",
+        "argumentsDelta",
+        "arguments",
+    ];
+    let Some(delta) = delta else {
+        return String::new();
+    };
+    KEYS.iter()
+        .find_map(|key| non_empty_tool_input(delta.get(*key)?))
+        .unwrap_or_default()
 }
 
 /// Bridge an Anthropic SSE response onto a `StreamHandle` carrying
@@ -109,13 +178,19 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("")
                                         .to_string();
+                                    let initial_args = block
+                                        .and_then(|b| b.get("input"))
+                                        .and_then(non_empty_tool_input)
+                                        .unwrap_or_default();
                                     blocks.insert(
                                         index,
                                         PendingBlock {
                                             kind: "tool_use".into(),
                                             item_id: id.clone(),
-                                            args_buf: String::new(),
+                                            args_buf: initial_args.clone(),
+                                            args_truncated: false,
                                             text_buf: String::new(),
+                                            signature_buf: String::new(),
                                         },
                                     );
                                     let item = json!({
@@ -123,7 +198,7 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                         "id": id,
                                         "call_id": id,
                                         "name": name,
-                                        "arguments": ""
+                                        "arguments": initial_args
                                     });
                                     let _ = tx
                                         .send(Ok(ResponseStreamEvent::OutputItemAdded {
@@ -146,7 +221,9 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                             kind: btype,
                                             item_id: format!("text_{index}"),
                                             args_buf: String::new(),
+                                            args_truncated: false,
                                             text_buf: String::new(),
+                                            signature_buf: String::new(),
                                         },
                                     );
                                 }
@@ -182,22 +259,23 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                         }
                                     }
                                     "input_json_delta" => {
-                                        let partial = delta
-                                            .and_then(|d| d.get("partial_json"))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
+                                        let partial = partial_json_delta(delta);
                                         if let Some(b) = blocks.get_mut(&index) {
                                             if b.kind == "tool_use" && !partial.is_empty() {
-                                                b.args_buf.push_str(&partial);
-                                                let _ = tx
-                                                    .send(Ok(
-                                                        ResponseStreamEvent::FunctionCallArgsDelta {
-                                                            item_id: b.item_id.clone(),
-                                                            delta: partial,
-                                                        },
-                                                    ))
-                                                    .await;
+                                                if let Some(appended) = append_tool_args_capped(
+                                                    &mut b.args_buf,
+                                                    &mut b.args_truncated,
+                                                    &partial,
+                                                ) {
+                                                    let _ = tx
+                                                        .send(Ok(
+                                                            ResponseStreamEvent::FunctionCallArgsDelta {
+                                                                item_id: b.item_id.clone(),
+                                                                delta: appended,
+                                                            },
+                                                        ))
+                                                        .await;
+                                                }
                                             }
                                         }
                                     }
@@ -208,6 +286,12 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                             .unwrap_or("")
                                             .to_string();
                                         if !text.is_empty() {
+                                            // Buffer the plaintext too so the
+                                            // block-stop can replay it alongside
+                                            // the signature.
+                                            if let Some(b) = blocks.get_mut(&index) {
+                                                b.text_buf.push_str(&text);
+                                            }
                                             let _ = tx
                                                 .send(Ok(ResponseStreamEvent::ReasoningDelta {
                                                     delta: text,
@@ -215,7 +299,20 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                                 .await;
                                         }
                                     }
-                                    "signature_delta" => {}
+                                    "signature_delta" => {
+                                        // Accumulate the encrypted signature; it
+                                        // arrives in its own delta(s) after the
+                                        // thinking text and is required to replay
+                                        // the block before tool_use.
+                                        if let Some(sig) = delta
+                                            .and_then(|d| d.get("signature"))
+                                            .and_then(|v| v.as_str())
+                                        {
+                                            if let Some(b) = blocks.get_mut(&index) {
+                                                b.signature_buf.push_str(sig);
+                                            }
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -244,6 +341,19 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                                 item_id: Some(b.item_id),
                                             }))
                                             .await;
+                                    } else if b.kind == "thinking" || b.kind == "redacted_thinking"
+                                    {
+                                        // Finalize a thinking block: hand the agent
+                                        // the plaintext + signature so it can replay
+                                        // the block ahead of this turn's tool_use.
+                                        if !b.signature_buf.is_empty() || !b.text_buf.is_empty() {
+                                            let _ = tx
+                                                .send(Ok(ResponseStreamEvent::ReasoningDone {
+                                                    text: b.text_buf,
+                                                    signature: Some(b.signature_buf),
+                                                }))
+                                                .await;
+                                        }
                                     }
                                 }
                             }
@@ -398,5 +508,191 @@ mod tests {
         server.abort();
 
         assert!(err.to_string().contains("message_stop"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn content_block_start_keeps_non_empty_tool_input() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let events = vec![
+                    Ok::<Event, Infallible>(Event::default().data(
+                        r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path":"Cargo.toml"}}}"#,
+                    )),
+                    Ok(Event::default().data(r#"{"type":"content_block_stop","index":0}"#)),
+                    Ok(Event::default().data(r#"{"type":"message_stop"}"#)),
+                ];
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_from_response(resp);
+        let mut inline_args = None;
+        let mut done_args = None;
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            match event.unwrap() {
+                ResponseStreamEvent::OutputItemAdded { item, .. } => {
+                    inline_args = item
+                        .get("arguments")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                }
+                ResponseStreamEvent::FunctionCallArgsDone { arguments, .. } => {
+                    done_args = Some(arguments);
+                }
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert_eq!(inline_args.as_deref(), Some(r#"{"path":"Cargo.toml"}"#));
+        assert_eq!(done_args.as_deref(), Some(r#"{"path":"Cargo.toml"}"#));
+    }
+
+    #[tokio::test]
+    async fn content_block_delta_accepts_camel_case_partial_json() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let events = vec![
+                    Ok::<Event, Infallible>(Event::default().data(
+                        r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partialJson":"{\"path\":\"Cargo.toml\"}"}}"#,
+                    )),
+                    Ok(Event::default().data(r#"{"type":"content_block_stop","index":0}"#)),
+                    Ok(Event::default().data(r#"{"type":"message_stop"}"#)),
+                ];
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_from_response(resp);
+        let mut delta_args = String::new();
+        let mut done_args = String::new();
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            match event.unwrap() {
+                ResponseStreamEvent::FunctionCallArgsDelta { delta, .. } => {
+                    delta_args.push_str(&delta);
+                }
+                ResponseStreamEvent::FunctionCallArgsDone { arguments, .. } => {
+                    done_args = arguments;
+                }
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert_eq!(delta_args, r#"{"path":"Cargo.toml"}"#);
+        assert_eq!(done_args, r#"{"path":"Cargo.toml"}"#);
+    }
+
+    #[tokio::test]
+    async fn content_block_delta_ignores_empty_arg_placeholder_before_real_args() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let events = vec![
+                    Ok::<Event, Infallible>(Event::default().data(
+                        r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partialJson":"{}"}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partialJson":"{\"path\":\"Cargo.toml\"}"}}"#,
+                    )),
+                    Ok(Event::default().data(r#"{"type":"content_block_stop","index":0}"#)),
+                    Ok(Event::default().data(r#"{"type":"message_stop"}"#)),
+                ];
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_from_response(resp);
+        let mut delta_args = String::new();
+        let mut done_args = String::new();
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            match event.unwrap() {
+                ResponseStreamEvent::FunctionCallArgsDelta { delta, .. } => {
+                    delta_args.push_str(&delta);
+                }
+                ResponseStreamEvent::FunctionCallArgsDone { arguments, .. } => {
+                    done_args = arguments;
+                }
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert_eq!(delta_args, r#"{"path":"Cargo.toml"}"#);
+        assert_eq!(done_args, r#"{"path":"Cargo.toml"}"#);
+    }
+
+    #[test]
+    fn anthropic_tool_argument_buffer_is_capped_before_agent() {
+        let mut buf = String::new();
+        let mut truncated = false;
+
+        let appended = append_tool_args_capped(
+            &mut buf,
+            &mut truncated,
+            &"x".repeat(ANTHROPIC_TOOL_ARGUMENT_BUFFER_BYTES + 8192),
+        )
+        .unwrap();
+
+        assert_eq!(buf.len(), ANTHROPIC_TOOL_ARGUMENT_BUFFER_BYTES);
+        assert_eq!(appended.len(), ANTHROPIC_TOOL_ARGUMENT_BUFFER_BYTES);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn anthropic_tool_argument_cap_preserves_utf8_boundary() {
+        let mut buf = "x".repeat(ANTHROPIC_TOOL_ARGUMENT_BUFFER_BYTES - 1);
+        let mut truncated = false;
+
+        let appended = append_tool_args_capped(&mut buf, &mut truncated, "é").unwrap();
+
+        assert_eq!(buf.len(), ANTHROPIC_TOOL_ARGUMENT_BUFFER_BYTES);
+        assert_eq!(appended, " ");
+        assert!(buf.is_char_boundary(buf.len()));
+        assert!(truncated);
     }
 }

@@ -111,13 +111,12 @@ impl OpenAiClient {
     pub async fn create(&self, mut req: ResponsesRequest) -> Result<serde_json::Value> {
         req.stream = false;
         self.apply_credential_defaults(&mut req);
-        let resp = self
+        let builder = self
             .http
             .post(self.responses_endpoint())
             .headers(self.headers()?)
-            .json(&req)
-            .send()
-            .await?;
+            .json(&req);
+        let resp = crate::retry::send_with_retry(builder).await?;
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
@@ -141,20 +140,21 @@ impl OpenAiClient {
         if let Some(reasoning) = req.reasoning.as_mut() {
             match reasoning.effort.as_deref() {
                 Some("none") => reasoning.effort = Some("minimal".to_string()),
-                Some("max") => reasoning.effort = Some("xhigh".to_string()),
+                // `max` and Claude Code's `ultracode` aren't OpenAI effort
+                // levels; both clamp to the top OpenAI tier, `xhigh`.
+                Some("max") | Some("ultracode") => reasoning.effort = Some("xhigh".to_string()),
                 _ => {}
             }
         }
     }
 
     async fn send_internal(&self, req: ResponsesRequest) -> Result<StreamHandle> {
-        let resp = self
+        let builder = self
             .http
             .post(self.responses_endpoint())
             .headers(self.headers()?)
-            .json(&req)
-            .send()
-            .await?;
+            .json(&req);
+        let resp = crate::retry::send_with_retry(builder).await?;
         let status = resp.status();
         if !status.is_success() {
             let text = match resp.text().await {

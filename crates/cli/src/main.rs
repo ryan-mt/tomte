@@ -4,18 +4,22 @@ mod tui;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(
     name = "opencli",
     version,
     about = "Terminal coding agent in Rust (OpenAI Responses + Anthropic Messages)"
 )]
 struct Cli {
+    /// Require plan mode before implementation. Hidden compatibility flag for
+    /// Claude Code-style teammate/spawn flows.
+    #[arg(long, hide = true, global = true)]
+    plan_mode_required: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum Command {
     /// Sign in. With no flags, opens an interactive picker.
     Login {
@@ -112,6 +116,7 @@ async fn main() -> Result<()> {
     init_tracing(tui_mode);
 
     match cli.command {
+        None if cli.plan_mode_required => tui::run_plan_mode_required().await,
         None => tui::run().await,
         Some(Command::Login {
             api_key,
@@ -125,12 +130,58 @@ async fn main() -> Result<()> {
             model,
             reasoning,
             output_format,
-        }) => commands::chat::run(prompt.join(" "), model, reasoning, output_format).await,
+        }) => {
+            commands::chat::run(
+                prompt.join(" "),
+                model,
+                reasoning,
+                output_format,
+                cli.plan_mode_required,
+            )
+            .await
+        }
+        Some(Command::Resume) if cli.plan_mode_required => {
+            tui::run_resume_plan_mode_required().await
+        }
         Some(Command::Resume) => tui::run_resume().await,
         Some(Command::Config {
             show,
             set_model,
             set_reasoning,
         }) => commands::config_cmd::run(show, set_model, set_reasoning).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn hidden_plan_mode_required_flag_parses_before_subcommand() {
+        let cli = Cli::try_parse_from([
+            "opencli",
+            "--plan-mode-required",
+            "chat",
+            "inspect",
+            "first",
+        ])
+        .unwrap();
+
+        assert!(cli.plan_mode_required);
+        match cli.command {
+            Some(Command::Chat { prompt, .. }) => {
+                assert_eq!(prompt, vec!["inspect".to_string(), "first".to_string()]);
+            }
+            other => panic!("expected chat command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hidden_plan_mode_required_flag_parses_after_subcommand() {
+        let cli =
+            Cli::try_parse_from(["opencli", "chat", "--plan-mode-required", "inspect"]).unwrap();
+
+        assert!(cli.plan_mode_required);
     }
 }

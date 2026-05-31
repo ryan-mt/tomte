@@ -41,6 +41,11 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    /// A reasoning block replayed before the `tool_use` it produced. The
+    /// `signature` carries the encrypted thinking the API needs to verify and
+    /// continue the chain; `thinking` is the plaintext (empty when the model's
+    /// `display` is `omitted`, as on Opus 4.7/4.8).
+    Thinking { thinking: String, signature: String },
     Image {
         source: ImageSource,
         #[serde(default, skip_serializing_if = "Option::is_none")]

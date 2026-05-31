@@ -14,9 +14,22 @@ fn ctx(cwd: std::path::PathBuf) -> ToolContext {
     ToolContext {
         cwd,
         approval: ApprovalMode::Auto,
+        require_approval: false,
+        auto_approve_edits: false,
         session: Arc::new(Mutex::new(SessionState::default())),
         config: opencli_core::config::Config::default(),
+        events: None,
     }
+}
+
+/// Register `rel` as read this session so the read-before-write/edit guard
+/// (write_file/edit_file refuse to touch a file the model never read) doesn't
+/// block these undo tests, which seed files straight to disk. Keyed exactly
+/// like `fs::resolve`: the canonical path of the existing file. Works for
+/// binary files too, which `read_file` can't load as UTF-8.
+async fn mark_read(ctx: &ToolContext, rel: &str) {
+    let p = std::fs::canonicalize(ctx.cwd.join(rel)).expect("file exists to mark read");
+    ctx.session.lock().await.read_files.insert(p);
 }
 
 async fn force_mtime_change(path: &std::path::Path, expected: Option<SystemTime>) {
@@ -45,6 +58,7 @@ async fn undo_restores_overwritten_content() {
     tokio::fs::write(tmp.path().join("a.txt"), b"original\n")
         .await
         .unwrap();
+    mark_read(&ctx, "a.txt").await;
 
     WriteFile
         .execute(json!({"path": "a.txt", "content": "overwritten\n"}), &ctx)
@@ -90,6 +104,8 @@ async fn undo_unwinds_in_lifo_order() {
     tokio::fs::write(tmp.path().join("b.txt"), b"b0")
         .await
         .unwrap();
+    mark_read(&ctx, "a.txt").await;
+    mark_read(&ctx, "b.txt").await;
 
     WriteFile
         .execute(json!({"path": "a.txt", "content": "a1"}), &ctx)
@@ -132,6 +148,7 @@ async fn undo_reverts_edit_file() {
     tokio::fs::write(tmp.path().join("c.txt"), b"foo bar baz")
         .await
         .unwrap();
+    mark_read(&ctx, "c.txt").await;
 
     EditFile
         .execute(
@@ -195,6 +212,7 @@ async fn undo_reverts_multi_edit() {
     tokio::fs::write(tmp.path().join("d.txt"), b"alpha beta gamma")
         .await
         .unwrap();
+    mark_read(&ctx, "d.txt").await;
 
     MultiEdit
         .execute(
@@ -228,6 +246,7 @@ async fn multi_edit_rejects_empty_old_string() {
     tokio::fs::write(tmp.path().join("multi-empty-old.txt"), b"abc")
         .await
         .unwrap();
+    mark_read(&ctx, "multi-empty-old.txt").await;
 
     let err = MultiEdit
         .execute(
@@ -258,6 +277,7 @@ async fn failed_undo_keeps_entry_on_stack() {
     let ctx = ctx(tmp.path().to_path_buf());
     let path = tmp.path().join("race.txt");
     tokio::fs::write(&path, b"before").await.unwrap();
+    mark_read(&ctx, "race.txt").await;
 
     EditFile
         .execute(
@@ -337,6 +357,7 @@ async fn undo_restores_overwritten_binary_file() {
     tokio::fs::write(tmp.path().join("img.bin"), original)
         .await
         .unwrap();
+    mark_read(&ctx, "img.bin").await;
 
     WriteFile
         .execute(json!({"path": "img.bin", "content": "overwritten"}), &ctx)

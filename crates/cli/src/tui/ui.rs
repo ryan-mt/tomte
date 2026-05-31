@@ -3,28 +3,42 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
+use std::collections::HashSet;
 use std::path::Path;
 
-use super::app::{App, Block};
+use super::app::{todo_completion_key, App, Block, SPINNER_FRAMES, TODO_RECENT_COMPLETED_TTL};
 use opencli_core::auth::AuthMode;
+use opencli_core::tools::{TodoItem, TodoStatus};
 
 pub fn render(f: &mut Frame, app: &mut App) {
     // The same one-row slot shows the turn spinner OR the compaction progress
     // bar — they never run at once (compaction only starts once a turn ends).
     let spinner_h: u16 = if app.busy || app.compacting { 1 } else { 0 };
     let queue_h: u16 = queued_height(app);
+    let fleet_h: u16 = fleet_height(app);
+    let todos_h: u16 = todos_height(app);
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(5),                    // chat
-            Constraint::Length(spinner_h),         // spinner (only while busy)
-            Constraint::Length(queue_h),           // queued messages
-            Constraint::Length(input_height(app)), // input
-            Constraint::Length(1),                 // status line
+            Constraint::Min(5),                    // chat            [0]
+            Constraint::Length(spinner_h),         // spinner         [1]
+            Constraint::Length(queue_h),           // queued messages [2]
+            Constraint::Length(fleet_h),           // sub-agent fleet [3]
+            Constraint::Length(todos_h),           // todos           [4]
+            Constraint::Length(input_height(app)), // input           [5]
+            Constraint::Length(1),                 // status line     [6]
         ])
         .split(f.area());
 
     render_chat(f, layout[0], app);
+    // render_chat reconciles auto_scroll (it flips back on once the user scrolls
+    // to the tail). Only when the user is parked above the tail do we offer the
+    // clickable jump-to-bottom bar; otherwise clear its hit-test rect.
+    if !app.auto_scroll && layout[0].height > 0 {
+        app.jump_to_bottom_hint = Some(render_jump_to_bottom(f, layout[0]));
+    } else {
+        app.jump_to_bottom_hint = None;
+    }
     if app.busy {
         render_spinner(f, layout[1], app);
     } else if app.compacting {
@@ -33,15 +47,23 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if queue_h > 0 {
         render_queue(f, layout[2], app);
     }
-    render_input(f, layout[3], app);
-    render_status(f, layout[4], app);
+    if fleet_h > 0 {
+        render_fleet(f, layout[3], app);
+    } else {
+        app.subagent_rows.clear();
+    }
+    if todos_h > 0 {
+        render_todos(f, layout[4], app);
+    }
+    render_input(f, layout[5], app);
+    render_status(f, layout[6], app);
 
     // Overlay popup — drawn above the input.
     if let Some((_, picker)) = &app.overlay {
-        super::picker::render(f, layout[3], picker);
+        super::picker::render(f, layout[5], picker);
     }
     if app.pending_approval.is_some() {
-        render_approval(f, layout[3], app);
+        render_approval(f, layout[5], app);
     }
 }
 
@@ -101,13 +123,234 @@ fn render_queue(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
+/// Rows the sub-agent fleet view needs this frame: a header, one row per
+/// sub-agent, and one detail row for each expanded one. Capped so it can't
+/// crowd out the chat. Zero when no sub-agents are running.
+fn fleet_height(app: &App) -> u16 {
+    if app.subagents.is_empty() {
+        return 0;
+    }
+    let mut h = 1usize; // header
+    for s in &app.subagents {
+        h += 1;
+        if s.expanded {
+            h += 1;
+        }
+    }
+    h.min(12) as u16
+}
+
+const TODO_VISIBLE_ROWS: usize = 6;
+
+fn todos_height(app: &App) -> u16 {
+    if !app.show_todos {
+        return 0;
+    }
+    todos_height_for_count(app.session_todos.len())
+}
+
+fn todos_height_for_count(count: usize) -> u16 {
+    if count == 0 {
+        return 0;
+    }
+    let visible = count.min(TODO_VISIBLE_ROWS);
+    let overflow = usize::from(count > visible);
+    (1 + visible + overflow) as u16
+}
+
+/// Truncate `s` to `max` display-ish chars with an ellipsis (char-based, so it
+/// never splits a UTF-8 codepoint).
+fn truncate_chars(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if s.chars().count() > max {
+        format!(
+            "{}…",
+            s.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
+    } else {
+        s.to_string()
+    }
+}
+
+/// Live fleet view: a list of the sub-agents `dispatch_agent` spawned this turn,
+/// each with a status dot, type, prompt summary, current activity and elapsed
+/// time — Claude Code's sub-agent list. Records each row's screen rect into
+/// `app.subagent_rows` so a left-click can toggle the row's detail.
+fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
+    let header_dim = Style::default().fg(Color::Rgb(150, 155, 165));
+    let kind_style = Style::default()
+        .fg(Color::Rgb(230, 230, 235))
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(Color::Rgb(140, 140, 150));
+    let accent = Style::default().fg(Color::Rgb(140, 170, 255));
+
+    let total = app.subagents.len();
+    let running = app.subagents.iter().filter(|s| s.done.is_none()).count();
+    let prompt_max = ((area.width as usize) / 3).clamp(12, 50);
+
+    let mut rows: Vec<(Rect, String)> = Vec::new();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled(" ⛓ ", accent),
+        Span::styled(
+            format!("Sub-agents · {running} running / {total}"),
+            header_dim.add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("   click a row to expand", header_dim),
+    ]));
+
+    for s in &app.subagents {
+        // The row's absolute y is the panel origin plus lines already emitted.
+        let y = area.y.saturating_add(lines.len() as u16);
+        rows.push((
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
+            s.id.clone(),
+        ));
+
+        let dot = match s.done {
+            Some(true) => Span::styled("✓ ", Style::default().fg(Color::Rgb(120, 200, 120))),
+            Some(false) => Span::styled("✗ ", Style::default().fg(Color::Rgb(225, 110, 110))),
+            None => {
+                let frame = SPINNER_FRAMES
+                    [(s.started_at.elapsed().as_millis() / 80) as usize % SPINNER_FRAMES.len()];
+                Span::styled(
+                    format!("{frame} "),
+                    Style::default().fg(Color::Rgb(120, 200, 255)),
+                )
+            }
+        };
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            dot,
+            Span::styled(format!("{}  ", s.kind), kind_style),
+            Span::styled(truncate_chars(&s.prompt, prompt_max), dim),
+            Span::styled(
+                format!(
+                    "  · {} · {} steps · {}",
+                    s.activity,
+                    s.steps,
+                    format_elapsed(s.started_at.elapsed())
+                ),
+                dim,
+            ),
+        ]));
+        if s.expanded {
+            lines.push(Line::from(vec![
+                Span::raw("     ↳ "),
+                Span::styled(
+                    s.prompt.clone(),
+                    Style::default().fg(Color::Rgb(175, 175, 185)),
+                ),
+            ]));
+        }
+    }
+
+    app.subagent_rows = rows;
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn render_todos(f: &mut Frame, area: Rect, app: &App) {
+    let done = app
+        .session_todos
+        .iter()
+        .filter(|t| matches!(t.status, TodoStatus::Completed))
+        .count();
+    let total = app.session_todos.len();
+    let in_progress = app
+        .session_todos
+        .iter()
+        .filter(|t| matches!(t.status, TodoStatus::InProgress))
+        .count();
+    let pending = app
+        .session_todos
+        .iter()
+        .filter(|t| matches!(t.status, TodoStatus::Pending))
+        .count();
+
+    let header = Style::default()
+        .fg(Color::Rgb(165, 170, 180))
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(Color::Rgb(135, 140, 150));
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(total.to_string(), header),
+        Span::styled(" tasks (", dim),
+        Span::styled(done.to_string(), header),
+        Span::styled(" done, ", dim),
+        if in_progress > 0 {
+            Span::styled(in_progress.to_string(), header)
+        } else {
+            Span::styled(in_progress.to_string(), dim)
+        },
+        Span::styled(" in progress, ", dim),
+        Span::styled(pending.to_string(), header),
+        Span::styled(" open)", dim),
+    ]));
+
+    let label_width = (area.width as usize).saturating_sub(4);
+    let recent_completed = recent_completed_todo_indices(app);
+    let visible = visible_todo_indices(&app.session_todos, &recent_completed);
+    for idx in &visible {
+        lines.push(render_todo_line(&app.session_todos[*idx], label_width));
+    }
+    if let Some(summary) = hidden_todos_summary(&app.session_todos, &visible) {
+        lines.push(Line::from(Span::styled(format!("  {summary}"), dim)));
+    }
+
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn render_todo_line(todo: &TodoItem, label_width: usize) -> Line<'static> {
+    let active_style = Style::default()
+        .fg(Color::Rgb(255, 184, 108))
+        .add_modifier(Modifier::BOLD);
+    let pending_style = Style::default().fg(Color::Rgb(205, 205, 210));
+    let done_style = Style::default()
+        .fg(Color::Rgb(125, 130, 140))
+        .add_modifier(Modifier::CROSSED_OUT);
+    let done_mark = Style::default().fg(Color::Rgb(120, 200, 120));
+    let pending_mark = Style::default().fg(Color::Rgb(145, 150, 160));
+
+    let (icon, mark_style, body_style) = match todo.status {
+        TodoStatus::Completed => ("✓", done_mark, done_style),
+        TodoStatus::InProgress => ("▪", active_style, active_style),
+        TodoStatus::Pending => ("□", pending_mark, pending_style),
+    };
+    let label = todo_label(todo);
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{icon} "), mark_style),
+        Span::styled(truncate_chars(label, label_width), body_style),
+    ])
+}
+
 fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
-    use super::app::SPINNER_FRAMES;
-    let frame = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
     let elapsed = app.turn_started_at.map(|t| t.elapsed()).unwrap_or_default();
+    // Drive the spinner from wall-clock elapsed, not a counter ticked by the
+    // 80ms select arm: under a heavy event stream (e.g. a large Update whose
+    // arguments arrive as many deltas) the `biased` select starves that arm and
+    // the counter — and thus the glyph — freezes. Elapsed-based advancement
+    // animates smoothly as long as draws happen (they do, every ~16ms).
+    let frame = SPINNER_FRAMES[(elapsed.as_millis() / 80) as usize % SPINNER_FRAMES.len()];
     let mut extras = String::new();
     if app.tokens_used > 0 {
-        extras.push_str(&format!(" · ↑ {} tokens", format_tokens(app.tokens_used)));
+        // Current context window usage, not cumulative throughput. Mirrors
+        // Claude Code's "X% context" readout.
+        let limit = app.config.effective_context_limit();
+        let pct = app.tokens_used.saturating_mul(100) / limit.max(1);
+        extras.push_str(&format!(
+            " · {} ctx ({pct}%)",
+            format_tokens(app.tokens_used)
+        ));
     }
     if app.is_thinking {
         extras.push_str(" · thinking");
@@ -129,6 +372,105 @@ fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
         ),
     ]);
     f.render_widget(Paragraph::new(line), area);
+}
+
+fn todo_label(todo: &TodoItem) -> &str {
+    match todo.status {
+        TodoStatus::InProgress => &todo.active_form,
+        TodoStatus::Pending | TodoStatus::Completed => &todo.content,
+    }
+}
+
+fn recent_completed_todo_indices(app: &App) -> HashSet<usize> {
+    let now = std::time::Instant::now();
+    app.session_todos
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, todo)| {
+            if !matches!(todo.status, TodoStatus::Completed) {
+                return None;
+            }
+            let completed_at = app.todo_completed_at.get(&todo_completion_key(todo))?;
+            if now.duration_since(*completed_at) <= TODO_RECENT_COMPLETED_TTL {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn visible_todo_indices(todos: &[TodoItem], recent_completed: &HashSet<usize>) -> Vec<usize> {
+    if todos.len() <= TODO_VISIBLE_ROWS {
+        return (0..todos.len()).collect();
+    }
+
+    let mut indices = Vec::with_capacity(TODO_VISIBLE_ROWS);
+    let mut recent_completed = recent_completed.iter().copied().collect::<Vec<_>>();
+    recent_completed.sort_unstable();
+    for idx in recent_completed {
+        if matches!(
+            todos.get(idx).map(|todo| todo.status),
+            Some(TodoStatus::Completed)
+        ) {
+            indices.push(idx);
+            if indices.len() == TODO_VISIBLE_ROWS {
+                return indices;
+            }
+        }
+    }
+
+    for status in [
+        TodoStatus::InProgress,
+        TodoStatus::Pending,
+        TodoStatus::Completed,
+    ] {
+        for (idx, todo) in todos.iter().enumerate() {
+            if todo.status == status && !indices.contains(&idx) {
+                indices.push(idx);
+                if indices.len() == TODO_VISIBLE_ROWS {
+                    return indices;
+                }
+            }
+        }
+    }
+    indices
+}
+
+fn hidden_todos_summary(todos: &[TodoItem], visible: &[usize]) -> Option<String> {
+    if todos.len() <= visible.len() {
+        return None;
+    }
+    let visible: std::collections::HashSet<usize> = visible.iter().copied().collect();
+    let mut hidden_in_progress = 0usize;
+    let mut hidden_pending = 0usize;
+    let mut hidden_completed = 0usize;
+    for (idx, todo) in todos.iter().enumerate() {
+        if visible.contains(&idx) {
+            continue;
+        }
+        match todo.status {
+            TodoStatus::InProgress => hidden_in_progress += 1,
+            TodoStatus::Pending => hidden_pending += 1,
+            TodoStatus::Completed => hidden_completed += 1,
+        }
+    }
+
+    let mut parts = Vec::new();
+    if hidden_in_progress > 0 {
+        parts.push(format!("{hidden_in_progress} in progress"));
+    }
+    if hidden_pending > 0 {
+        parts.push(format!("{hidden_pending} pending"));
+    }
+    if hidden_completed > 0 {
+        parts.push(format!("{hidden_completed} completed"));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(format!("… +{}", parts.join(", ")))
+    }
 }
 
 /// One-row progress bar for a running compaction. With no real percentage from
@@ -168,6 +510,38 @@ fn render_compact_progress(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(suffix, dim),
     ]);
     f.render_widget(Paragraph::new(line), area);
+}
+
+/// Draw the "Jump to bottom" bar on the last row of the chat area and return
+/// its screen rect so the mouse handler can hit-test a click. The label is
+/// centered and flanked by a horizontal rule, matching Claude Code's affordance.
+fn render_jump_to_bottom(f: &mut Frame, chat_area: Rect) -> Rect {
+    let row = Rect {
+        x: chat_area.x,
+        y: chat_area.y + chat_area.height - 1,
+        width: chat_area.width,
+        height: 1,
+    };
+    let label = " Jump to bottom (ctrl+End) ↓ ";
+    let total = row.width as usize;
+    let label_w = unicode_width::UnicodeWidthStr::width(label);
+    let rule = Style::default().fg(Color::Rgb(80, 85, 95));
+    let label_style = Style::default()
+        .fg(Color::Rgb(210, 210, 220))
+        .add_modifier(Modifier::BOLD);
+    let spans = if total > label_w {
+        let left = (total - label_w) / 2;
+        let right = total - label_w - left;
+        vec![
+            Span::styled("─".repeat(left), rule),
+            Span::styled(label, label_style),
+            Span::styled("─".repeat(right), rule),
+        ]
+    } else {
+        vec![Span::styled(label, label_style)]
+    };
+    f.render_widget(Paragraph::new(Line::from(spans)), row);
+    row
 }
 
 fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
@@ -252,18 +626,26 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 render_welcome(&mut lines, app);
             }
             Block::User(text) => {
+                // User turns render as a full-width gray block (like Claude
+                // Code): every wrapped line is padded with spaces carrying the
+                // background so the fill reaches the right edge.
+                let user_bg = Color::Rgb(38, 40, 44);
                 let chevron_style = Style::default()
-                    .fg(Color::Blue)
+                    .fg(Color::Rgb(130, 170, 255))
+                    .bg(user_bg)
                     .add_modifier(Modifier::BOLD);
-                let body_style = Style::default().fg(Color::White);
+                let body_style = Style::default().fg(Color::Rgb(225, 225, 230)).bg(user_bg);
                 let mut first = true;
                 for raw in text.split('\n') {
                     for w in wrap(raw, inner_width.saturating_sub(2)) {
                         let prefix = if first { "> " } else { "  " };
                         first = false;
+                        let used = 2 + unicode_width::UnicodeWidthStr::width(w.as_str());
+                        let pad = inner_width.saturating_sub(used);
                         lines.push(Line::from(vec![
                             Span::styled(prefix.to_string(), chevron_style),
                             Span::styled(w, body_style),
+                            Span::styled(" ".repeat(pad), body_style),
                         ]));
                     }
                 }
@@ -346,13 +728,27 @@ fn push_assistant_lines(lines: &mut Vec<Line<'static>>, block: &Block, inner_wid
     }
     // Raw reasoning text is intentionally suppressed in chat history.
     if !text.is_empty() {
-        for raw in text.split('\n') {
-            for l in wrap(raw, inner_width.saturating_sub(2)) {
-                let spans = render_markdown_inline(&l);
-                let mut row = vec![Span::raw("  ")];
-                row.extend(spans);
-                lines.push(Line::from(row));
-            }
+        // Mark the assistant's turn with a bullet on its first line (like the
+        // tool bullet, so prose and tool calls read as one consistent column),
+        // then indent continuation lines to align under it.
+        let marker_style = Style::default()
+            .fg(Color::Rgb(140, 170, 255))
+            .add_modifier(Modifier::BOLD);
+        // Block-level markdown: fenced code blocks get syntax highlighting and
+        // tables get box-drawing borders; everything else is wrapped + inline
+        // styled. Each returned row is the content (no gutter); the first row
+        // carries the assistant bullet, the rest a 2-col indent.
+        let content_width = inner_width.saturating_sub(2);
+        let mut first = true;
+        for spans in render_assistant_md(text, content_width) {
+            let mut row = if first {
+                vec![Span::styled("● ", marker_style)]
+            } else {
+                vec![Span::raw("  ")]
+            };
+            first = false;
+            row.extend(spans);
+            lines.push(Line::from(row));
         }
         lines.push(Line::raw(""));
     }
@@ -569,15 +965,7 @@ fn wrap_visual_rows(
 }
 
 fn render_status(f: &mut Frame, area: Rect, app: &App) {
-    // Left side: just a small hint or the explicit status line.
-    let mode_label = app.permission_mode().label();
-    let left_text = if !app.status_line.is_empty() {
-        format!("{mode_label}  ·  {}", app.status_line)
-    } else if app.expanded_tools {
-        format!("{mode_label}  ·  ⇲ tool view: expanded · Ctrl+O to collapse")
-    } else {
-        format!("{mode_label}  ·  shift+tab cycles mode · ? for shortcuts")
-    };
+    let left_text = status_left_text(app);
     let left_para = Paragraph::new(Line::from(Span::styled(
         left_text,
         Style::default().fg(Color::Rgb(160, 160, 160)),
@@ -625,6 +1013,45 @@ fn render_status(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(Line::from(right_spans)), right_rect);
 }
 
+fn status_left_text(app: &App) -> String {
+    let mode_label = app.permission_mode().label();
+    let goal_elapsed = app.active_goal.as_ref().map(|goal| goal.elapsed_label());
+    let mut text = status_left_text_for_parts(
+        mode_label,
+        &app.status_line,
+        app.expanded_tools,
+        goal_elapsed.as_deref(),
+    );
+    if !app.session_todos.is_empty() {
+        if app.show_todos {
+            text.push_str(" · Ctrl+T hide tasks");
+        } else {
+            text.push_str(" · Ctrl+T show tasks");
+        }
+    }
+    text
+}
+
+fn status_left_text_for_parts(
+    mode_label: &str,
+    status_line: &str,
+    expanded_tools: bool,
+    goal_elapsed: Option<&str>,
+) -> String {
+    let activity = if !status_line.is_empty() {
+        status_line.to_string()
+    } else if expanded_tools {
+        "⇲ tool view: expanded · Ctrl+O to collapse".to_string()
+    } else {
+        "shift+tab cycles mode · ? for shortcuts".to_string()
+    };
+    if let Some(elapsed) = goal_elapsed {
+        format!("{mode_label}  ·  goal {elapsed}  ·  {activity}")
+    } else {
+        format!("{mode_label}  ·  {activity}")
+    }
+}
+
 fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App) {
     use ratatui::widgets::{Block as RBlock, BorderType, Borders, Clear};
     let Some(p) = app.pending_approval.as_ref() else {
@@ -665,14 +1092,36 @@ fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App)
         }
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  [Y] ", warn),
-        Span::styled("approve   ", Style::default().fg(Color::Rgb(235, 235, 235))),
-        Span::styled("[N] ", warn),
-        Span::styled("deny   ", Style::default().fg(Color::Rgb(235, 235, 235))),
-        Span::styled("[Esc] ", warn),
-        Span::styled("cancel", Style::default().fg(Color::Rgb(235, 235, 235))),
-    ]));
+    // Option 1 persists a per-project allow-rule (same logic as Claude Code's
+    // "don't ask again", but opencli's own wording): the label names exactly
+    // what gets allowed in this project.
+    let allow_label = {
+        let args_val: serde_json::Value =
+            serde_json::from_str(&p.args_json).unwrap_or(serde_json::Value::Null);
+        format!(
+            "Allow {} in this project",
+            opencli_core::permissions::rule_label(&p.tool_name, &args_val)
+        )
+    };
+    let opts = ["Allow once".to_string(), allow_label, "Deny".to_string()];
+    let sel_style = Style::default()
+        .fg(Color::Rgb(255, 255, 255))
+        .bg(Color::Rgb(60, 50, 20))
+        .add_modifier(Modifier::BOLD);
+    let opt_style = Style::default().fg(Color::Rgb(220, 220, 220));
+    for (i, label) in opts.iter().enumerate() {
+        let is_sel = i == p.selected;
+        let marker = if is_sel { "  ❯ " } else { "    " };
+        let style = if is_sel { sel_style } else { opt_style };
+        lines.push(Line::from(vec![
+            Span::styled(marker, style),
+            Span::styled(label.clone(), style),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        "  ↑/↓ select · enter confirm · y/n/esc",
+        dim,
+    )));
 
     let height = (lines.len() as u16).min(14) + 2;
     let width = 72u16.min(anchor_area.width.saturating_sub(4));
@@ -685,7 +1134,17 @@ fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App)
         width,
         height,
     };
-    f.render_widget(Clear, popup);
+    // Clear the FULL row span the popup occupies, not just the narrow box.
+    // The box is only `width` cols wide, but it floats over chat rows whose
+    // long lines extend past it — without clearing to the right edge, the tail
+    // of those lines bleeds out beside the modal border.
+    let clear_area = ratatui::layout::Rect {
+        x: anchor_area.x,
+        y,
+        width: anchor_area.width,
+        height,
+    };
+    f.render_widget(Clear, clear_area);
     let block = RBlock::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -821,6 +1280,351 @@ fn render_markdown_inline(line: &str) -> Vec<Span<'static>> {
         spans.push(Span::raw(""));
     }
     spans
+}
+
+/// Lazily-loaded syntect assets (syntax definitions + a dark theme). Loading
+/// the default sets parses an embedded binary dump, so do it once per process.
+fn syntax_assets() -> &'static (syntect::parsing::SyntaxSet, syntect::highlighting::Theme) {
+    use std::sync::OnceLock;
+    static ASSETS: OnceLock<(syntect::parsing::SyntaxSet, syntect::highlighting::Theme)> =
+        OnceLock::new();
+    ASSETS.get_or_init(|| {
+        let ss = syntect::parsing::SyntaxSet::load_defaults_newlines();
+        let ts = syntect::highlighting::ThemeSet::load_defaults();
+        let theme = ts.themes["base16-ocean.dark"].clone();
+        (ss, theme)
+    })
+}
+
+/// Background fill behind a fenced code block, so it reads as one solid panel.
+const CODE_BG: Color = Color::Rgb(30, 31, 38);
+
+/// Render the assistant's markdown text into content rows (each a `Vec<Span>`,
+/// without the leading bullet/indent gutter). Handles fenced code blocks
+/// (syntax-highlighted) and GFM tables (box-drawn) as whole blocks; all other
+/// lines are word-wrapped and passed through the inline markdown styler.
+fn render_assistant_md(text: &str, content_width: usize) -> Vec<Vec<Span<'static>>> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+        // Fenced code block: ``` or ~~~ with an optional language token.
+        let fence = if trimmed.starts_with("```") {
+            Some("```")
+        } else if trimmed.starts_with("~~~") {
+            Some("~~~")
+        } else {
+            None
+        };
+        if let Some(marker) = fence {
+            let info = trimmed[marker.len()..].trim();
+            let lang = info.split_whitespace().next().filter(|s| !s.is_empty());
+            let mut code_lines: Vec<&str> = Vec::new();
+            let mut j = i + 1;
+            let mut closed = false;
+            while j < lines.len() {
+                if lines[j].trim_start().starts_with(marker) {
+                    closed = true;
+                    break;
+                }
+                code_lines.push(lines[j]);
+                j += 1;
+            }
+            let code = code_lines.join("\n");
+            out.extend(highlight_code_lines(&code, lang, content_width));
+            i = if closed { j + 1 } else { j };
+            continue;
+        }
+        // GFM table: a row containing `|` immediately followed by a separator
+        // row (`|---|:--:|` …).
+        if line.contains('|') && i + 1 < lines.len() && is_table_separator(lines[i + 1]) {
+            let mut tbl: Vec<&str> = vec![lines[i], lines[i + 1]];
+            let mut j = i + 2;
+            while j < lines.len() && lines[j].contains('|') && !lines[j].trim().is_empty() {
+                tbl.push(lines[j]);
+                j += 1;
+            }
+            out.extend(render_md_table(&tbl, content_width));
+            i = j;
+            continue;
+        }
+        // Plain prose line.
+        for w in wrap(line, content_width) {
+            out.push(render_markdown_inline(&w));
+        }
+        i += 1;
+    }
+    if out.is_empty() {
+        out.push(vec![Span::raw("")]);
+    }
+    out
+}
+
+/// Resolve a fenced-code language token to a syntect syntax. syntect matches by
+/// file extension or exact name, so common fence labels (`rust`, `python`,
+/// `bash`, …) miss unless mapped to the extension first; we then fall back to
+/// the raw/lower-cased token and finally plain text.
+fn resolve_syntax<'a>(
+    ss: &'a syntect::parsing::SyntaxSet,
+    lang: &str,
+) -> &'a syntect::parsing::SyntaxReference {
+    let lower = lang.to_ascii_lowercase();
+    let token = match lower.as_str() {
+        "rust" | "rs" => "rs",
+        "python" | "py" => "py",
+        "javascript" | "js" | "node" | "mjs" => "js",
+        "typescript" | "ts" => "ts",
+        "jsx" | "tsx" => "tsx",
+        "bash" | "sh" | "shell" | "zsh" | "console" => "sh",
+        "yaml" | "yml" => "yaml",
+        "markdown" | "md" => "md",
+        "go" | "golang" => "go",
+        "c++" | "cpp" | "cxx" | "cc" => "cpp",
+        "c#" | "csharp" | "cs" => "cs",
+        "ruby" | "rb" => "rb",
+        "kotlin" | "kt" => "kt",
+        "rust-script" => "rs",
+        other => other,
+    };
+    ss.find_syntax_by_token(token)
+        .or_else(|| ss.find_syntax_by_token(&lower))
+        .or_else(|| ss.find_syntax_by_extension(&lower))
+        .unwrap_or_else(|| ss.find_syntax_plain_text())
+}
+
+/// Syntax-highlight `code` and return content rows padded to `content_width`
+/// with the code background. `lang` is the fence's language token, if any.
+fn highlight_code_lines(
+    code: &str,
+    lang: Option<&str>,
+    content_width: usize,
+) -> Vec<Vec<Span<'static>>> {
+    use syntect::easy::HighlightLines;
+    use syntect::util::LinesWithEndings;
+    let (ss, theme) = syntax_assets();
+    let syntax = lang
+        .map(|l| resolve_syntax(ss, l))
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+    let mut hl = HighlightLines::new(syntax, theme);
+
+    let mut out: Vec<Vec<Span<'static>>> = Vec::new();
+    for line in LinesWithEndings::from(code) {
+        let ranges = hl.highlight_line(line, ss).unwrap_or_default();
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (style, piece) in ranges {
+            let piece = piece.trim_end_matches(['\n', '\r']);
+            if piece.is_empty() {
+                continue;
+            }
+            let c = style.foreground;
+            spans.push(Span::styled(
+                piece.to_string(),
+                Style::default().fg(Color::Rgb(c.r, c.g, c.b)).bg(CODE_BG),
+            ));
+        }
+        out.extend(wrap_spans(spans, content_width, CODE_BG));
+    }
+    if out.is_empty() {
+        out.push(wrap_spans(Vec::new(), content_width, CODE_BG).remove(0));
+    }
+    out
+}
+
+/// Hard-wrap a styled span run to `width` display columns, padding every row to
+/// the full width with `bg` so a code block renders as a flush rectangle.
+fn wrap_spans(spans: Vec<Span<'static>>, width: usize, bg: Color) -> Vec<Vec<Span<'static>>> {
+    use unicode_width::UnicodeWidthChar;
+    let pad = |row: &mut Vec<Span<'static>>, used: usize| {
+        if width > used {
+            row.push(Span::styled(
+                " ".repeat(width - used),
+                Style::default().bg(bg),
+            ));
+        }
+    };
+    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut cur: Vec<Span<'static>> = Vec::new();
+    let mut cur_w = 0usize;
+    for span in spans {
+        let style = span.style;
+        let mut buf = String::new();
+        for ch in span.content.chars() {
+            let w = ch.width().unwrap_or(0);
+            if width > 0 && cur_w + w > width {
+                if !buf.is_empty() {
+                    cur.push(Span::styled(std::mem::take(&mut buf), style));
+                }
+                pad(&mut cur, cur_w);
+                rows.push(std::mem::take(&mut cur));
+                cur_w = 0;
+            }
+            buf.push(ch);
+            cur_w += w;
+        }
+        if !buf.is_empty() {
+            cur.push(Span::styled(buf, style));
+        }
+    }
+    pad(&mut cur, cur_w);
+    rows.push(cur);
+    rows
+}
+
+/// True when `line` is a GFM table separator row, e.g. `|---|:--:|---|`.
+fn is_table_separator(line: &str) -> bool {
+    let t = line.trim();
+    if !t.contains('-') {
+        return false;
+    }
+    t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+}
+
+/// Split one table row into trimmed cell strings, dropping the empty cells that
+/// flank rows written with outer pipes (`| a | b |`).
+fn split_table_row(line: &str) -> Vec<String> {
+    let mut cells: Vec<String> = line.split('|').map(|c| c.trim().to_string()).collect();
+    if cells.first().is_some_and(|c| c.is_empty()) {
+        cells.remove(0);
+    }
+    if cells.last().is_some_and(|c| c.is_empty()) {
+        cells.pop();
+    }
+    cells
+}
+
+/// Display width of a cell ignoring the inline markdown markers that won't be
+/// drawn (backticks, `*`), so column sizing matches the rendered text.
+fn md_cell_width(s: &str) -> usize {
+    let stripped: String = s.chars().filter(|c| !matches!(c, '`' | '*')).collect();
+    unicode_width::UnicodeWidthStr::width(stripped.as_str())
+}
+
+/// Render a GFM table (header row, separator, body rows) into box-drawn content
+/// rows. Columns are sized to content and shrunk to fit `content_width`; cells
+/// that still overflow are word-wrapped.
+fn render_md_table(tbl: &[&str], content_width: usize) -> Vec<Vec<Span<'static>>> {
+    let border = Style::default().fg(Color::Rgb(90, 95, 105));
+    let header_style = Style::default()
+        .fg(Color::Rgb(235, 235, 240))
+        .add_modifier(Modifier::BOLD);
+
+    // tbl[0] = header, tbl[1] = separator, tbl[2..] = body.
+    let header = split_table_row(tbl[0]);
+    let body: Vec<Vec<String>> = tbl[2..].iter().map(|r| split_table_row(r)).collect();
+    let ncols = header
+        .len()
+        .max(body.iter().map(|r| r.len()).max().unwrap_or(0))
+        .max(1);
+
+    // Natural column widths from content.
+    let mut widths = vec![0usize; ncols];
+    let measure = |row: &[String], widths: &mut [usize]| {
+        for (c, cell) in row.iter().enumerate() {
+            if c < ncols {
+                widths[c] = widths[c].max(md_cell_width(cell));
+            }
+        }
+    };
+    measure(&header, &mut widths);
+    for r in &body {
+        measure(r, &mut widths);
+    }
+    for w in widths.iter_mut() {
+        *w = (*w).max(1);
+    }
+
+    // Shrink to fit: each column costs `width + 2` (1 space padding per side)
+    // plus one border, with a final closing border.
+    let budget = content_width.saturating_sub(ncols + 1);
+    while widths.iter().map(|w| w + 2).sum::<usize>() > budget {
+        // Trim the widest column until the table fits (or all are minimal).
+        let Some((idx, max_w)) = widths.iter().copied().enumerate().max_by_key(|(_, w)| *w) else {
+            break;
+        };
+        if max_w <= 3 {
+            break;
+        }
+        widths[idx] = max_w - 1;
+    }
+
+    let v = Span::styled("│", border);
+    let pad_cell = |cell: &str, w: usize, style: Option<Style>| -> Vec<Vec<Span<'static>>> {
+        // Wrap the cell's plain text to the column width, then inline-style each
+        // wrapped sub-line and pad it out to the column width.
+        let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+        let wrapped = wrap(cell, w.max(1));
+        for sub in wrapped {
+            let mut spans = render_markdown_inline(&sub);
+            if let Some(st) = style {
+                for s in spans.iter_mut() {
+                    s.style = s.style.patch(st);
+                }
+            }
+            let used: usize = spans
+                .iter()
+                .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                .sum();
+            if w > used {
+                spans.push(Span::raw(" ".repeat(w - used)));
+            }
+            rows.push(spans);
+        }
+        if rows.is_empty() {
+            rows.push(vec![Span::raw(" ".repeat(w))]);
+        }
+        rows
+    };
+
+    let rule = |left: &str, mid: &str, right: &str| -> Vec<Span<'static>> {
+        let mut spans = vec![Span::styled(left.to_string(), border)];
+        for (c, w) in widths.iter().enumerate() {
+            spans.push(Span::styled("─".repeat(w + 2), border));
+            spans.push(Span::styled(
+                if c + 1 == ncols { right } else { mid }.to_string(),
+                border,
+            ));
+        }
+        spans
+    };
+
+    let render_row = |cells: &[String], style: Option<Style>| -> Vec<Vec<Span<'static>>> {
+        // Each column produces 1+ wrapped lines; the row's height is the max.
+        let col_rows: Vec<Vec<Vec<Span<'static>>>> = (0..ncols)
+            .map(|c| {
+                let cell = cells.get(c).map(|s| s.as_str()).unwrap_or("");
+                pad_cell(cell, widths[c], style)
+            })
+            .collect();
+        let height = col_rows.iter().map(|r| r.len()).max().unwrap_or(1);
+        let mut out_rows: Vec<Vec<Span<'static>>> = Vec::new();
+        for line_idx in 0..height {
+            let mut spans: Vec<Span<'static>> = vec![v.clone()];
+            for c in 0..ncols {
+                spans.push(Span::raw(" "));
+                if let Some(cell_line) = col_rows[c].get(line_idx) {
+                    spans.extend(cell_line.iter().cloned());
+                } else {
+                    spans.push(Span::raw(" ".repeat(widths[c])));
+                }
+                spans.push(Span::raw(" "));
+                spans.push(v.clone());
+            }
+            out_rows.push(spans);
+        }
+        out_rows
+    };
+
+    let mut out: Vec<Vec<Span<'static>>> = Vec::new();
+    out.push(rule("┌", "┬", "┐"));
+    out.extend(render_row(&header, Some(header_style)));
+    out.push(rule("├", "┼", "┤"));
+    for r in &body {
+        out.extend(render_row(r, None));
+    }
+    out.push(rule("└", "┴", "┘"));
+    out
 }
 
 fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
@@ -1128,6 +1932,9 @@ fn friendly_header(name: &str, args: &serde_json::Value) -> (String, String) {
         }
         "glob" => ("Glob".into(), s("pattern")),
         "todo_write" => ("Update Todos".into(), String::new()),
+        "goal_update" => ("Goal Update".into(), s("status")),
+        "enter_plan_mode" => ("Enter Plan".into(), String::new()),
+        "exit_plan_mode" => ("Plan Ready".into(), String::new()),
         "ask_user_question" => {
             // The full question + options render in the System block pushed just
             // below this tool result; the header only needs the first chip label.
@@ -1293,6 +2100,99 @@ fn friendly_body<'a>(
                 )));
             }
         }
+        "multi_edit" => {
+            // Render a per-edit diff like edit_file so an Update from multi_edit
+            // shows what changed (previously it fell through to the raw "Applied
+            // N edits" text — the "sometimes the diff shows, sometimes not"
+            // inconsistency between edit_file and multi_edit).
+            let edits = args.get("edits").and_then(|v| v.as_array());
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let removed_bg = Style::default()
+                .bg(Color::Rgb(60, 0, 0))
+                .fg(Color::Rgb(255, 120, 120));
+            let added_bg = Style::default()
+                .bg(Color::Rgb(0, 50, 0))
+                .fg(Color::Rgb(160, 255, 160));
+            let lineno_removed = Style::default()
+                .bg(Color::Rgb(60, 0, 0))
+                .fg(Color::Rgb(200, 80, 80));
+            let lineno_added = Style::default()
+                .bg(Color::Rgb(0, 50, 0))
+                .fg(Color::Rgb(120, 200, 120));
+
+            let (mut total_added, mut total_removed) = (0usize, 0usize);
+            if let Some(edits) = edits {
+                for e in edits {
+                    let old = e.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+                    let new_ = e.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+                    total_added += if new_.is_empty() {
+                        0
+                    } else {
+                        new_.lines().count()
+                    };
+                    total_removed += if old.is_empty() {
+                        0
+                    } else {
+                        old.lines().count()
+                    };
+                }
+            }
+            let n_edits = edits.map(|e| e.len()).unwrap_or(0);
+            out.push(Line::from(Span::styled(
+                format!(
+                    "{n_edits} edit{}: added {total_added} line{}, removed {total_removed} line{}",
+                    plural(n_edits),
+                    plural(total_added),
+                    plural(total_removed)
+                ),
+                style_summary,
+            )));
+
+            let max_diff = limits.edit_diff;
+            let mut shown = 0usize;
+            if let Some(edits) = edits {
+                'edits: for e in edits {
+                    let old = e.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+                    let new_ = e.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+                    let start_line = locate_line_number(path, old).unwrap_or(1);
+                    for (i, line) in old.lines().enumerate() {
+                        if shown >= max_diff {
+                            break 'edits;
+                        }
+                        out.push(diff_line(
+                            start_line + i,
+                            "-",
+                            line,
+                            lineno_removed,
+                            removed_bg,
+                            avail,
+                        ));
+                        shown += 1;
+                    }
+                    for (i, line) in new_.lines().enumerate() {
+                        if shown >= max_diff {
+                            break 'edits;
+                        }
+                        out.push(diff_line(
+                            start_line + i,
+                            "+",
+                            line,
+                            lineno_added,
+                            added_bg,
+                            avail,
+                        ));
+                        shown += 1;
+                    }
+                }
+            }
+            let total_lines = total_added + total_removed;
+            if total_lines > max_diff {
+                out.push(Line::from(Span::styled(
+                    format!("… +{} lines", total_lines - max_diff),
+                    style_meta,
+                )));
+            }
+        }
         "read_file" => {
             // Just the line count — never dump file contents into the chat.
             // The model already has the file in its context; the user only
@@ -1419,6 +2319,7 @@ fn friendly_body<'a>(
                 let active = todo
                     .get("active_form")
                     .and_then(|v| v.as_str())
+                    .or_else(|| todo.get("activeForm").and_then(|v| v.as_str()))
                     .unwrap_or(content);
                 let status = todo
                     .get("status")
@@ -1447,10 +2348,9 @@ fn friendly_body<'a>(
                 }
             }
         }
-        "ask_user_question" => {
+        "ask_user_question" | "enter_plan_mode" | "exit_plan_mode" => {
             // No inline body: the System block rendered right below this tool
-            // result already shows the questions and options. Dumping the raw
-            // envelope JSON here just duplicated it.
+            // result already shows the question or plan approval prompt.
         }
         "glob" | "list_dir" => {
             let total = text.lines().filter(|l| !l.is_empty()).count();
@@ -1747,6 +2647,166 @@ where
 }
 
 #[cfg(test)]
+mod todo_panel_tests {
+    use super::{
+        hidden_todos_summary, todo_label, todos_height_for_count, truncate_chars,
+        visible_todo_indices, TODO_VISIBLE_ROWS,
+    };
+    use opencli_core::tools::{TodoItem, TodoStatus};
+    use std::collections::HashSet;
+
+    fn item(content: &str, status: TodoStatus) -> TodoItem {
+        TodoItem {
+            content: content.to_string(),
+            status,
+            active_form: format!("Doing {content}"),
+        }
+    }
+
+    #[test]
+    fn todo_panel_height_caps_and_reserves_overflow_row() {
+        assert_eq!(todos_height_for_count(0), 0);
+        assert_eq!(todos_height_for_count(1), 2);
+        assert_eq!(todos_height_for_count(TODO_VISIBLE_ROWS), 7);
+        assert_eq!(todos_height_for_count(TODO_VISIBLE_ROWS + 2), 8);
+    }
+
+    #[test]
+    fn truncated_todos_prioritize_active_and_pending_items() {
+        let todos = vec![
+            item("completed one", TodoStatus::Completed),
+            item("pending one", TodoStatus::Pending),
+            item("completed two", TodoStatus::Completed),
+            item("active one", TodoStatus::InProgress),
+            item("pending two", TodoStatus::Pending),
+            item("completed three", TodoStatus::Completed),
+            item("pending three", TodoStatus::Pending),
+            item("completed four", TodoStatus::Completed),
+        ];
+
+        let visible = visible_todo_indices(&todos, &HashSet::new());
+
+        assert_eq!(visible, vec![3, 1, 4, 6, 0, 2]);
+        assert_eq!(
+            hidden_todos_summary(&todos, &visible),
+            Some("… +2 completed".to_string())
+        );
+    }
+
+    #[test]
+    fn truncated_todos_prioritize_recently_completed_items() {
+        let todos = vec![
+            item("pending one", TodoStatus::Pending),
+            item("pending two", TodoStatus::Pending),
+            item("active one", TodoStatus::InProgress),
+            item("pending three", TodoStatus::Pending),
+            item("pending four", TodoStatus::Pending),
+            item("completed old", TodoStatus::Completed),
+            item("completed recent", TodoStatus::Completed),
+            item("pending five", TodoStatus::Pending),
+        ];
+        let recent_completed = HashSet::from([6usize]);
+
+        let visible = visible_todo_indices(&todos, &recent_completed);
+
+        assert_eq!(visible, vec![6, 2, 0, 1, 3, 4]);
+        assert_eq!(
+            hidden_todos_summary(&todos, &visible),
+            Some("… +1 pending, 1 completed".to_string())
+        );
+    }
+
+    #[test]
+    fn truncated_recent_completed_todos_are_deterministic() {
+        let todos = (0..TODO_VISIBLE_ROWS + 2)
+            .map(|i| item(&format!("completed {i}"), TodoStatus::Completed))
+            .collect::<Vec<_>>();
+        let recent_completed = HashSet::from([5usize, 2usize, 4usize, 1usize, 3usize, 0usize]);
+
+        let visible = visible_todo_indices(&todos, &recent_completed);
+
+        assert_eq!(visible, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn todo_label_uses_active_form_only_for_active_item() {
+        let active = item("write tests", TodoStatus::InProgress);
+        let done = item("read code", TodoStatus::Completed);
+
+        assert_eq!(todo_label(&active), "Doing write tests");
+        assert_eq!(todo_label(&done), "read code");
+    }
+
+    #[test]
+    fn truncation_handles_narrow_width_without_splitting_utf8() {
+        assert_eq!(truncate_chars("abcdef", 0), "");
+        assert_eq!(truncate_chars("éclair", 2), "é…");
+    }
+}
+
+#[cfg(test)]
+mod todo_tool_render_tests {
+    use super::friendly_body;
+    use serde_json::json;
+
+    fn text(lines: &[ratatui::text::Line<'_>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn todo_write_body_accepts_claude_code_active_form_spelling() {
+        let lines = friendly_body(
+            "todo_write",
+            &json!({
+                "todos": [
+                    {
+                        "content": "Run tests",
+                        "activeForm": "Running tests",
+                        "status": "in_progress"
+                    }
+                ]
+            }),
+            Some("stored"),
+            false,
+            80,
+            false,
+        );
+
+        assert!(text(&lines).contains("Running tests"));
+    }
+}
+
+#[cfg(test)]
+mod status_footer_tests {
+    use super::status_left_text_for_parts;
+
+    #[test]
+    fn includes_goal_elapsed_when_goal_is_active() {
+        assert_eq!(
+            status_left_text_for_parts("default", "", false, Some("1m32")),
+            "default  ·  goal 1m32  ·  shift+tab cycles mode · ? for shortcuts"
+        );
+    }
+
+    #[test]
+    fn keeps_status_activity_after_goal_elapsed() {
+        assert_eq!(
+            status_left_text_for_parts("plan", "(continuing active goal...)", false, Some("12s")),
+            "plan  ·  goal 12s  ·  (continuing active goal...)"
+        );
+    }
+}
+
+#[cfg(test)]
 mod path_display_tests {
     use super::shorten_path_with_home;
     use std::path::Path;
@@ -1769,7 +2829,9 @@ mod path_display_tests {
 
 #[cfg(test)]
 mod input_wrap_tests {
-    use super::{input_visual_row_count, wrap_visual_rows};
+    use super::{
+        input_visual_row_count, is_table_separator, render_assistant_md, wrap_visual_rows, CODE_BG,
+    };
 
     #[test]
     fn no_wrap_short_line() {
@@ -1830,5 +2892,53 @@ mod input_wrap_tests {
     #[test]
     fn input_height_counts_soft_wrapped_rows() {
         assert_eq!(input_visual_row_count(["abcdefgh"].into_iter(), 4), 2);
+    }
+
+    #[test]
+    fn code_fence_is_highlighted_and_padded() {
+        let md = "intro\n```rust\nfn main() {}\n```\nafter";
+        let rows = render_assistant_md(md, 40);
+        // Each code row is padded to the full content width with the bg fill.
+        let code_row = &rows[1];
+        let total: usize = code_row
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+        assert_eq!(total, 40);
+        assert!(code_row.iter().any(|s| s.style.bg == Some(CODE_BG)));
+        // Real Rust highlighting (not the plain-text fallback) yields more than
+        // one distinct foreground colour — guards the language-alias mapping.
+        let colors: std::collections::HashSet<_> =
+            code_row.iter().filter_map(|s| s.style.fg).collect();
+        assert!(
+            colors.len() >= 2,
+            "expected syntax highlighting, got {colors:?}"
+        );
+    }
+
+    #[test]
+    fn table_renders_box_borders() {
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |";
+        let rows = render_assistant_md(md, 40);
+        let first: String = rows[0].iter().map(|s| s.content.as_ref()).collect();
+        assert!(first.starts_with('┌') && first.ends_with('┐'));
+        // top rule, header, divider, one body row, bottom rule.
+        assert_eq!(rows.len(), 5);
+    }
+
+    #[test]
+    fn is_table_separator_detects_rows() {
+        assert!(is_table_separator("|---|:--:|"));
+        assert!(is_table_separator(" --- | --- "));
+        assert!(!is_table_separator("| a | b |"));
+        assert!(!is_table_separator("plain text"));
+    }
+
+    #[test]
+    fn markdown_blocks_never_panic_on_narrow_widths() {
+        let md = "| col one | col two | col three |\n|---|---|---|\n| `x` | very long value here | z |\n\n```python\ndef f(x):\n    return x*x\n```";
+        for w in [0usize, 1, 3, 5, 12, 80] {
+            let _ = render_assistant_md(md, w);
+        }
     }
 }

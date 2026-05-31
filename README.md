@@ -2,12 +2,14 @@
 
 A coding-agent CLI written in **Rust** — built to be a drop-in replacement for Claude Code.
 
+Current release line: `0.0.1-beta.1`.
+
 Backed by the OpenAI Responses API (latest GPT-5.x family) with two authentication modes:
 
 - **OAuth ChatGPT** — sign in with a ChatGPT Plus/Pro/Team/Enterprise account and use your subscription quota.
 - **API key** — set `OPENAI_API_KEY` or store one with `opencli login --api-key`.
 
-Full **tool calling** surface: `read_file`, `write_file`, `edit_file`, `multi_edit`, `list_dir`, `grep`, `glob`, `run_shell`, `todo_write`, `web_fetch`. Streaming SSE, parallel tool execution, reasoning summary, strict JSON-schema validation.
+Full **tool calling** surface: `read_file`, `write_file`, `edit_file`, `multi_edit`, `list_dir`, `grep`, `glob`, `run_shell`, `bash_output`, `kill_shell`, `todo_write`, `goal_update`, `enter_plan_mode`, `exit_plan_mode`, `dispatch_agent`, `ask_user_question`, `web_fetch`, `web_search`, `notebook_edit`, and `skill`. Streaming SSE, parallel tool execution, reasoning summary, strict JSON-schema validation, and compatibility aliases for multiple provider tool-call shapes.
 
 ## Architecture
 
@@ -25,9 +27,22 @@ The `opencli` binary:
 
 ## Install
 
+### Option A: Download a beta build
+
+Download the matching archive from a GitHub release:
+
+- `opencli-x86_64-unknown-linux-gnu.tar.gz`
+- `opencli-x86_64-apple-darwin.tar.gz`
+- `opencli-aarch64-apple-darwin.tar.gz`
+- `opencli-x86_64-pc-windows-msvc.zip`
+
+Then put `opencli` (or `opencli.exe`) somewhere on your `PATH`.
+
+### Option B: Build from source
+
 ### 1. System dependencies
 
-- Rust ≥ 1.75
+- Rust stable (CI uses the latest stable toolchain; this beta was locally verified with Rust 1.95.0)
 - `ripgrep` (recommended; used by the `grep` tool)
 
 ### 2. Build + link
@@ -103,6 +118,8 @@ Config lives at `$XDG_CONFIG_HOME/opencli/config.json`:
 ```bash
 cargo run -- chat "hello"     # headless one-shot
 cargo run                     # interactive TUI
+cargo fmt --all -- --check    # formatting gate
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace        # run the test suite
 ```
 
@@ -130,6 +147,7 @@ Verbosity: `low` · `medium` · `high`.
 - The `run_shell` tool runs directly on your machine. No sandbox yet — review prompts that include destructive commands.
 - Environment variables that look like secrets (names containing TOKEN, SECRET, KEY, OPENAI, AWS_, GITHUB_, etc.) are stripped from `run_shell`'s child process so the model can't exfiltrate them via `env`.
 - `auto_approve_write = false` is the default; future versions will show a diff and prompt before applying writes.
+- Sub-agents inherit parent approval policy; when nested approvals cannot be surfaced, they are forced into plan mode instead of silently bypassing review.
 
 ## License
 

@@ -20,13 +20,36 @@ pub struct NotebookEdit;
 
 #[derive(Deserialize)]
 struct Args {
+    #[serde(
+        alias = "path",
+        alias = "file_path",
+        alias = "filePath",
+        alias = "notebookPath"
+    )]
     notebook_path: String,
-    new_source: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "newSource",
+        alias = "source",
+        alias = "content",
+        alias = "text",
+        deserialize_with = "deserialize_optional_source"
+    )]
+    new_source: Option<String>,
+    #[serde(
+        default,
+        alias = "cellId",
+        alias = "cellID",
+        alias = "id",
+        alias = "index",
+        alias = "cell_index",
+        alias = "cellIndex",
+        deserialize_with = "deserialize_optional_stringish"
+    )]
     cell_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "cellType", alias = "type")]
     cell_type: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "editMode", alias = "mode", alias = "action")]
     edit_mode: Option<String>,
 }
 
@@ -90,6 +113,10 @@ Parameters:\n\
         let mode = a.edit_mode.as_deref().unwrap_or("replace");
         let msg = match mode {
             "replace" => {
+                let source = a
+                    .new_source
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("edit_mode `replace` requires new_source"))?;
                 let cid = a
                     .cell_id
                     .as_deref()
@@ -104,7 +131,7 @@ Parameters:\n\
                     validate_cell_type(ct)?;
                     cell.insert("cell_type".into(), json!(ct));
                 }
-                cell.insert("source".into(), to_source_lines(&a.new_source));
+                cell.insert("source".into(), to_source_lines(source));
                 let is_code = cell.get("cell_type").and_then(|v| v.as_str()) == Some("code");
                 if is_code {
                     cell.insert("outputs".into(), json!([]));
@@ -120,6 +147,10 @@ Parameters:\n\
                 )
             }
             "insert" => {
+                let source = a
+                    .new_source
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("edit_mode `insert` requires new_source"))?;
                 let ct = a
                     .cell_type
                     .as_deref()
@@ -131,7 +162,7 @@ Parameters:\n\
                         .map(|(i, _)| i + 1)
                         .ok_or_else(|| anyhow!("cell `{cid}` not found in notebook"))?,
                 };
-                cells.insert(at, make_cell(ct, &a.new_source));
+                cells.insert(at, make_cell(ct, source));
                 format!("Inserted {ct} cell at index {at} in {}", a.notebook_path)
             }
             "delete" => {
@@ -161,12 +192,7 @@ Parameters:\n\
         let mut new_content = serde_json::to_string_pretty(&nb)?;
         new_content.push('\n');
         let tmp = path.with_extension(format!("nbedit-{}.tmp", gen_id()));
-        tokio::fs::write(&tmp, new_content.as_bytes())
-            .await
-            .with_context(|| format!("write temp {}", tmp.display()))?;
-        tokio::fs::rename(&tmp, &path)
-            .await
-            .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
+        super::fs::atomic_write_preserving_permissions(&path, &tmp, new_content.as_bytes()).await?;
 
         let (post_edit_mtime, post_edit_size) = super::fs::snapshot_meta(&path);
         ctx.session.lock().await.push_undo_entry(UndoEntry {
@@ -176,6 +202,55 @@ Parameters:\n\
             post_edit_size,
         });
         Ok(msg)
+    }
+}
+
+fn deserialize_optional_source<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    match value {
+        Value::Null => Ok(None),
+        Value::String(s) => Ok(Some(s)),
+        Value::Array(items) => {
+            let mut out = String::new();
+            for item in items {
+                match item {
+                    Value::String(s) => out.push_str(&s),
+                    _ => {
+                        return Err(serde::de::Error::custom(
+                            "expected source string or string array",
+                        ))
+                    }
+                }
+            }
+            Ok(Some(out))
+        }
+        _ => Err(serde::de::Error::custom(
+            "expected source string, string array, or null",
+        )),
+    }
+}
+
+fn deserialize_optional_stringish<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    match value {
+        Value::Null => Ok(None),
+        Value::String(s) => Ok(Some(s)),
+        Value::Number(n) => Ok(Some(n.to_string())),
+        _ => Err(serde::de::Error::custom("expected string, number, or null")),
     }
 }
 
@@ -268,8 +343,11 @@ mod tests {
         ToolContext {
             cwd,
             approval: ApprovalMode::Auto,
+            require_approval: false,
+            auto_approve_edits: false,
             session: Arc::new(Mutex::new(SessionState::default())),
             config: crate::config::Config::default(),
+            events: None,
         }
     }
 
@@ -384,6 +462,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepts_path_alias_for_notebook_path() {
+        let dir = tempfile::tempdir().unwrap();
+        write_nb(dir.path()).await;
+
+        let out = NotebookEdit
+            .execute(
+                json!({"path": "nb.ipynb", "new_source": "print(42)\n", "cell_id": "aaa", "cell_type": null, "edit_mode": "replace"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.contains("Replaced cell `aaa`"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn accepts_camel_case_arg_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        write_nb(dir.path()).await;
+
+        let out = NotebookEdit
+            .execute(
+                json!({
+                    "notebookPath": "nb.ipynb",
+                    "newSource": "print(42)\n",
+                    "cellId": "aaa",
+                    "cellType": null,
+                    "editMode": "replace"
+                }),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.contains("Replaced cell `aaa`"), "got: {out}");
+    }
+
+    #[tokio::test]
+    async fn accepts_source_mode_and_numeric_index_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        write_nb(dir.path()).await;
+
+        let out = NotebookEdit
+            .execute(
+                json!({
+                    "path": "nb.ipynb",
+                    "source": ["print(99)\n"],
+                    "index": 0,
+                    "type": null,
+                    "mode": "replace"
+                }),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.contains("matched by index"), "got: {out}");
+        let nb: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("nb.ipynb")).unwrap())
+                .unwrap();
+        assert_eq!(nb["cells"][0]["source"], json!(["print(99)\n"]));
+    }
+
+    #[tokio::test]
+    async fn delete_allows_omitting_unused_new_source() {
+        let dir = tempfile::tempdir().unwrap();
+        write_nb(dir.path()).await;
+
+        NotebookEdit
+            .execute(
+                json!({
+                    "notebook_path": "nb.ipynb",
+                    "id": "aaa",
+                    "action": "delete"
+                }),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        let nb: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("nb.ipynb")).unwrap())
+                .unwrap();
+        assert_eq!(nb["cells"].as_array().unwrap().len(), 1);
+        assert_eq!(nb["cells"][0]["id"], "bbb");
+    }
+
+    #[tokio::test]
     async fn replace_by_numeric_index_fallback() {
         let dir = tempfile::tempdir().unwrap();
         write_nb(dir.path()).await;
@@ -448,5 +614,26 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.contains("matched by index"), "got: {out}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn notebook_edit_preserves_existing_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_nb(dir.path()).await;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).unwrap();
+
+        NotebookEdit
+            .execute(
+                json!({"notebook_path": "nb.ipynb", "new_source": "print(42)\n", "cell_id": "aaa", "cell_type": null, "edit_mode": "replace"}),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o664);
     }
 }
