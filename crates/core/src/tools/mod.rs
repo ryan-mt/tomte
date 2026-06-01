@@ -159,7 +159,7 @@ fn split_string_list(value: &str) -> Vec<String> {
         .collect()
 }
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -169,6 +169,116 @@ use serde_json::Value;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::openai::{Tool, ToolFunctionDef};
+
+/// OpenAI strict function schemas require every object property to be listed in
+/// `required`. Fields that are optional at the Rust boundary are represented as
+/// nullable instead of omitted.
+fn strict_parameters_schema(mut schema: Value) -> Value {
+    stricten_schema_object(&mut schema);
+    schema
+}
+
+fn stricten_schema_object(schema: &mut Value) {
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+
+    for key in ["anyOf", "oneOf", "allOf"] {
+        if let Some(values) = obj.get_mut(key).and_then(Value::as_array_mut) {
+            for value in values {
+                stricten_schema_object(value);
+            }
+        }
+    }
+    if let Some(items) = obj.get_mut("items") {
+        stricten_schema_object(items);
+    }
+
+    let is_object =
+        schema_type_contains(obj.get("type"), "object") || obj.contains_key("properties");
+    if !is_object {
+        return;
+    }
+
+    let originally_required = obj
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+
+    let property_names = obj
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|props| props.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    if let Some(properties) = obj.get_mut("properties").and_then(Value::as_object_mut) {
+        for (name, property) in properties {
+            if !originally_required.contains(name) {
+                mark_schema_nullable(property);
+            }
+            stricten_schema_object(property);
+        }
+    }
+
+    obj.insert(
+        "required".to_string(),
+        Value::Array(property_names.into_iter().map(Value::String).collect()),
+    );
+    obj.entry("additionalProperties".to_string())
+        .or_insert(Value::Bool(false));
+}
+
+fn schema_type_contains(value: Option<&Value>, expected: &str) -> bool {
+    match value {
+        Some(Value::String(s)) => s == expected,
+        Some(Value::Array(items)) => items.iter().any(|item| item.as_str() == Some(expected)),
+        _ => false,
+    }
+}
+
+fn mark_schema_nullable(schema: &mut Value) {
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+
+    match obj.get_mut("type") {
+        Some(Value::String(ty)) if ty != "null" => {
+            let ty = Value::String(std::mem::take(ty));
+            obj.insert(
+                "type".to_string(),
+                Value::Array(vec![ty, Value::String("null".into())]),
+            );
+        }
+        Some(Value::Array(types)) => {
+            if !types.iter().any(|ty| ty.as_str() == Some("null")) {
+                types.push(Value::String("null".into()));
+            }
+        }
+        Some(_) => {}
+        None => {
+            obj.insert(
+                "anyOf".to_string(),
+                Value::Array(vec![
+                    Value::Object(obj.clone()),
+                    serde_json::json!({"type": "null"}),
+                ]),
+            );
+        }
+    }
+
+    if let Some(values) = obj.get_mut("enum").and_then(Value::as_array_mut) {
+        if !values.iter().any(Value::is_null) {
+            values.push(Value::Null);
+        }
+    }
+}
 
 /// A built-in tool the agent can call.
 #[async_trait]
@@ -189,7 +299,7 @@ pub trait BuiltinTool: Send + Sync {
         Tool::Function(ToolFunctionDef {
             name: self.name().to_string(),
             description: self.description().to_string(),
-            parameters: self.parameters_schema(),
+            parameters: strict_parameters_schema(self.parameters_schema()),
             strict: true,
         })
     }
@@ -760,6 +870,87 @@ mod registry_tests {
                 "tool schema must state additionalProperties: {}",
                 f.name
             );
+            assert_openai_strict_object_schema(&f.parameters, &f.name);
         }
+    }
+
+    #[test]
+    fn dispatch_schema_keeps_optional_fields_nullable_and_required() {
+        let dispatch = Registry::standard()
+            .find("dispatch_agent")
+            .expect("dispatch_agent")
+            .definition();
+        let crate::openai::Tool::Function(f) = dispatch else {
+            panic!("dispatch_agent must be a function tool");
+        };
+        let required = f.parameters["required"].as_array().expect("required array");
+        for key in [
+            "subagent_type",
+            "prompt",
+            "description",
+            "model",
+            "cwd",
+            "plan_mode_required",
+        ] {
+            assert!(
+                required.iter().any(|item| item == key),
+                "dispatch_agent missing required key {key}"
+            );
+        }
+        let props = f.parameters["properties"]
+            .as_object()
+            .expect("dispatch properties");
+        assert_schema_type_contains(&props["cwd"], "null");
+        assert_schema_type_contains(&props["model"], "null");
+        assert_schema_type_contains(&props["description"], "null");
+        assert_schema_type_contains(&props["plan_mode_required"], "null");
+        assert_schema_type_contains(&props["plan_mode_required"], "boolean");
+    }
+
+    fn assert_openai_strict_object_schema(schema: &Value, label: &str) {
+        if let Some(items) = schema.get("items") {
+            assert_openai_strict_object_schema(items, &format!("{label}.items"));
+        }
+        for key in ["anyOf", "oneOf", "allOf"] {
+            if let Some(values) = schema.get(key).and_then(Value::as_array) {
+                for (idx, value) in values.iter().enumerate() {
+                    assert_openai_strict_object_schema(value, &format!("{label}.{key}[{idx}]"));
+                }
+            }
+        }
+
+        let is_object = schema_type_contains(schema.get("type"), "object")
+            || schema.get("properties").is_some();
+        if !is_object {
+            return;
+        }
+
+        assert_eq!(
+            schema.get("additionalProperties"),
+            Some(&Value::Bool(false)),
+            "object schema must disable additional properties: {label}"
+        );
+        let properties = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("object schema must contain properties");
+        let required = schema
+            .get("required")
+            .and_then(Value::as_array)
+            .expect("object schema must contain required");
+        for key in properties.keys() {
+            assert!(
+                required.iter().any(|item| item == key),
+                "object schema required must include {label}.{key}"
+            );
+            assert_openai_strict_object_schema(&properties[key], &format!("{label}.{key}"));
+        }
+    }
+
+    fn assert_schema_type_contains(schema: &Value, expected: &str) {
+        assert!(
+            schema_type_contains(schema.get("type"), expected),
+            "schema {schema:?} does not contain type {expected}"
+        );
     }
 }

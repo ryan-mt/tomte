@@ -894,15 +894,20 @@ pub(crate) fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathB
         .canonicalize()
         .with_context(|| format!("resolve sandbox cwd {}", cwd.display()))?;
     let path = if raw_path.is_absolute() {
-        raw_path.strip_prefix(&sandbox).map_err(|_| {
-            anyhow!(
-                "absolute path escapes the sandbox (cwd {}): {}",
-                sandbox.display(),
-                raw_path.display()
-            )
-        })?
+        let absolute = canonicalize_with_missing(raw_path)
+            .with_context(|| format!("resolve {}", raw_path.display()))?;
+        absolute
+            .strip_prefix(&sandbox)
+            .map_err(|_| {
+                anyhow!(
+                    "absolute path escapes the sandbox (cwd {}): {}",
+                    sandbox.display(),
+                    raw_path.display()
+                )
+            })?
+            .to_path_buf()
     } else {
-        raw_path
+        raw_path.to_path_buf()
     };
     let mut normalized = std::path::PathBuf::new();
     for comp in path.components() {
@@ -921,7 +926,7 @@ pub(crate) fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathB
         }
     }
 
-    let mut existing = cwd.to_path_buf();
+    let mut existing = sandbox.clone();
     let mut missing: Vec<OsString> = Vec::new();
     let mut found_missing = false;
     for comp in normalized.components() {
@@ -953,6 +958,35 @@ pub(crate) fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathB
         resolved.push(comp);
     }
     Ok(resolved)
+}
+
+fn canonicalize_with_missing(path: &std::path::Path) -> Result<std::path::PathBuf> {
+    let mut existing = path.to_path_buf();
+    let mut missing: Vec<OsString> = Vec::new();
+
+    loop {
+        match existing.canonicalize() {
+            Ok(mut resolved) => {
+                for comp in missing.iter().rev() {
+                    resolved.push(comp);
+                }
+                return Ok(resolved);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let name = existing
+                    .file_name()
+                    .ok_or_else(|| anyhow!("path has no existing parent: {}", path.display()))?;
+                missing.push(name.to_os_string());
+                existing = existing
+                    .parent()
+                    .ok_or_else(|| anyhow!("path has no existing parent: {}", path.display()))?
+                    .to_path_buf();
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("canonicalize {}", existing.display()))
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -147,6 +147,7 @@ fn tool_to_chat(tool: &Tool) -> Option<Value> {
                 "name": f.name,
                 "description": f.description,
                 "parameters": f.parameters,
+                "strict": f.strict,
             }
         })),
         // OpenAI Responses built-ins have no Chat Completions equivalent.

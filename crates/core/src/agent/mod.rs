@@ -3112,10 +3112,13 @@ mod approval_gate_tests {
 
 #[cfg(test)]
 mod permission_gate_tests {
+    #[cfg(unix)]
+    use super::post_approval_tool_gate;
     use super::{
         effective_approval_for_tool, effective_tool_read_only, instructions_for_approval,
-        post_approval_tool_gate, preflight_tool_call, project_permission_decision, ToolPreflight,
+        preflight_tool_call, project_permission_decision, ToolPreflight,
     };
+    #[cfg(unix)]
     use crate::hooks::{HookEntry, HookSet, HooksConfig};
     use crate::permissions::{Decision, ProjectPermissions};
     use crate::tools::{ApprovalMode, Registry};
