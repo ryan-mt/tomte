@@ -2746,7 +2746,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             let defs = opencli_core::subagent::load_all(&app.cwd);
             if defs.is_empty() {
                 app.blocks.push(Block::System(format!(
-                    "No subagents installed. Create one at {}/agents/<name>.md",
+                    "No subagents installed. Create one at {}/agents/<name>.md, or install Claude/Codex agents under ~/.claude/agents or ~/.codex/agents.",
                     opencli_core::config::config_dir().display()
                 )));
             } else {
@@ -2777,7 +2777,7 @@ Invoke from the model via dispatch_agent with subagent_type set to the name.",
             let skills = opencli_core::skill::discover(&app.cwd);
             if skills.is_empty() {
                 app.blocks.push(Block::System(format!(
-                    "No skills installed. Create one at {}/skills/<name>/SKILL.md, or install Claude Code skills under ~/.claude/skills/.",
+                    "No skills installed. Create one at {}/skills/<name>/SKILL.md, or install Claude Code/Codex skills under ~/.claude/skills, ~/.codex/skills, or their plugin directories.",
                     opencli_core::config::config_dir().display()
                 )));
             } else {

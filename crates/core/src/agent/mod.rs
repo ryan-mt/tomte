@@ -478,58 +478,13 @@ impl Agent {
         self.session_created_ms = record.meta.created_at_ms;
     }
 
-    /// Append the project's `CLAUDE.md` (and the global one at
-    /// `~/.config/opencli/CLAUDE.md`) to the system prompt so the model
-    /// always sees the user's project notes and personal conventions.
-    /// Idempotent — call after `cwd` is set; reading is best-effort and
-    /// silently no-ops if either file is missing.
+    /// Append inherited memory files to the system prompt (Codex / Claude Code /
+    /// opencli). At most one file per directory (`AGENTS.override.md` >
+    /// `AGENTS.md` > `CLAUDE.md`), project scope is limited to the git root
+    /// through `cwd`, combined bodies are capped at 32 KiB, and re-applying
+    /// replaces the previous block instead of duplicating it.
     pub fn apply_project_memory(&mut self) {
-        let cfg_dir = crate::config::config_dir();
-        let globals = [cfg_dir.join("CLAUDE.md"), cfg_dir.join("AGENTS.md")];
-
-        let read_first = |paths: &[std::path::PathBuf]| -> Option<(std::path::PathBuf, String)> {
-            for p in paths {
-                if let Ok(text) = std::fs::read_to_string(p) {
-                    let t = text.trim();
-                    if !t.is_empty() {
-                        return Some((p.clone(), t.to_string()));
-                    }
-                }
-            }
-            None
-        };
-
-        // Walk up from cwd to filesystem root collecting every CLAUDE.md / AGENTS.md.
-        // Bottom-up collection, then reverse so the broadest ancestor comes first
-        // and the most-specific (closest to cwd) is appended LAST in the prompt.
-        let mut found: Vec<(std::path::PathBuf, String)> = Vec::new();
-        let mut cur = self.cwd.clone();
-        loop {
-            let here = [cur.join("CLAUDE.md"), cur.join("AGENTS.md")];
-            if let Some(hit) = read_first(&here) {
-                if !globals.iter().any(|g| g == &hit.0) {
-                    found.push(hit);
-                }
-            }
-            match cur.parent() {
-                Some(parent) if parent != cur => cur = parent.to_path_buf(),
-                _ => break,
-            }
-        }
-        found.reverse();
-
-        let mut additions = String::new();
-        if let Some((path, text)) = read_first(&globals) {
-            additions.push_str(&format!("\n\n# Global memory ({})\n\n", path.display()));
-            additions.push_str(&text);
-        }
-        for (path, text) in &found {
-            additions.push_str(&format!("\n\n# Project memory ({})\n\n", path.display()));
-            additions.push_str(text);
-        }
-        if !additions.is_empty() {
-            self.system_prompt.push_str(&additions);
-        }
+        crate::memory::apply_to_system_prompt(&mut self.system_prompt, &self.cwd);
     }
 
     /// Discover every installed skill (opencli + Claude Code + Codex + project)
@@ -3243,11 +3198,11 @@ fn default_system_prompt() -> String {
 - If the answer is derivable by reading code or running a command, do that instead. For a free-text answer, just ask in plain text — don't force it into options.
 
 # Subagents (dispatch_agent)
-- `dispatch_agent` spawns a child agent for a large, self-contained sub-task — heavy exploration, multi-file research, a focused review — that would otherwise crowd out this conversation. Issue several in one turn to run them in parallel. Definitions are discovered from `~/.config/opencli/agents/<name>.md`, `~/.claude/agents/` (Claude Code's agents work directly), and the project's `.claude/agents/` or `.opencli/agents/`; `/agents` lists them.
+- `dispatch_agent` spawns a child agent for a large, self-contained sub-task — heavy exploration, multi-file research, a focused review — that would otherwise crowd out this conversation. Issue several in one turn to run them in parallel. Definitions are discovered from opencli (`~/.config/opencli/agents/`), Claude Code (`~/.claude/agents/`), Codex (`~/.codex/agents/` or `$CODEX_HOME/agents`), and the project's `.opencli/agents/`, `.claude/agents/`, or `.codex/agents/`; `/agents` lists them.
 - The child sees only the `prompt` you pass, never this conversation, and returns only its final text. Give it all the context it needs. Don't use it for quick lookups (one or two direct tool calls are cheaper) or for edits the user expects to review step by step.
 
 # Skills
-- The `# Available skills` manifest below lists every installed playbook by name + one-line description. They are discovered from opencli (`~/.config/opencli/skills/`), Claude Code (`~/.claude/skills/`, including plugin libraries), Codex, and the project (`.claude/skills/`, `.opencli/skills/`).
+- The `# Available skills` manifest below lists every installed playbook by name + one-line description. They are discovered from opencli (`~/.config/opencli/skills/`), Claude Code (`~/.claude/skills/` and plugin libraries), Codex (`~/.codex/skills/`, `$CODEX_HOME/skills`, and plugin libraries), and the project (`.opencli/skills/`, `.claude/skills/`, `.codex/skills/`).
 - The manifest is name+description only. When a task clearly matches a skill, call the `skill` tool with its EXACT name to load the full body, then follow it. This progressive disclosure keeps context lean — load only what the task needs, never speculatively, and never twice. `/skills` lists what's installed.
 
 # Plan mode

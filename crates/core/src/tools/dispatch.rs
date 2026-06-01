@@ -334,7 +334,7 @@ impl BuiltinTool for DispatchAgent {
 \n\
 When to use:\n\
 - The work is large enough to warrant its own context (heavy exploration, multi-file research, broad refactor planning) and would crowd out the main conversation if done inline.\n\
-- A specialised sub-agent (defined under ~/.config/opencli/agents/<name>.md) has a tighter tool whitelist and prompt than the main agent, e.g. a `code-explorer` that can only read+grep, or a `security-reviewer` that focuses on a checklist.\n\
+- A specialised sub-agent (defined under any discovered agents directory, such as `~/.config/opencli/agents/<name>.md`, `~/.claude/agents/<name>.md`, or `~/.codex/agents/<name>.md`) has a tighter tool whitelist and prompt than the main agent, e.g. a `code-explorer` that can only read+grep, or a `security-reviewer` that focuses on a checklist.\n\
 - You want to run several independent read-only planning/research sub-tasks in parallel — issue multiple `dispatch_agent` calls with `plan_mode_required: true` in the same turn and they execute concurrently. Dispatches that may write are serialized by the host to avoid file races.\n\
 \n\
 When NOT to use:\n\
@@ -343,7 +343,7 @@ When NOT to use:\n\
 - Editing files the parent should review — when parent approvals are enabled, sub-agents are forced into read-only plan mode because they cannot present nested approval prompts.\n\
 \n\
 Parameters:\n\
-- `subagent_type`: Sub-agent name from the definition's `name:` frontmatter (or the bare filename without `.md`). The file lives at `~/.config/opencli/agents/<name>.md` and looks like:\n\
+- `subagent_type`: Sub-agent name from the definition's `name:` frontmatter (or the bare filename without `.md`). Definitions are discovered from opencli (`~/.config/opencli/agents/`), Claude Code (`~/.claude/agents/`), Codex (`~/.codex/agents/` or `$CODEX_HOME/agents`), and project `.opencli/.claude/.codex` agent directories. A definition looks like:\n\
   ```\n\
   ---\n\
   name: code-explorer\n\
@@ -374,7 +374,7 @@ Behaviour:\n\
             "properties": {
                 "subagent_type": {
                     "type": "string",
-                    "description": "Sub-agent name from frontmatter, or the bare definition filename under ~/.config/opencli/agents (no extension)."
+                    "description": "Sub-agent name from frontmatter, or the bare definition filename under any discovered agents directory (no extension)."
                 },
                 "prompt": {
                     "type": "string",
@@ -413,7 +413,7 @@ Behaviour:\n\
                 .collect::<Vec<_>>();
             if available.is_empty() {
                 anyhow!(
-                    "{e}. No subagents installed yet — create one at ~/.config/opencli/agents/<name>.md"
+                    "{e}. No subagents installed yet — create one at ~/.config/opencli/agents/<name>.md or install Claude/Codex agents under ~/.claude/agents or ~/.codex/agents"
                 )
             } else {
                 anyhow!(

@@ -13,9 +13,10 @@
 //! Sources (most-specific first; first occurrence of a `name` wins):
 //!   - `<cwd>/.opencli/skills/`         project, opencli-native
 //!   - `<cwd>/.claude/skills/`          project, Claude Code
+//!   - `<cwd>/.codex/skills/`           project, Codex
 //!   - `~/.config/opencli/skills/`      opencli global
-//!   - `~/.claude/skills/`              Claude Code global (+ plugin libraries)
-//!   - `~/.codex/skills/`               Codex, if present
+//!   - `~/.claude/skills/` + plugins    Claude Code global
+//!   - `$CODEX_HOME/skills` or `~/.codex/skills` + plugins
 //!
 //! Each skill lives at `<root>/…/<skill>/SKILL.md`; we search recursively so
 //! namespaced layouts like `~/.claude/skills/ecc/<skill>/SKILL.md` are found.
@@ -80,13 +81,33 @@ pub fn skill_roots(cwd: &Path) -> Vec<PathBuf> {
     let mut roots = vec![
         cwd.join(".opencli").join("skills"),
         cwd.join(".claude").join("skills"),
+        cwd.join(".codex").join("skills"),
         skills_dir(),
     ];
     if let Some(home) = dirs::home_dir() {
-        roots.push(home.join(".claude").join("skills"));
-        roots.push(home.join(".codex").join("skills"));
+        append_tool_skill_roots(&mut roots, home.join(".claude"));
+        append_tool_skill_roots(&mut roots, home.join(".codex"));
+    }
+    if let Some(codex_home) = env_path("CODEX_HOME") {
+        append_tool_skill_roots(&mut roots, codex_home);
     }
     roots
+}
+
+fn append_tool_skill_roots(roots: &mut Vec<PathBuf>, tool_home: PathBuf) {
+    push_unique(roots, tool_home.join("skills"));
+    push_unique(roots, tool_home.join("plugins"));
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(std::env::var_os(name)?);
+    (!path.as_os_str().is_empty()).then_some(path)
+}
+
+fn push_unique(roots: &mut Vec<PathBuf>, path: PathBuf) {
+    if !roots.iter().any(|root| root == &path) {
+        roots.push(path);
+    }
 }
 
 /// Recursively collect every `SKILL.md` under `root`, depth-capped and
@@ -397,6 +418,46 @@ mod tests {
             format!("---\nname: {name}\ndescription: {desc}\n---\n{body}\n"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn skill_roots_include_project_codex_and_external_plugin_libraries() {
+        let cwd = PathBuf::from("/repo");
+        let roots = skill_roots(&cwd);
+        assert!(roots.contains(&PathBuf::from("/repo/.codex/skills")));
+
+        let mut external = Vec::new();
+        append_tool_skill_roots(&mut external, PathBuf::from("/home/me/.claude"));
+        append_tool_skill_roots(&mut external, PathBuf::from("/home/me/.codex"));
+        append_tool_skill_roots(&mut external, PathBuf::from("/home/me/.codex"));
+
+        assert_eq!(
+            external,
+            vec![
+                PathBuf::from("/home/me/.claude/skills"),
+                PathBuf::from("/home/me/.claude/plugins"),
+                PathBuf::from("/home/me/.codex/skills"),
+                PathBuf::from("/home/me/.codex/plugins"),
+            ]
+        );
+    }
+
+    #[test]
+    fn discover_finds_skills_inside_plugin_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_root = tmp.path().join("plugins");
+        write_skill(
+            &plugin_root,
+            "marketplace/plugin-a/skills/plugin-skill",
+            "plugin-skill",
+            "from plugin",
+            "plugin body",
+        );
+
+        let entries = discover_in(&[plugin_root]);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "plugin-skill");
     }
 
     #[test]

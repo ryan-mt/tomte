@@ -41,6 +41,15 @@ Beta 4 focuses on making long agent sessions easier to run, inspect, and recover
 - Fixed a plan-approval lockout where typing a follow-up while the agent was planning could make `Y` stop approving the plan.
 - Updated README and in-app slash command discovery for the beta4 release line and `/usage`.
 
+### Claude Code and Codex interoperability
+
+- Expanded inherited memory loading to include global instruction files from `$CODEX_HOME` / `~/.codex`, `~/.claude`, and `~/.config/opencli`, then the git repository root through the session `cwd` (ancestor-first, closest directory last in the prompt).
+- Fixed inherited memory to match Codex-style discovery: at most one file per directory (`AGENTS.override.md` > `AGENTS.md` > `CLAUDE.md`), stop at the git root instead of the filesystem root, cap combined bodies at 32 KiB, and replace the previous memory block on re-apply instead of duplicating it. Fixed candidate-file iteration so a missing `AGENTS.override.md` no longer prevented falling through to `AGENTS.md` / `CLAUDE.md`.
+- Extended skill discovery to project `.codex/skills/`, `$CODEX_HOME/skills` / `~/.codex/skills`, and recursive search under Claude/Codex `plugins/` trees (deduplicated roots).
+- Extended sub-agent discovery to project `.codex/agents/`, `~/.codex/agents`, and `$CODEX_HOME/agents` (deduplicated roots).
+- Updated `dispatch_agent` tool copy, the default system prompt, and TUI `/agents` / `/skills` empty-state messages to document the expanded discovery paths.
+- Added tests for git-scoped walk-up ordering, `AGENTS.override.md` precedence, repo-boundary exclusion, idempotent re-apply, the 32 KiB cap, and Codex/plugin skill and sub-agent roots.
+
 ## 0.0.1-beta.3
 
 Stability beta adding proactive context management and hardening streamed tool calls, reasoning portability, and `/goal` limits.

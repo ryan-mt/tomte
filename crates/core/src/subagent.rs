@@ -31,8 +31,10 @@
 //! other tools directly:
 //!   - `<cwd>/.opencli/agents/`     project, opencli-native
 //!   - `<cwd>/.claude/agents/`      project, Claude Code
+//!   - `<cwd>/.codex/agents/`       project, Codex-compatible
 //!   - `~/.config/opencli/agents/`  opencli global
 //!   - `~/.claude/agents/`          Claude Code global
+//!   - `$CODEX_HOME/agents` or `~/.codex/agents`
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -61,18 +63,34 @@ pub fn subagents_dir() -> PathBuf {
 
 /// Ordered sub-agent root directories, most-specific first. The first root
 /// that defines a given `name` wins, so a project or opencli-native agent can
-/// shadow a global one. Includes `~/.claude/agents/` so opencli can use
-/// Claude Code's sub-agents directly.
+/// shadow a global one. Includes Claude Code and Codex agent directories so
+/// opencli can use those sub-agents directly.
 pub fn subagent_roots(cwd: &Path) -> Vec<PathBuf> {
     let mut roots = vec![
         cwd.join(".opencli").join("agents"),
         cwd.join(".claude").join("agents"),
+        cwd.join(".codex").join("agents"),
         subagents_dir(),
     ];
     if let Some(home) = dirs::home_dir() {
-        roots.push(home.join(".claude").join("agents"));
+        push_unique(&mut roots, home.join(".claude").join("agents"));
+        push_unique(&mut roots, home.join(".codex").join("agents"));
+    }
+    if let Some(codex_home) = env_path("CODEX_HOME") {
+        push_unique(&mut roots, codex_home.join("agents"));
     }
     roots
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(std::env::var_os(name)?);
+    (!path.as_os_str().is_empty()).then_some(path)
+}
+
+fn push_unique(roots: &mut Vec<PathBuf>, path: PathBuf) {
+    if !roots.iter().any(|root| root == &path) {
+        roots.push(path);
+    }
 }
 
 /// Load every `*.md` sub-agent across all roots, deduplicated by `name`
@@ -129,7 +147,7 @@ pub fn load_by_name(cwd: &Path, name: &str) -> Result<SubagentDefinition> {
         return Ok(def);
     }
     Err(anyhow!(
-        "subagent `{name}` not found in any agents directory (looked in ~/.config/opencli/agents, ~/.claude/agents, and project .opencli/.claude)"
+        "subagent `{name}` not found in any agents directory (looked in project .opencli/.claude/.codex, ~/.config/opencli/agents, ~/.claude/agents, and ~/.codex/agents)"
     ))
 }
 
@@ -286,6 +304,26 @@ mod tests {
 
     fn fake(name: &str) -> PathBuf {
         PathBuf::from(format!("/tmp/{name}.md"))
+    }
+
+    #[test]
+    fn subagent_roots_include_project_codex_and_codex_home() {
+        let cwd = PathBuf::from("/repo");
+        let roots = subagent_roots(&cwd);
+        assert!(roots.contains(&PathBuf::from("/repo/.codex/agents")));
+
+        let mut external = Vec::new();
+        push_unique(&mut external, PathBuf::from("/home/me/.claude/agents"));
+        push_unique(&mut external, PathBuf::from("/home/me/.codex/agents"));
+        push_unique(&mut external, PathBuf::from("/home/me/.codex/agents"));
+
+        assert_eq!(
+            external,
+            vec![
+                PathBuf::from("/home/me/.claude/agents"),
+                PathBuf::from("/home/me/.codex/agents"),
+            ]
+        );
     }
 
     #[test]
