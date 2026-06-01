@@ -136,7 +136,11 @@ impl QuotaWindow {
             }
         };
         let body = if let Some(pct) = self.used_percent {
-            format!("{label}: {pct:.1}% used")
+            // Show both directions so the reading is unambiguous regardless of
+            // whether the provider's native UI frames quota as consumed
+            // (Claude: counts up) or remaining (ChatGPT/Codex: counts down).
+            let left = (100.0 - pct).clamp(0.0, 100.0);
+            format!("{label}: {pct:.1}% used ({left:.1}% left)")
         } else if let (Some(rem), Some(lim)) = (self.remaining, self.limit) {
             format!("{label}: {rem}/{lim} remaining")
         } else if let Some(rem) = self.remaining {
@@ -584,7 +588,14 @@ mod tests {
         };
         let out = snap.render(NOW);
         assert!(out.contains("Plan: pro"), "{out}");
-        assert!(out.contains("5-hour: 12.5% used · resets in ~2h"), "{out}");
-        assert!(out.contains("Tokens: 75.0% used · resets in ~6m"), "{out}");
+        // Both directions are shown: consumed and remaining.
+        assert!(
+            out.contains("5-hour: 12.5% used (87.5% left) · resets in ~2h"),
+            "{out}"
+        );
+        assert!(
+            out.contains("Tokens: 75.0% used (25.0% left) · resets in ~6m"),
+            "{out}"
+        );
     }
 }
