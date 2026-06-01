@@ -4,7 +4,6 @@ use anyhow::Result;
 use opencli_core::agent::{Agent, AgentEvent};
 use opencli_core::client::LlmClient;
 use opencli_core::config;
-use opencli_core::provider::Provider;
 use opencli_core::tools::ApprovalMode;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -30,7 +29,7 @@ pub async fn run(
     if let Some(m) = model {
         // Accept an explicit `provider/model` spec from --model; store the bare
         // wire id (matches how config.json values are normalised on load).
-        cfg.model = Provider::parse_model(&m).1;
+        cfg.model = config::normalize_model_name(&m);
     }
     if let Some(r) = reasoning {
         let Some(r) = config::normalize_reasoning_effort(&r) else {

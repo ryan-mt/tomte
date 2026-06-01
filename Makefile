@@ -1,7 +1,13 @@
-.PHONY: build install link link-dev unlink dev fmt check clean
+.PHONY: build package smoke install link link-dev unlink dev fmt check clean
 
 build:
 	cargo build --release --bin opencli
+
+package:
+	@./scripts/package-release.sh
+
+smoke:
+	@./scripts/smoke-release.sh
 
 install: build
 	@./scripts/install-link.sh

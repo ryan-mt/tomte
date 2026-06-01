@@ -9,7 +9,7 @@ pub async fn run(
     let mut cfg = config::load();
     let mut changed = false;
     if let Some(m) = set_model {
-        cfg.model = m;
+        cfg.model = config::normalize_model_name(&m);
         changed = true;
     }
     if let Some(r) = set_reasoning {
@@ -24,6 +24,7 @@ pub async fn run(
     }
     if changed {
         config::save(&cfg)?;
+        cfg = config::load();
         println!("✅  Config updated");
     }
     if show || !changed {

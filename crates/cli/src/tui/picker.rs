@@ -270,85 +270,35 @@ pub fn slash_commands() -> Vec<PickerItem> {
 /// models appear alongside (or instead of) the GPT ones. After `logout`
 /// nothing is signed in and the picker shows a single offline placeholder.
 pub fn models() -> Vec<PickerItem> {
-    use opencli_core::auth::signed_in_providers;
+    use opencli_core::auth::signed_in_model_catalogs;
     use opencli_core::provider::Provider;
 
     let mut items = Vec::new();
-    for p in signed_in_providers() {
-        match p {
-            Provider::OpenAi => {
-                items.extend([
-                    PickerItem {
-                        key: "gpt-5.5".into(),
-                        title: "gpt-5.5".into(),
-                        description: "frontier · default".into(),
-                    },
-                    PickerItem {
-                        key: "gpt-5.4".into(),
-                        title: "gpt-5.4".into(),
-                        description: "previous frontier · stable".into(),
-                    },
-                    PickerItem {
-                        key: "gpt-5.3".into(),
-                        title: "gpt-5.3".into(),
-                        description: "older frontier".into(),
-                    },
-                    PickerItem {
-                        key: "gpt-5-pro".into(),
-                        title: "gpt-5-pro".into(),
-                        description: "more compute for hard problems".into(),
-                    },
-                    PickerItem {
-                        key: "gpt-5-mini".into(),
-                        title: "gpt-5-mini".into(),
-                        description: "fast · cheaper".into(),
-                    },
-                    PickerItem {
-                        key: "gpt-5-nano".into(),
-                        title: "gpt-5-nano".into(),
-                        description: "latency-sensitive".into(),
-                    },
-                ]);
-            }
-            Provider::Anthropic => {
-                items.extend([
-                    PickerItem {
-                        key: "claude-opus-4-8".into(),
-                        title: "claude-opus-4-8".into(),
-                        description: "frontier · most capable".into(),
-                    },
-                    PickerItem {
-                        key: "claude-opus-4-7".into(),
-                        title: "claude-opus-4-7".into(),
-                        description: "previous frontier · long-running agents".into(),
-                    },
-                    PickerItem {
-                        key: "claude-opus-4-6".into(),
-                        title: "claude-opus-4-6".into(),
-                        description: "frontier · previous opus".into(),
-                    },
-                    PickerItem {
-                        key: "claude-opus-4-5".into(),
-                        title: "claude-opus-4-5".into(),
-                        description: "max intelligence · practical".into(),
-                    },
-                    PickerItem {
-                        key: "claude-sonnet-4-6".into(),
-                        title: "claude-sonnet-4-6".into(),
-                        description: "best speed/intelligence balance".into(),
-                    },
-                    PickerItem {
-                        key: "claude-sonnet-4-5".into(),
-                        title: "claude-sonnet-4-5".into(),
-                        description: "high-perf agents · coding".into(),
-                    },
-                    PickerItem {
-                        key: "claude-haiku-4-5".into(),
-                        title: "claude-haiku-4-5".into(),
-                        description: "fastest · near-frontier".into(),
-                    },
-                ]);
-            }
+    for catalog in signed_in_model_catalogs() {
+        for model in catalog.models {
+            let description = match (catalog.provider, *model) {
+                (Provider::OpenAi, "gpt-5.5") => "frontier · default",
+                (Provider::OpenAi, "gpt-5.4") => "previous frontier · stable",
+                (Provider::OpenAi, "gpt-5.3") => "older frontier",
+                (Provider::OpenAi, "gpt-5-pro") => "more compute for hard problems",
+                (Provider::OpenAi, "gpt-5-mini") => "fast · cheaper",
+                (Provider::OpenAi, "gpt-5-nano") => "latency-sensitive",
+                (Provider::Anthropic, "claude-opus-4-8") => "frontier · most capable",
+                (Provider::Anthropic, "claude-opus-4-7") => {
+                    "previous frontier · long-running agents"
+                }
+                (Provider::Anthropic, "claude-opus-4-6") => "frontier · previous opus",
+                (Provider::Anthropic, "claude-opus-4-5") => "max intelligence · practical",
+                (Provider::Anthropic, "claude-sonnet-4-6") => "best speed/intelligence balance",
+                (Provider::Anthropic, "claude-sonnet-4-5") => "high-perf agents · coding",
+                (Provider::Anthropic, "claude-haiku-4-5") => "fastest · near-frontier",
+                _ => "available",
+            };
+            items.push(PickerItem {
+                key: (*model).into(),
+                title: (*model).into(),
+                description: description.into(),
+            });
         }
     }
     // Tag every model with its context window so 1M vs 200K is visible at a
@@ -441,9 +391,11 @@ pub fn efforts(model: &str) -> Vec<PickerItem> {
     };
 
     match Provider::from_model(model) {
-        // OpenAI Responses `reasoning.effort` enum: minimal|low|medium|high|xhigh.
+        // OpenAI ChatGPT/Codex OAuth rejects `minimal` on current GPT-5.4/5.5
+        // models but accepts `none`; keep the picker aligned with the runtime
+        // path so selecting the fastest tier does not 400 the first request.
         Provider::OpenAi => vec![
-            item("minimal", "fastest · minimal reasoning"),
+            item("none", "fastest · no reasoning"),
             item("low", "light reasoning · latency-sensitive"),
             item("medium", "balanced · default"),
             item("high", "deep reasoning for hard tasks"),
@@ -558,9 +510,9 @@ mod effort_tests {
     #[test]
     fn openai_shows_only_openai_tiers() {
         let k = keys("gpt-5.5");
-        assert_eq!(k, ["minimal", "low", "medium", "high", "xhigh"]);
-        // none/max/ultracode are not OpenAI effort levels.
-        for absent in ["none", "max", "ultracode"] {
+        assert_eq!(k, ["none", "low", "medium", "high", "xhigh"]);
+        // minimal/max/ultracode are not offered for OpenAI OAuth models.
+        for absent in ["minimal", "max", "ultracode"] {
             assert!(
                 !k.iter().any(|s| s == absent),
                 "{absent} should be hidden for OpenAI"

@@ -95,6 +95,13 @@ pub fn lookup(id: &str) -> Option<&'static ModelInfo> {
 
 static OPENAI_IDS: Lazy<Vec<&'static str>> = Lazy::new(|| ids_for(Provider::OpenAi));
 static ANTHROPIC_IDS: Lazy<Vec<&'static str>> = Lazy::new(|| ids_for(Provider::Anthropic));
+static OPENAI_CHATGPT_OAUTH_IDS: Lazy<Vec<&'static str>> = Lazy::new(|| {
+    MODELS
+        .iter()
+        .filter(|m| m.provider == Provider::OpenAi && matches!(m.id, "gpt-5.5" | "gpt-5.4"))
+        .map(|m| m.id)
+        .collect()
+});
 
 fn ids_for(provider: Provider) -> Vec<&'static str> {
     MODELS
@@ -111,6 +118,14 @@ pub fn available_models(provider: Provider) -> &'static [&'static str] {
         Provider::OpenAi => OPENAI_IDS.as_slice(),
         Provider::Anthropic => ANTHROPIC_IDS.as_slice(),
     }
+}
+
+/// OpenAI models accepted by the ChatGPT/Codex OAuth backend. The public API-key
+/// catalogue is broader (mini/nano/pro), but the subscription backend rejects
+/// those ids with a request-level 400. Keep the OAuth picker/status list to ids
+/// verified against that backend so users don't select a dead model.
+pub fn openai_chatgpt_oauth_models() -> &'static [&'static str] {
+    OPENAI_CHATGPT_OAUTH_IDS.as_slice()
 }
 
 /// Context-window size (tokens) for any model id. Known ids read the catalogue;
@@ -281,6 +296,18 @@ mod tests {
         assert!(anthropic.iter().all(|id| id.starts_with("claude")));
         assert_eq!(openai[0], "gpt-5.5");
         assert_eq!(anthropic[0], "claude-opus-4-8");
+    }
+
+    #[test]
+    fn chatgpt_oauth_models_exclude_api_key_only_openai_models() {
+        let models = openai_chatgpt_oauth_models();
+        assert_eq!(models, ["gpt-5.5", "gpt-5.4"]);
+        for unsupported in ["gpt-5-pro", "gpt-5-mini", "gpt-5-nano", "gpt-5.3"] {
+            assert!(
+                !models.contains(&unsupported),
+                "{unsupported} should not be suggested for ChatGPT OAuth"
+            );
+        }
     }
 
     #[test]

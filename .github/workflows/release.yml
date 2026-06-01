@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to attach artifacts to, for example v0.0.1-beta.1"
+        description: "Release tag to attach artifacts to, for example v0.0.1-beta.2"
         required: true
         type: string
 
@@ -66,6 +66,7 @@ jobs:
           cp README.md CHANGELOG.md LICENSE "dist/${{ matrix.asset }}/"
           cd dist
           tar -czf "${{ matrix.archive }}" "${{ matrix.asset }}"
+          sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
       - name: Package archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -74,10 +75,14 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/opencli${{ matrix.exe }}" "dist/${{ matrix.asset }}/"
           Copy-Item README.md, CHANGELOG.md, LICENSE "dist/${{ matrix.asset }}/"
           Compress-Archive -Path "dist/${{ matrix.asset }}" -DestinationPath "dist/${{ matrix.archive }}" -Force
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/${{ matrix.archive }}").Hash.ToLower()
+          Set-Content -Path "dist/${{ matrix.archive }}.sha256" -Value "$hash  ${{ matrix.archive }}"
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: ${{ matrix.archive }}
-          path: dist/${{ matrix.archive }}
+          path: |
+            dist/${{ matrix.archive }}
+            dist/${{ matrix.archive }}.sha256
           if-no-files-found: error
 
   publish:

@@ -41,6 +41,28 @@ fn redact_auth_in(body: &str) -> String {
 const API_BASE: &str = "https://api.openai.com/v1";
 const CHATGPT_BACKEND_BASE: &str = "https://chatgpt.com/backend-api/codex";
 
+fn normalize_openai_reasoning_effort(
+    model: &str,
+    effort: &str,
+    is_chatgpt_subscription: bool,
+) -> String {
+    if model == "gpt-5-pro" {
+        return "high".to_string();
+    }
+
+    match effort {
+        // The ChatGPT/Codex OAuth backend for current GPT-5.4/5.5 models rejects
+        // `minimal` and accepts `none`. Public API GPT-5-era models historically
+        // used `minimal`, so keep the old `none -> minimal` shim only there.
+        "none" if !is_chatgpt_subscription => "minimal".to_string(),
+        "minimal" if is_chatgpt_subscription => "none".to_string(),
+        // `max` and Claude Code's `ultracode` aren't OpenAI effort levels; both
+        // clamp to the top OpenAI tier, `xhigh`.
+        "max" | "ultracode" => "xhigh".to_string(),
+        other => other.to_string(),
+    }
+}
+
 pub struct OpenAiClient {
     http: reqwest::Client,
     credential: Credential,
@@ -132,18 +154,13 @@ impl OpenAiClient {
         if self.credential.is_chatgpt_subscription() && req.store.is_none() {
             req.store = Some(false);
         }
-        // The shared `/thinking` picker also offers "none" and "max": valid for
-        // Anthropic's adaptive thinking but rejected by OpenAI's reasoning.effort
-        // enum (minimal|low|medium|high|xhigh) with a 400. Map them to the
-        // nearest OpenAI tier so a picker choice never breaks the OpenAI path.
-        // (The Anthropic client maps these itself in translate.rs.)
         if let Some(reasoning) = req.reasoning.as_mut() {
-            match reasoning.effort.as_deref() {
-                Some("none") => reasoning.effort = Some("minimal".to_string()),
-                // `max` and Claude Code's `ultracode` aren't OpenAI effort
-                // levels; both clamp to the top OpenAI tier, `xhigh`.
-                Some("max") | Some("ultracode") => reasoning.effort = Some("xhigh".to_string()),
-                _ => {}
+            if let Some(effort) = reasoning.effort.as_deref() {
+                reasoning.effort = Some(normalize_openai_reasoning_effort(
+                    &req.model,
+                    effort,
+                    self.credential.is_chatgpt_subscription(),
+                ));
             }
         }
     }
@@ -214,5 +231,44 @@ impl crate::client::ProviderClient for OpenAiClient {
     }
     async fn create(&self, req: ResponsesRequest) -> Result<serde_json::Value> {
         self.create(req).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_openai_reasoning_effort;
+
+    #[test]
+    fn chatgpt_oauth_keeps_none_and_maps_minimal_to_none() {
+        assert_eq!(
+            normalize_openai_reasoning_effort("gpt-5.5", "none", true),
+            "none"
+        );
+        assert_eq!(
+            normalize_openai_reasoning_effort("gpt-5.5", "minimal", true),
+            "none"
+        );
+    }
+
+    #[test]
+    fn public_api_preserves_legacy_none_to_minimal_shim() {
+        assert_eq!(
+            normalize_openai_reasoning_effort("gpt-5", "none", false),
+            "minimal"
+        );
+        assert_eq!(
+            normalize_openai_reasoning_effort("gpt-5", "minimal", false),
+            "minimal"
+        );
+    }
+
+    #[test]
+    fn openai_pro_clamps_every_effort_to_high() {
+        for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            assert_eq!(
+                normalize_openai_reasoning_effort("gpt-5-pro", effort, false),
+                "high"
+            );
+        }
     }
 }

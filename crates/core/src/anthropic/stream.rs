@@ -102,6 +102,71 @@ fn partial_json_delta(delta: Option<&Value>) -> String {
         .unwrap_or_default()
 }
 
+fn string_delta_field(delta: Option<&Value>, keys: &[&str]) -> String {
+    let Some(delta) = delta else {
+        return String::new();
+    };
+    keys.iter()
+        .find_map(|key| delta.get(*key)?.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn text_delta(delta: Option<&Value>) -> String {
+    string_delta_field(delta, &["text", "content", "delta"])
+}
+
+fn thinking_delta(delta: Option<&Value>) -> String {
+    string_delta_field(
+        delta,
+        &[
+            "thinking",
+            "reasoning",
+            "reasoning_text",
+            "reasoningText",
+            "text",
+            "content",
+        ],
+    )
+}
+
+fn signature_delta(delta: Option<&Value>) -> String {
+    string_delta_field(delta, &["signature", "signature_delta", "signatureDelta"])
+}
+
+fn content_block_delta_type(delta: Option<&Value>, block_kind: Option<&str>) -> &'static str {
+    let raw_type = delta
+        .and_then(|d| d.get("type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    match raw_type {
+        "text_delta" | "text" | "content_delta" => return "text_delta",
+        "input_json_delta" | "tool_input_delta" | "arguments_delta" => {
+            return "input_json_delta";
+        }
+        "thinking_delta" | "reasoning_delta" => return "thinking_delta",
+        "signature_delta" => return "signature_delta",
+        _ => {}
+    }
+
+    if !partial_json_delta(delta).is_empty() {
+        return "input_json_delta";
+    }
+    if !signature_delta(delta).is_empty() {
+        return "signature_delta";
+    }
+    if (block_kind == Some("thinking") || block_kind == Some("redacted_thinking"))
+        && !thinking_delta(delta).is_empty()
+    {
+        return "thinking_delta";
+    }
+    if !text_delta(delta).is_empty() {
+        return "text_delta";
+    }
+    "unknown"
+}
+
 /// Bridge an Anthropic SSE response onto a `StreamHandle` carrying
 /// `ResponseStreamEvent`. The returned handle is consumed by the agent loop
 /// just like an OpenAI stream.
@@ -233,18 +298,10 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                     parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0)
                                         as u32;
                                 let delta = parsed.get("delta");
-                                let dtype = delta
-                                    .and_then(|d| d.get("type"))
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                match dtype.as_str() {
+                                let block_kind = blocks.get(&index).map(|b| b.kind.as_str());
+                                match content_block_delta_type(delta, block_kind) {
                                     "text_delta" => {
-                                        let text = delta
-                                            .and_then(|d| d.get("text"))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
+                                        let text = text_delta(delta);
                                         if !text.is_empty() {
                                             let item_id = blocks.get_mut(&index).map(|b| {
                                                 b.text_buf.push_str(&text);
@@ -280,11 +337,7 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                         }
                                     }
                                     "thinking_delta" => {
-                                        let text = delta
-                                            .and_then(|d| d.get("thinking"))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
+                                        let text = thinking_delta(delta);
                                         if !text.is_empty() {
                                             // Buffer the plaintext too so the
                                             // block-stop can replay it alongside
@@ -304,12 +357,10 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                         // arrives in its own delta(s) after the
                                         // thinking text and is required to replay
                                         // the block before tool_use.
-                                        if let Some(sig) = delta
-                                            .and_then(|d| d.get("signature"))
-                                            .and_then(|v| v.as_str())
-                                        {
+                                        let sig = signature_delta(delta);
+                                        if !sig.is_empty() {
                                             if let Some(b) = blocks.get_mut(&index) {
-                                                b.signature_buf.push_str(sig);
+                                                b.signature_buf.push_str(&sig);
                                             }
                                         }
                                     }
@@ -575,6 +626,108 @@ mod tests {
                     )),
                     Ok(Event::default().data(
                         r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partialJson":"{\"path\":\"Cargo.toml\"}"}}"#,
+                    )),
+                    Ok(Event::default().data(r#"{"type":"content_block_stop","index":0}"#)),
+                    Ok(Event::default().data(r#"{"type":"message_stop"}"#)),
+                ];
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_from_response(resp);
+        let mut delta_args = String::new();
+        let mut done_args = String::new();
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            match event.unwrap() {
+                ResponseStreamEvent::FunctionCallArgsDelta { delta, .. } => {
+                    delta_args.push_str(&delta);
+                }
+                ResponseStreamEvent::FunctionCallArgsDone { arguments, .. } => {
+                    done_args = arguments;
+                }
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert_eq!(delta_args, r#"{"path":"Cargo.toml"}"#);
+        assert_eq!(done_args, r#"{"path":"Cargo.toml"}"#);
+    }
+
+    #[tokio::test]
+    async fn content_block_delta_accepts_text_without_delta_type() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let events = vec![
+                    Ok::<Event, Infallible>(Event::default().data(
+                        r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"content_block_delta","index":0,"delta":{"text":"hello"}}"#,
+                    )),
+                    Ok(Event::default().data(r#"{"type":"content_block_stop","index":0}"#)),
+                    Ok(Event::default().data(r#"{"type":"message_stop"}"#)),
+                ];
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_from_response(resp);
+        let mut streamed_text = String::new();
+        let mut done_text = String::new();
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            match event.unwrap() {
+                ResponseStreamEvent::OutputTextDelta { delta, .. } => {
+                    streamed_text.push_str(&delta);
+                }
+                ResponseStreamEvent::OutputTextDone { text, .. } => {
+                    done_text = text;
+                }
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert_eq!(streamed_text, "hello");
+        assert_eq!(done_text, "hello");
+    }
+
+    #[tokio::test]
+    async fn content_block_delta_accepts_tool_args_without_delta_type() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let events = vec![
+                    Ok::<Event, Infallible>(Event::default().data(
+                        r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"content_block_delta","index":0,"delta":{"partial_json":"{\"path\":\"Cargo.toml\"}"}}"#,
                     )),
                     Ok(Event::default().data(r#"{"type":"content_block_stop","index":0}"#)),
                     Ok(Event::default().data(r#"{"type":"message_stop"}"#)),

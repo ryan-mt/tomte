@@ -225,6 +225,16 @@ pub fn clear_credential(record: &mut AuthRecord, target: LogoutTarget) {
     }
 }
 
+pub fn activate_openai_api_key(record: &mut AuthRecord, key: String) {
+    record.mode = AuthMode::OpenaiApiKey;
+    record.api_key = Some(key);
+}
+
+pub fn activate_anthropic_api_key(record: &mut AuthRecord, key: String) {
+    record.mode = AuthMode::AnthropicApiKey;
+    record.anthropic_api_key = Some(key);
+}
+
 #[cfg(test)]
 mod logout_tests {
     use super::*;
@@ -293,5 +303,35 @@ mod logout_tests {
             ..Default::default()
         };
         assert_eq!(effective_mode(&r), AuthMode::AnthropicApiKey);
+    }
+
+    #[test]
+    fn activating_openai_api_key_preserves_oauth_token() {
+        let mut r = AuthRecord {
+            mode: AuthMode::OpenaiOauth,
+            tokens: Some(tok()),
+            ..Default::default()
+        };
+
+        activate_openai_api_key(&mut r, "sk-test".into());
+
+        assert_eq!(r.mode, AuthMode::OpenaiApiKey);
+        assert_eq!(r.api_key.as_deref(), Some("sk-test"));
+        assert!(has_openai_oauth(&r));
+    }
+
+    #[test]
+    fn activating_anthropic_api_key_preserves_oauth_token() {
+        let mut r = AuthRecord {
+            mode: AuthMode::AnthropicOauth,
+            anthropic_tokens: Some(tok()),
+            ..Default::default()
+        };
+
+        activate_anthropic_api_key(&mut r, "sk-ant-test".into());
+
+        assert_eq!(r.mode, AuthMode::AnthropicApiKey);
+        assert_eq!(r.anthropic_api_key.as_deref(), Some("sk-ant-test"));
+        assert!(has_anthropic_oauth(&r));
     }
 }

@@ -2014,9 +2014,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                     .push(Block::System("Usage: /apikey sk-…".to_string()));
             } else {
                 let mut record = auth::load_auth().unwrap_or_default();
-                record.mode = AuthMode::OpenaiApiKey;
-                record.api_key = Some(arg.to_string());
-                record.tokens = None;
+                auth::activate_openai_api_key(&mut record, arg.to_string());
                 match auth::save_auth(&record) {
                     Ok(_) => {
                         app.auth_mode = AuthMode::OpenaiApiKey;
@@ -2087,13 +2085,25 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             for note in extra {
                 msg.push_str(&format!("\n  ({note})"));
             }
+            let coverage = auth::credential_coverage();
+            msg.push_str(&format!(
+                "\n\nCredential coverage:\n  OpenAI OAuth:       {}\n  OpenAI API key:     {}\n  Anthropic OAuth:    {}\n  Anthropic API key:  {}",
+                coverage.openai_oauth.label(),
+                coverage.openai_api_key.label(),
+                coverage.anthropic_oauth.label(),
+                coverage.anthropic_api_key.label(),
+            ));
             app.blocks.push(Block::System(msg));
-            let providers = auth::signed_in_providers();
-            if !providers.is_empty() {
+            let catalogs = auth::signed_in_model_catalogs();
+            if !catalogs.is_empty() {
                 let mut text = String::from("Available models:");
-                for p in providers {
-                    text.push_str(&format!("\n  {} ({}):", p.display_name(), p));
-                    for m in p.available_models() {
+                for catalog in catalogs {
+                    text.push_str(&format!(
+                        "\n  {} ({}):",
+                        catalog.provider.display_name(),
+                        catalog.provider
+                    ));
+                    for m in catalog.models {
                         let win = opencli_core::agent::context_window_label(m);
                         text.push_str(&format!("\n    · {m:<20} ({win} context)"));
                     }
@@ -2108,7 +2118,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             } else {
                 // Accept an explicit `provider/model` spec; store the bare wire
                 // id used everywhere downstream.
-                let model = Provider::parse_model(arg).1;
+                let model = config::normalize_model_name(arg);
                 app.config.model = model.clone();
                 if let Err(e) = config::save(&app.config) {
                     app.blocks
@@ -3357,6 +3367,11 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
         AgentEvent::Error { message } => {
             collapse_reasoning_into_thought(app);
             finish_open_assistant_block(&mut app.blocks);
+            if let Some(goal) = app.active_goal.as_mut() {
+                goal.waiting_for_user = true;
+                goal.last_summary = Some(format!("paused after turn error: {message}"));
+                app.pending_session_save = true;
+            }
             if is_context_overflow(&message) {
                 // The provider rejected the request because the conversation
                 // outgrew its real context window before compaction could free
@@ -3998,6 +4013,32 @@ mod tests {
 
         let goal = app.active_goal.as_ref().expect("goal should remain active");
         assert!(goal.waiting_for_user);
+        assert!(app.message_queue.is_empty());
+        assert!(app.pending_session_save);
+    }
+
+    #[test]
+    fn active_goal_pauses_after_agent_error() {
+        let mut app = App::new();
+        app.active_goal = Some(ActiveGoal::new("finish verification".to_string()));
+        app.busy = true;
+        app.turn_started_at = Some(std::time::Instant::now());
+
+        apply_agent_event(
+            &mut app,
+            AgentEvent::Error {
+                message: "provider 400 invalid schema".to_string(),
+            },
+        );
+
+        let goal = app.active_goal.as_ref().expect("goal should remain active");
+        assert!(goal.waiting_for_user);
+        assert_eq!(
+            goal.last_summary.as_deref(),
+            Some("paused after turn error: provider 400 invalid schema")
+        );
+        assert!(!app.busy);
+        assert!(app.turn_started_at.is_none());
         assert!(app.message_queue.is_empty());
         assert!(app.pending_session_save);
     }

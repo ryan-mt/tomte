@@ -2,12 +2,14 @@
 
 A coding-agent CLI written in **Rust** — built to be a drop-in replacement for Claude Code.
 
-Current release line: `0.0.1-beta.1`.
+Current release line: `0.0.1-beta.2`.
 
-Backed by the OpenAI Responses API (latest GPT-5.x family) with two authentication modes:
+Backed by OpenAI and Anthropic model adapters with multiple authentication modes:
 
-- **OAuth ChatGPT** — sign in with a ChatGPT Plus/Pro/Team/Enterprise account and use your subscription quota.
-- **API key** — set `OPENAI_API_KEY` or store one with `opencli login --api-key`.
+- **OpenAI OAuth ChatGPT** — sign in with a ChatGPT Plus/Pro/Team/Enterprise account and use your subscription quota.
+- **OpenAI API key** — set `OPENAI_API_KEY` or store one with `opencli login --api-key --provider openai`.
+- **Anthropic OAuth** — sign in with a Claude Pro/Max account after acknowledging the ToS warning.
+- **Anthropic API key** — set `ANTHROPIC_API_KEY` or store one with `opencli login --api-key --provider anthropic`.
 
 Full **tool calling** surface: `read_file`, `write_file`, `edit_file`, `multi_edit`, `list_dir`, `grep`, `glob`, `run_shell`, `bash_output`, `kill_shell`, `todo_write`, `goal_update`, `enter_plan_mode`, `exit_plan_mode`, `dispatch_agent`, `ask_user_question`, `web_fetch`, `web_search`, `notebook_edit`, and `skill`. Streaming SSE, parallel tool execution, reasoning summary, strict JSON-schema validation, and compatibility aliases for multiple provider tool-call shapes.
 
@@ -121,7 +123,13 @@ cargo run                     # interactive TUI
 cargo fmt --all -- --check    # formatting gate
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace        # run the test suite
+make package                  # build local release archive + SHA256
+make smoke                    # run local release smoke checks
 ```
+
+Set `OPENCLI_LIVE_SMOKE=1` when running `make smoke` to also verify live OpenAI
+and Anthropic chat/tool-call paths using the credentials already stored on the
+machine.
 
 ## Supported models
 

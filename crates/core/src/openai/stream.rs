@@ -137,7 +137,6 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let s = |k: &str| -> String { string_value(value.get(k)).unwrap_or_default() };
     let opt_s = |k: &str| -> Option<String> { string_value(value.get(k)) };
     let u = |k: &str| -> u32 { value.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as u32 };
 
@@ -157,13 +156,21 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         // across Responses API revisions and the ChatGPT backend.
         "response.output_text.delta" | "response.text.delta" | "response.message.delta" => {
             ResponseStreamEvent::OutputTextDelta {
-                delta: s("delta"),
+                delta: first_text_string(
+                    &value,
+                    &["delta", "text", "content", "output_text", "outputText"],
+                )
+                .unwrap_or_default(),
                 item_id: opt_s("item_id"),
             }
         }
         "response.output_text.done" | "response.text.done" | "response.message.done" => {
             ResponseStreamEvent::OutputTextDone {
-                text: s("text"),
+                text: first_text_string(
+                    &value,
+                    &["text", "content", "output_text", "outputText", "delta"],
+                )
+                .unwrap_or_default(),
                 item_id: opt_s("item_id"),
             }
         }
@@ -237,14 +244,36 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         "response.reasoning_summary_text.delta"
         | "response.reasoning_summary.delta"
         | "response.reasoning.delta"
-        | "response.reasoning_text.delta" => {
-            ResponseStreamEvent::ReasoningDelta { delta: s("delta") }
-        }
+        | "response.reasoning_text.delta" => ResponseStreamEvent::ReasoningDelta {
+            delta: first_text_string(
+                &value,
+                &[
+                    "delta",
+                    "text",
+                    "content",
+                    "summary",
+                    "reasoning",
+                    "thinking",
+                ],
+            )
+            .unwrap_or_default(),
+        },
         "response.reasoning_summary_text.done"
         | "response.reasoning_summary.done"
         | "response.reasoning.done"
         | "response.reasoning_text.done" => ResponseStreamEvent::ReasoningDone {
-            text: s("text"),
+            text: first_text_string(
+                &value,
+                &[
+                    "text",
+                    "content",
+                    "summary",
+                    "reasoning",
+                    "thinking",
+                    "delta",
+                ],
+            )
+            .unwrap_or_default(),
             signature: None,
         },
         "response.completed" => ResponseStreamEvent::Completed {
@@ -259,7 +288,7 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
                 .and_then(|e| e.get("message"))
                 .and_then(|m| m.as_str())
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| s("message")),
+                .unwrap_or_else(|| string_value(value.get("message")).unwrap_or_default()),
         },
         "" => ResponseStreamEvent::Other {
             kind: "(no type)".into(),
@@ -325,6 +354,55 @@ fn first_argument_string(value: &Value, keys: &[&str]) -> Option<String> {
                 .get("output_item")
                 .and_then(|item| first_argument_string(item, keys))
         })
+}
+
+fn first_text_string(value: &Value, keys: &[&str]) -> Option<String> {
+    first_text_value(value, keys)
+        .or_else(|| {
+            value
+                .get("item")
+                .and_then(|item| first_text_string(item, keys))
+        })
+        .or_else(|| {
+            value
+                .get("output_item")
+                .and_then(|item| first_text_string(item, keys))
+        })
+}
+
+fn first_text_value(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| text_string_value(value.get(*key)))
+}
+
+fn text_string_value(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::Null => None,
+        Value::String(s) if s.is_empty() => None,
+        Value::String(s) => Some(s.clone()),
+        Value::Array(parts) => {
+            let mut out = String::new();
+            for part in parts {
+                if let Some(piece) = text_string_value(Some(part)) {
+                    out.push_str(&piece);
+                }
+            }
+            if out.is_empty() {
+                None
+            } else {
+                Some(out)
+            }
+        }
+        Value::Object(obj) => {
+            for key in ["text", "content", "output_text", "outputText", "delta"] {
+                if let Some(text) = text_string_value(obj.get(key)) {
+                    return Some(text);
+                }
+            }
+            None
+        }
+        Value::Number(_) | Value::Bool(_) => None,
+    }
 }
 
 fn first_argument_value(value: &Value, keys: &[&str]) -> Option<String> {
@@ -440,6 +518,50 @@ mod tests {
                 assert_eq!(delta, r#"{"path""#);
             }
             other => panic!("expected FunctionCallArgsDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_text_delta_accepts_text_alias() {
+        let ev =
+            parse_event(r#"{"type":"response.output_text.delta","item_id":"msg_1","text":"Hi"}"#)
+                .unwrap();
+
+        match ev {
+            ResponseStreamEvent::OutputTextDelta { delta, item_id } => {
+                assert_eq!(item_id.as_deref(), Some("msg_1"));
+                assert_eq!(delta, "Hi");
+            }
+            other => panic!("expected OutputTextDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_text_delta_accepts_object_delta_text() {
+        let ev =
+            parse_event(r#"{"type":"response.message.delta","delta":{"type":"text","text":"Hi"}}"#)
+                .unwrap();
+
+        match ev {
+            ResponseStreamEvent::OutputTextDelta { delta, .. } => {
+                assert_eq!(delta, "Hi");
+            }
+            other => panic!("expected OutputTextDelta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_reasoning_delta_accepts_content_alias() {
+        let ev = parse_event(
+            r#"{"type":"response.reasoning.delta","content":[{"type":"text","text":"thinking"}]}"#,
+        )
+        .unwrap();
+
+        match ev {
+            ResponseStreamEvent::ReasoningDelta { delta } => {
+                assert_eq!(delta, "thinking");
+            }
+            other => panic!("expected ReasoningDelta, got {other:?}"),
         }
     }
 

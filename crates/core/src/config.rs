@@ -146,6 +146,15 @@ pub fn migrate_legacy_model_name(name: &str) -> String {
     }
 }
 
+/// Normalize a model id accepted from config/CLI/UI. Built-in provider prefixes
+/// (`openai/…`, `anthropic/…`) are stripped to the wire id; unknown prefixes are
+/// preserved so custom OpenAI-compatible providers keep routing through
+/// `Config.providers`.
+pub fn normalize_model_name(name: &str) -> String {
+    let (_, bare) = crate::provider::Provider::parse_model(name.trim());
+    migrate_legacy_model_name(&bare)
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -191,11 +200,10 @@ pub fn load() -> Config {
         },
         Err(_) => Config::default(),
     };
-    // Normalise the configured model: accept an explicit `provider/model` spec
-    // (strip the prefix to the bare wire id used everywhere downstream), then
-    // auto-upgrade legacy placeholder names from earlier opencli builds.
-    let (_, bare) = crate::provider::Provider::parse_model(&cfg.model);
-    let normalized = migrate_legacy_model_name(&bare);
+    // Normalise the configured model: accept an explicit built-in
+    // `provider/model` spec, preserve custom provider specs, then auto-upgrade
+    // legacy placeholder names from earlier opencli builds.
+    let normalized = normalize_model_name(&cfg.model);
     if normalized != cfg.model {
         tracing::info!(
             old = %cfg.model,
@@ -248,6 +256,7 @@ fn unique_tmp_path(path: &Path) -> PathBuf {
 /// down). OpenAI models are untouched.
 fn persist_view(cfg: &Config) -> Config {
     let mut out = cfg.clone();
+    out.model = normalize_model_name(&out.model);
     if out.reasoning_effort == "max"
         && crate::provider::Provider::from_model(&out.model) == crate::provider::Provider::Anthropic
     {
@@ -276,6 +285,16 @@ mod tests {
         let p = super::persist_view(&cfg);
         assert_eq!(p.reasoning_effort, "xhigh");
         assert_eq!(cfg.reasoning_effort, "max");
+    }
+
+    #[test]
+    fn persist_view_downgrades_max_for_prefixed_anthropic_model() {
+        let mut cfg = Config::default();
+        cfg.model = "anthropic/claude-opus-4-7".into();
+        cfg.reasoning_effort = "max".into();
+        let p = super::persist_view(&cfg);
+        assert_eq!(p.model, "claude-opus-4-7");
+        assert_eq!(p.reasoning_effort, "xhigh");
     }
 
     #[test]
@@ -314,6 +333,19 @@ mod tests {
         ] {
             assert_eq!(migrate_legacy_model_name(name), name);
         }
+    }
+
+    #[test]
+    fn normalize_model_name_strips_builtin_prefixes_but_keeps_custom_providers() {
+        assert_eq!(
+            normalize_model_name("anthropic/claude-opus-4-8"),
+            "claude-opus-4-8"
+        );
+        assert_eq!(normalize_model_name("openai/gpt-5"), "gpt-5.5");
+        assert_eq!(
+            normalize_model_name("groq/gpt-oss-120b"),
+            "groq/gpt-oss-120b"
+        );
     }
 
     #[test]

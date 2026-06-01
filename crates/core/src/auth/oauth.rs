@@ -140,7 +140,6 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
         // of the self-healing re-login path.
         let mut record = load_auth().unwrap_or_default();
         record.mode = AuthMode::OpenaiOauth;
-        record.api_key = None;
         record.tokens = Some(StoredTokens {
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token,

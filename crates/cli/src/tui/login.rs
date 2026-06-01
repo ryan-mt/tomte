@@ -176,15 +176,11 @@ impl LoginScreen {
                 let mut record = auth::load_auth().unwrap_or_default();
                 let mode = match provider {
                     Provider::OpenAi => {
-                        record.mode = AuthMode::OpenaiApiKey;
-                        record.api_key = Some(key_str);
-                        record.tokens = None;
+                        auth::activate_openai_api_key(&mut record, key_str);
                         AuthMode::OpenaiApiKey
                     }
                     Provider::Anthropic => {
-                        record.mode = AuthMode::AnthropicApiKey;
-                        record.anthropic_api_key = Some(key_str);
-                        record.anthropic_tokens = None;
+                        auth::activate_anthropic_api_key(&mut record, key_str);
                         AuthMode::AnthropicApiKey
                     }
                 };

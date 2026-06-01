@@ -68,7 +68,7 @@ enum Command {
     },
 }
 
-fn init_tracing(tui_mode: bool) {
+fn init_tracing(stderr_logs: bool) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -87,12 +87,12 @@ fn init_tracing(tui_mode: bool) {
         .append(true)
         .open(&log_path)
         .ok();
-    // The full-screen TUI owns the terminal (alternate screen + raw mode);
-    // writing logs to stderr there scribbles over the ratatui display and
-    // desyncs its diff renderer (stale, overlapping text). In TUI mode log to
-    // the file only; keep stderr for one-shot commands.
+    // The full-screen TUI owns the terminal (alternate screen + raw mode), and
+    // headless JSON mode promises stdout as one AgentEvent per line for scripts.
+    // In those modes log to the file only; keep stderr for human one-shot
+    // commands.
     let stderr_layer =
-        (!tui_mode).then(|| tracing_subscriber::fmt::layer().with_writer(std::io::stderr));
+        stderr_logs.then(|| tracing_subscriber::fmt::layer().with_writer(std::io::stderr));
     let registry = tracing_subscriber::registry()
         .with(env_filter)
         .with(stderr_layer);
@@ -106,14 +106,24 @@ fn init_tracing(tui_mode: bool) {
     }
 }
 
+fn command_uses_json_output(command: &Option<Command>) -> bool {
+    matches!(
+        command,
+        Some(Command::Chat { output_format, .. })
+            if matches!(output_format.trim().to_ascii_lowercase().as_str(), "json" | "stream-json")
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // `opencli` and `opencli resume` launch the full-screen TUI, which owns the
-    // terminal — logs must go to the file only there, not stderr.
+    // terminal. JSON chat output is also machine-readable, so logs must not share
+    // stderr with script consumers there either.
     let tui_mode = matches!(cli.command, None | Some(Command::Resume));
-    init_tracing(tui_mode);
+    let json_output_mode = command_uses_json_output(&cli.command);
+    init_tracing(!tui_mode && !json_output_mode);
 
     match cli.command {
         None if cli.plan_mode_required => tui::run_plan_mode_required().await,
@@ -183,5 +193,21 @@ mod tests {
             Cli::try_parse_from(["opencli", "chat", "--plan-mode-required", "inspect"]).unwrap();
 
         assert!(cli.plan_mode_required);
+    }
+
+    #[test]
+    fn json_chat_output_disables_stderr_tracing() {
+        let cli =
+            Cli::try_parse_from(["opencli", "chat", "--output-format", "json", "hi"]).unwrap();
+        assert!(command_uses_json_output(&cli.command));
+
+        let stream_cli =
+            Cli::try_parse_from(["opencli", "chat", "--output-format", "stream-json", "hi"])
+                .unwrap();
+        assert!(command_uses_json_output(&stream_cli.command));
+
+        let text_cli =
+            Cli::try_parse_from(["opencli", "chat", "--output-format", "text", "hi"]).unwrap();
+        assert!(!command_uses_json_output(&text_cli.command));
     }
 }

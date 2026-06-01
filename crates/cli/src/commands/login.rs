@@ -68,9 +68,7 @@ async fn login_openai_api_key() -> Result<()> {
         anyhow::bail!("API key is empty");
     }
     let mut record = auth::load_auth().unwrap_or_default();
-    record.mode = AuthMode::OpenaiApiKey;
-    record.api_key = Some(key);
-    record.tokens = None;
+    auth::activate_openai_api_key(&mut record, key);
     auth::save_auth(&record)?;
     println!("✅  OpenAI API key saved.");
     Ok(())
@@ -82,9 +80,7 @@ async fn login_anthropic_api_key() -> Result<()> {
         anyhow::bail!("API key is empty");
     }
     let mut record = auth::load_auth().unwrap_or_default();
-    record.mode = AuthMode::AnthropicApiKey;
-    record.anthropic_api_key = Some(key);
-    record.anthropic_tokens = None;
+    auth::activate_anthropic_api_key(&mut record, key);
     auth::save_auth(&record)?;
     println!("✅  Anthropic API key saved.");
     Ok(())
@@ -176,15 +172,19 @@ fn prompt_secret(prompt: &str) -> Result<String> {
 /// currently signed in to. Hidden entirely when no credentials exist so the
 /// user sees a clean prompt after `logout`.
 fn print_available_models() {
-    let providers = auth::signed_in_providers();
-    if providers.is_empty() {
+    let catalogs = auth::signed_in_model_catalogs();
+    if catalogs.is_empty() {
         return;
     }
     println!();
     println!("  Available models:");
-    for p in providers {
-        println!("    {} ({}):", p.display_name(), p);
-        for m in p.available_models() {
+    for catalog in catalogs {
+        println!(
+            "    {} ({}):",
+            catalog.provider.display_name(),
+            catalog.provider
+        );
+        for m in catalog.models {
             let win = opencli_core::agent::context_window_label(m);
             println!("      · {m:<20} ({win} context)");
         }
@@ -226,6 +226,22 @@ pub async fn status() -> Result<()> {
     if auth::has_openai_api_key(&record) && !matches!(active_mode, AuthMode::OpenaiApiKey) {
         println!("  (OpenAI API key is also stored)");
     }
+    let coverage = auth::credential_coverage();
+    println!();
+    println!("  Credential coverage:");
+    println!("    OpenAI OAuth:       {}", coverage.openai_oauth.label());
+    println!(
+        "    OpenAI API key:     {}",
+        coverage.openai_api_key.label()
+    );
+    println!(
+        "    Anthropic OAuth:    {}",
+        coverage.anthropic_oauth.label()
+    );
+    println!(
+        "    Anthropic API key:  {}",
+        coverage.anthropic_api_key.label()
+    );
     print_available_models();
     Ok(())
 }

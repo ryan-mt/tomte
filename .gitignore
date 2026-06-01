@@ -1,4 +1,6 @@
 /target
+/dist
+CLAUDE.md
 **/*.rs.bk
 Cargo.lock.bak
 
