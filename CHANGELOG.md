@@ -2,24 +2,44 @@
 
 ## 0.0.1-beta.4
 
-Daemon-free code intelligence, isolated git worktrees, progressive MCP tool disclosure, a stale-file edit guard, a non-blocking `wait` tool, task dependencies, a context-window inspector, git/PR slash commands, a headless scheduler entry point, and several TUI and credential fixes.
+Beta 4 focuses on making long agent sessions easier to run, inspect, and recover: better context/quota visibility, safer file and shell behavior, more Claude Code-compatible tools, and release-ready TUI polish.
 
-- Added the `wait` tool: a non-blocking sleep (1–120s, capped under the tool hard timeout) the model can use for poll-and-wait loops instead of `run_shell {command: "sleep N"}`, so a pause no longer ties up a shell slot. It is read-only and joins the parallel batch.
-- Added task dependencies to `todo_write`: each item may carry an `id` and a `blockedBy` list, and the tool reports which items are unblocked now (all blockers completed). The live todo panel dims blocked items. Plain flat lists are unchanged and old session records round-trip as before.
-- Added a `/context` (alias `/ctx`) inspector: the real provider-reported context occupancy as the headline plus a chars/4 estimate of where the visible conversation is spending context (tool I/O, assistant text, reasoning, user, system), so you can see *why* a session is about to microcompact.
-- Added `/commit` and `/commit-push-pr` slash commands: they queue a templated agent task carrying a git safety protocol (never `--amend`/`--no-verify`/force-push/push-to-main without being asked, stage deliberately, write a Conventional-Commits message from the real diff). `/commit-push-pr` also branches off `main`, pushes, and opens a PR via `gh`.
-- Added a headless scheduler entry point: `opencli run` (alias of `chat`) plus `--cwd` and `--prompt-file`, so a cron/systemd job can fire the agent once in a chosen directory with the prompt read from a file — the foundation for scheduled runs.
-- Added the `lsp` tool for daemon-free code intelligence — document and workspace symbols, go-to-definition, references, and hover — language-aware for Rust, TypeScript/JavaScript, Python, and Go, so the model can navigate code more precisely than with grep.
-- Added isolated git worktrees via the `enter_worktree`/`exit_worktree` tools and a `/worktree` slash command (`/worktree create [name]`, `/worktree exit keep|remove [--discard]`), so a session can branch into its own worktree and clean up safely afterward.
-- Added `tool_search` for progressive MCP tool disclosure: when more than 12 MCP tools are connected, their schemas are deferred and the model loads only the ones a task needs on demand, saving tens of thousands of tokens per request. Built-in tools and small MCP setups are unchanged.
-- Added stale-file detection to `edit_file`, `multi_edit`, and `write_file`: if a file changed on disk since it was last read, the edit is refused until you re-read it, so an edit never lands on bytes the model never saw.
-- Improved `run_shell` output to match Claude Code: stderr in red with no separator box, a compact `Error (exit N)` footer on failure, and more output kept inline when a command fails.
-- Improved credential safety: `config.json` is now written with owner-only (`0600`) permissions on Unix, and `config --show` redacts provider API keys so they never reach the terminal or scrollback.
-- Hardened `run_shell` destructive-command detection: absolute-path command invocations such as `/bin/rm`, `/usr/bin/git`, `/sbin/mkfs.*`, and `/usr/bin/curl | /bin/sh` are now normalized before classification, closing bypasses around the dangerous-command confirmation gate.
-- Hardened `dispatch_agent` cwd handling: sub-agent `cwd` overrides are now canonicalized and must stay under the parent session cwd, preventing an absolute or `..` path from expanding a child agent's filesystem sandbox.
-- Fixed the TUI getting progressively garbled over long sessions: ANSI color codes, tabs, and carriage returns in tool output (e.g. colorized `cargo`/`rustc`) were leaking into the terminal and corrupting the display. Rendered text is now sanitized.
-- Fixed deferred MCP tools disappearing after a working-directory change mid-session; they stay advertised and callable now.
-- Fixed a plan-approval lockout where typing a follow-up message while the agent was planning could make the `Y` approval key stop responding.
+### Highlights
+
+- Added daemon-free code intelligence with the `lsp` tool: document/workspace symbols, go-to-definition, references, and hover for Rust, TypeScript/JavaScript, Python, and Go.
+- Added isolated git worktrees through `enter_worktree`/`exit_worktree` plus `/worktree create [name]` and `/worktree exit keep|remove [--discard]` in the TUI.
+- Added `/usage` for live provider quota/rate-limit status, separate from `/cost`'s local token tally and USD estimate.
+- Added `/context` (`/ctx`) to show real context-window usage plus a rough breakdown of where the visible conversation is spending tokens.
+- Added `tool_search` for progressive MCP tool disclosure when many MCP tools are connected, reducing per-request schema bloat.
+
+### New tools and commands
+
+- Added `wait`, a non-blocking 1–120s sleep for poll-and-wait loops that does not occupy a foreground shell slot.
+- Added task dependencies to `todo_write` with `id` and `blockedBy`, including unblocked-task summaries and dimmed blocked items in the live todo panel.
+- Added stale-file guards to `edit_file`, `multi_edit`, and `write_file` so writes are refused when the file changed after the model last read it.
+- Added `/commit` and `/commit-push-pr` slash commands with a git safety protocol, Conventional Commit generation, optional branch push, and PR creation via `gh`.
+- Added `opencli run` as an alias for headless `chat`, plus `--cwd` and `--prompt-file` for cron/systemd-style scheduled runs.
+
+### Reliability and recovery
+
+- Hardened OpenAI Responses, OpenAI Chat Completions, and Anthropic streaming against early SSE connection drops. Pre-output drops retry the turn; drops after usable text or a completed tool call finalize the streamed work, while incomplete tool calls are skipped instead of executing partial arguments.
+- Captured provider quota from response headers and Codex `codex.rate_limits` events without extra API calls, covering ChatGPT/Codex OAuth, OpenAI API keys, Claude OAuth, and Anthropic API keys.
+- Increased `dispatch_agent`'s outer hard timeout independently of ordinary tools, so long repo-audit subagents are not cut off by the default per-tool cap.
+- Kept deferred MCP tools available after working-directory changes mid-session.
+
+### Safety and security
+
+- Hardened `dispatch_agent` cwd overrides: child cwd values are canonicalized and must stay under the parent session cwd.
+- Hardened `run_shell` destructive-command detection for absolute program paths such as `/bin/rm`, `/usr/bin/git`, `/sbin/mkfs.*`, and `/usr/bin/curl | /bin/sh`.
+- Wrote `config.json` with owner-only permissions on Unix and redacted provider API keys from `config --show`.
+- Preserved sub-agent approval safety: when nested approvals cannot be surfaced, sub-agents run in enforced plan mode rather than silently bypassing review.
+
+### TUI polish and fixes
+
+- Improved `run_shell` rendering to match Claude Code more closely: red stderr, no separator box, compact `Error (exit N)` footer, and more failed-command output kept inline.
+- Fixed long-session TUI garbling by sanitizing ANSI codes, tabs, and carriage returns before rendering tool output.
+- Fixed a plan-approval lockout where typing a follow-up while the agent was planning could make `Y` stop approving the plan.
+- Updated README and in-app slash command discovery for the beta4 release line and `/usage`.
 
 ## 0.0.1-beta.3
 

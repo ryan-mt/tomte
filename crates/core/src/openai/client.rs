@@ -207,7 +207,17 @@ impl OpenAiClient {
             };
             return Err(anyhow!("OpenAI {} {}", status, redact_auth_in(&text)));
         }
-        Ok(StreamHandle::from_response(resp))
+        // Capture rate-limit/quota headers before the body stream is consumed.
+        // ChatGPT/Codex subscription creds expose `x-codex-*`; api.openai.com
+        // keys expose `x-ratelimit-*` — `parse_rate_limit_headers` branches on
+        // `is_chatgpt_subscription`.
+        let quota = crate::usage::parse_rate_limit_headers(
+            resp.headers(),
+            crate::provider::Provider::OpenAi,
+            self.credential.is_chatgpt_subscription(),
+            chrono::Utc::now().timestamp(),
+        );
+        Ok(StreamHandle::from_response(resp).with_quota(quota))
     }
 }
 

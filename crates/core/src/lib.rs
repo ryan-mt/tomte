@@ -16,5 +16,6 @@ pub mod skill;
 pub mod subagent;
 mod tool_args;
 pub mod tools;
+pub mod usage;
 
 pub use anyhow::{Error, Result};

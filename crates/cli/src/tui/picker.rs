@@ -218,6 +218,11 @@ pub fn slash_commands() -> Vec<PickerItem> {
         item("verbosity", "/verbosity", "change output verbosity"),
         item("cost", "/cost", "show token usage and estimated cost"),
         item(
+            "usage",
+            "/usage",
+            "show the provider's real quota / rate-limit status",
+        ),
+        item(
             "context",
             "/context",
             "show context-window usage + composition",

@@ -26,6 +26,11 @@ use crate::subagent::{load_all, load_by_name, resolve_model_alias};
 /// Process-wide sequence for unique sub-agent ids in the live fleet view.
 static SUBAGENT_SEQ: AtomicU64 = AtomicU64::new(1);
 
+/// Sub-agent tasks may legitimately spend several model/tool round-trips on a
+/// repo audit. Keep ordinary tools at the agent's 180s default, but do not cut a
+/// child agent off before it can return a useful finding.
+const DISPATCH_AGENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 const DEFAULT_SUBAGENT_TYPE: &str = "general-purpose";
 
 /// Short, human label for the tool a sub-agent just started — surfaced in the
@@ -318,6 +323,10 @@ fn mode_requires_plan(mode: &str) -> bool {
 impl BuiltinTool for DispatchAgent {
     fn name(&self) -> &'static str {
         "dispatch_agent"
+    }
+
+    fn timeout(&self) -> std::time::Duration {
+        DISPATCH_AGENT_TIMEOUT
     }
 
     fn description(&self) -> &'static str {

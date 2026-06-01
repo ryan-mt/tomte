@@ -11,12 +11,6 @@ use tokio::sync::{mpsc, Mutex};
 /// forever with no way to recover.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Per-tool execution hard cap. A misbehaving tool (e.g. an MCP server that
-/// stops responding) used to be able to wedge the whole turn indefinitely.
-/// `run_shell` already enforces its own foreground timeout internally; this
-/// outer cap is generous enough to clear it (default 120s) plus margin.
-const TOOL_HARD_TIMEOUT: Duration = Duration::from_secs(180);
-
 /// Backstop on tool-call round-trips within a single user turn. Each iteration
 /// is one model response; the loop only ends naturally when the model replies
 /// without a tool call. A model wedged in a call→result→call cycle (e.g. a
@@ -29,6 +23,14 @@ const MAX_AGENT_STEPS: usize = 250;
 /// overflow (shed tool-output bulk and retry) before giving up and surfacing the
 /// error. Bounded so a history that can't be shrunk further can't spin forever.
 const MAX_OVERFLOW_RECOVERIES: usize = 2;
+
+/// How many times a single turn may retry after the SSE stream ends before its
+/// terminal event *without having produced any answer content yet*. This case is
+/// a transport truncation (the connection dropped before the model said
+/// anything), so re-sending the identical request is safe — nothing was
+/// committed to history or shown to the user. Bounded so a persistently broken
+/// connection surfaces the error instead of spinning.
+const MAX_STREAM_RECOVERIES: usize = 2;
 
 /// Heuristic match for a provider's "input too large for the context window"
 /// rejection across OpenAI / Anthropic / OpenAI-compatible phrasings. The single
@@ -43,6 +45,67 @@ pub fn is_context_overflow_message(message: &str) -> bool {
         || m.contains("too many tokens")
         || m.contains("exceeds the context")
         || m.contains("reduce the length")
+}
+
+/// A streamed response whose SSE feed ended before its terminal event
+/// (`response.completed` / `message_stop` / `[DONE]`). Emitted by every
+/// provider stream pump (`openai`, `anthropic`, `chat`), so match on the shared
+/// "ended before" phrasing rather than one provider's exact wording.
+fn is_stream_truncation_error(message: &str) -> bool {
+    message.contains("ended before")
+}
+
+/// A transport-level failure surfaced by a stream pump (TCP reset, decode error)
+/// rather than a model/usage error. Safe to retry only when nothing was produced
+/// yet — see `MAX_STREAM_RECOVERIES`.
+fn is_stream_transport_error(message: &str) -> bool {
+    message.contains("transport")
+}
+
+#[cfg(test)]
+mod stream_error_tests {
+    use super::{is_stream_transport_error, is_stream_truncation_error};
+
+    #[test]
+    fn classifies_each_provider_truncation_message() {
+        // The exact strings emitted by the three stream pumps. Keep this in sync
+        // with openai/stream.rs, anthropic/stream.rs, and openai/chat.rs — the
+        // shared "ended before" phrasing is the contract.
+        for msg in [
+            "SSE stream ended before a terminal event",
+            "Anthropic SSE stream ended before message_stop",
+            "Chat Completions stream ended before completion",
+        ] {
+            assert!(
+                is_stream_truncation_error(msg),
+                "should be truncation: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_transport_errors() {
+        for msg in [
+            "SSE transport: connection reset",
+            "Anthropic SSE transport: broken pipe",
+        ] {
+            assert!(is_stream_transport_error(msg), "should be transport: {msg}");
+        }
+    }
+
+    #[test]
+    fn does_not_misclassify_idle_or_model_errors() {
+        // The idle-timeout and genuine model/usage errors must NOT be treated as a
+        // retryable truncation/transport hiccup.
+        for msg in [
+            "stream idle for 120s — connection may be stale, try again",
+            "response.failed: content filtered",
+            "Anthropic 400 invalid request",
+        ] {
+            assert!(!is_stream_truncation_error(msg), "not truncation: {msg}");
+            assert!(!is_stream_transport_error(msg), "not transport: {msg}");
+        }
+    }
 }
 
 /// Bound streamed function-call arguments before parsing. Normal tool calls are
@@ -143,6 +206,12 @@ pub enum AgentEvent {
         input_tokens: u64,
         output_tokens: u64,
         total_tokens: u64,
+    },
+    /// The active provider's real quota/rate-limit snapshot, captured from the
+    /// turn's response (headers or the Codex `codex.rate_limits` event). The TUI
+    /// stores the latest for `/usage`. Fire-and-forget, never blocks the turn.
+    Quota {
+        snapshot: crate::usage::QuotaSnapshot,
     },
     TurnComplete,
     Error {
@@ -802,6 +871,7 @@ impl Agent {
     async fn run_turn_inner(&mut self, tx: mpsc::Sender<AgentEvent>) -> Result<()> {
         let mut steps = 0usize;
         let mut overflow_recoveries = 0usize;
+        let mut stream_recoveries = 0usize;
         'turn: loop {
             steps += 1;
             if steps > MAX_AGENT_STEPS {
@@ -851,8 +921,22 @@ impl Agent {
                 }
             };
 
+            // Surface the provider quota captured from this response's headers so
+            // `/usage` reflects the latest. In-stream Codex quota events are
+            // forwarded below from the recv loop.
+            if let Some(snapshot) = handle.quota.take() {
+                let _ = tx.send(AgentEvent::Quota { snapshot }).await;
+            }
+
             let mut pending_calls: Vec<PendingCall> = Vec::new();
             let mut final_text = String::new();
+            // Whether this attempt streamed committed assistant text. Together with
+            // any *completed* tool call (see the truncation handler below) this gates
+            // stream-truncation handling: with usable content an early EOF finalizes
+            // what we have; without it the turn is retried. Reasoning-only output does
+            // NOT count — re-running to actually answer is better than ending the turn
+            // with only a thought shown.
+            let mut produced_output = false;
             // Signed thinking blocks captured this turn, in stream order, so they
             // can be replayed ahead of the tool_use that follows (Anthropic
             // adaptive/extended thinking). Each entry is (plaintext, signature);
@@ -878,6 +962,53 @@ impl Agent {
                         // A streamed error can carry an overflow rejection too;
                         // recover the same way as a pre-stream 4xx.
                         if self.try_recover_overflow(&e.to_string(), &mut overflow_recoveries) {
+                            continue 'turn;
+                        }
+                        let msg = e.to_string();
+                        // Usable answer content = streamed assistant text, or a tool
+                        // call whose arguments fully streamed (`args_done_emitted`). A
+                        // call truncated mid-arguments is NOT usable — finalizing it
+                        // would dispatch the tool with the empty/partial args the model
+                        // never finished — so it doesn't count and the turn is retried.
+                        let have_output =
+                            produced_output || pending_calls.iter().any(|pc| pc.args_done_emitted);
+                        // The SSE feed ended before its terminal event. This is a
+                        // transport truncation, not a model/usage error.
+                        if is_stream_truncation_error(&msg) && have_output {
+                            // We already received usable answer content this attempt;
+                            // finalize it (a soft completion) rather than discarding a
+                            // good turn just because the trailing terminator was lost.
+                            // Do NOT execute any tool call whose arguments never
+                            // reached `args.done`/`output_item.done`: a partial call
+                            // may have only a name or a JSON prefix, and treating that
+                            // as `{}` would run the wrong command. Surface a skipped
+                            // result in the UI and keep only complete calls for the
+                            // history/tool execution path below.
+                            skip_incomplete_tool_calls_after_truncation(
+                                &mut pending_calls,
+                                &tx,
+                                &msg,
+                            )
+                            .await;
+                            tracing::warn!(
+                                error = %msg,
+                                "stream ended before terminal event after partial output; finalizing turn"
+                            );
+                            break;
+                        }
+                        // Nothing usable yet (no text, no completed tool call): the
+                        // connection dropped before the model committed anything, so
+                        // re-sending the identical request is safe. Bounded.
+                        if (is_stream_truncation_error(&msg) || is_stream_transport_error(&msg))
+                            && !have_output
+                            && stream_recoveries < MAX_STREAM_RECOVERIES
+                        {
+                            stream_recoveries += 1;
+                            tracing::warn!(
+                                attempt = stream_recoveries,
+                                error = %msg,
+                                "stream ended before any output; retrying turn"
+                            );
                             continue 'turn;
                         }
                         return Err(e);
@@ -977,6 +1108,7 @@ impl Agent {
                     }
                     ResponseStreamEvent::OutputTextDelta { delta, .. } => {
                         final_text.push_str(&delta);
+                        produced_output = true;
                         let _ = tx
                             .send(AgentEvent::AssistantTextDelta { text: delta })
                             .await;
@@ -991,6 +1123,9 @@ impl Agent {
                         // cumulative text so the UI's "done" replace stays complete.
                         if final_text.is_empty() {
                             final_text = text;
+                        }
+                        if !final_text.is_empty() {
+                            produced_output = true;
                         }
                         let _ = tx
                             .send(AgentEvent::AssistantTextDone {
@@ -1113,6 +1248,14 @@ impl Agent {
                             continue 'turn;
                         }
                         return Err(anyhow::anyhow!(message));
+                    }
+                    ResponseStreamEvent::RateLimits(mut snapshot) => {
+                        // In-stream quota (Codex `codex.rate_limits`). The parser
+                        // can't stamp the capture time, so do it here.
+                        if snapshot.captured_at_epoch == 0 {
+                            snapshot.captured_at_epoch = chrono::Utc::now().timestamp();
+                        }
+                        let _ = tx.send(AgentEvent::Quota { snapshot }).await;
                     }
                     crate::openai::stream::ResponseStreamEvent::Other { kind } => {
                         tracing::debug!(event = %kind, "unknown SSE event");
@@ -1481,6 +1624,36 @@ struct PendingCall {
     args_done_emitted: bool,
 }
 
+async fn skip_incomplete_tool_calls_after_truncation(
+    pending_calls: &mut Vec<PendingCall>,
+    tx: &mpsc::Sender<AgentEvent>,
+    error: &str,
+) {
+    let mut idx = 0;
+    while idx < pending_calls.len() {
+        if pending_calls[idx].args_done_emitted {
+            idx += 1;
+            continue;
+        }
+        let pc = pending_calls.remove(idx);
+        tracing::warn!(
+            call_id = %pc.call_id,
+            name = %pc.name,
+            "dropping incomplete tool call after stream truncation"
+        );
+        let _ = tx
+            .send(AgentEvent::ToolResult {
+                call_id: pc.call_id,
+                output: format!(
+                    "Error: stream ended before tool `{}` finished sending arguments; skipped this incomplete tool call instead of executing partial input. Upstream error: {error}",
+                    display_tool_name(&pc.name)
+                ),
+                error: true,
+            })
+            .await;
+    }
+}
+
 type RunnableToolCall<'a> = (String, Value, &'a dyn crate::tools::BuiltinTool);
 
 async fn execute_parallel_tool_batch(
@@ -1520,14 +1693,15 @@ async fn execute_builtin_tool_call(
         "tool.start"
     );
     let post_args = args.clone();
-    let res = tokio::time::timeout(TOOL_HARD_TIMEOUT, tool.execute(args, &ctx)).await;
+    let timeout = tool.timeout();
+    let res = tokio::time::timeout(timeout, tool.execute(args, &ctx)).await;
     let (output, is_err) = match res {
         Ok(Ok(s)) => (s, false),
         Ok(Err(e)) => (format!("Error: {e}"), true),
         Err(_) => (
             format!(
                 "Error: tool `{tool_name}` exceeded the {}s hard timeout and was aborted",
-                TOOL_HARD_TIMEOUT.as_secs()
+                timeout.as_secs()
             ),
             true,
         ),
@@ -3834,7 +4008,8 @@ mod function_call_id_tests {
         execute_parallel_tool_batch, function_call_ids, function_call_refs, history_tool_arguments,
         history_tool_name, history_tool_name_for_registry, input_with_todo_reminder,
         is_parallel_safe_tool_call, is_parallel_safe_tool_name, safe_tool_error_message,
-        take_orphan_args, todo_reminder_text, tool_name_from_item, Agent, ToolArgsBuffer,
+        skip_incomplete_tool_calls_after_truncation, take_orphan_args, todo_reminder_text,
+        tool_name_from_item, Agent, AgentEvent, PendingCall, ToolArgsBuffer,
         MAX_PARALLEL_TOOL_CALLS, MAX_TOOL_ARGUMENT_BYTES, SAFE_TOOL_HISTORY_ERROR_CHARS,
     };
     use crate::client::LlmClient;
@@ -3862,6 +4037,55 @@ mod function_call_id_tests {
         buf.push("{}");
         buf.push(r#"{"path":"a.py"}"#);
         assert_eq!(buf.text, r#"{"path":"a.py"}"#);
+    }
+
+    #[tokio::test]
+    async fn stream_truncation_skips_incomplete_tool_calls() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut partial_args = ToolArgsBuffer::default();
+        partial_args.push(r#"{"command":"cargo""#);
+        let mut pending = vec![
+            PendingCall {
+                call_id: "call_complete".into(),
+                item_id: "item_complete".into(),
+                name: "read_file".into(),
+                args: ToolArgsBuffer::default(),
+                args_done_emitted: true,
+            },
+            PendingCall {
+                call_id: "call_partial".into(),
+                item_id: "item_partial".into(),
+                name: "run_shell".into(),
+                args: partial_args,
+                args_done_emitted: false,
+            },
+        ];
+
+        skip_incomplete_tool_calls_after_truncation(
+            &mut pending,
+            &tx,
+            "SSE stream ended before a terminal event",
+        )
+        .await;
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].call_id, "call_complete");
+        match rx.recv().await.expect("skip event") {
+            AgentEvent::ToolResult {
+                call_id,
+                output,
+                error,
+            } => {
+                assert_eq!(call_id, "call_partial");
+                assert!(error);
+                assert!(
+                    output.contains("skipped this incomplete tool call"),
+                    "{output}"
+                );
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
     }
     use crate::tools::{BuiltinTool, TodoItem, TodoStatus, ToolContext};
     use anyhow::Result;

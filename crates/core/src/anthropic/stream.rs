@@ -486,7 +486,7 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
             }
         }
     });
-    StreamHandle { rx }
+    StreamHandle { rx, quota: None }
 }
 
 #[cfg(test)]

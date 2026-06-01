@@ -248,6 +248,9 @@ pub struct App {
     pub output_tokens_total: u64,
     /// Number of turns the user has run this session. Surfaced by `/cost`.
     pub turn_count: u64,
+    /// Latest provider quota/rate-limit snapshot, captured from the most recent
+    /// turn's response. Surfaced by `/usage`; `None` until the first turn.
+    pub last_quota: Option<opencli_core::usage::QuotaSnapshot>,
     pub pending_images: Vec<std::path::PathBuf>,
     pub next_image_num: usize,
     pub overlay: Option<(OverlayKind, Picker)>,
@@ -745,6 +748,7 @@ impl App {
             input_tokens_total: 0,
             output_tokens_total: 0,
             turn_count: 0,
+            last_quota: None,
             pending_images: Vec::new(),
             next_image_num: 1,
             overlay: None,
@@ -2089,6 +2093,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  /goal <objective>   keep working until the objective is complete\n  \
                  /status             show auth status\n  \
                  /cost               show token usage and estimated cost\n  \
+                 /usage              show the provider's real quota / rate-limit status\n  \
                  /context            show context-window usage + composition\n  \
                  /config             show current configuration\n  \
                  /hooks              list configured PreToolUse hooks\n  \
@@ -2430,7 +2435,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
         "resume" => {
             app.open_overlay(OverlayKind::ResumePicker);
         }
-        "cost" | "usage" => {
+        "cost" => {
             let input = app.input_tokens_total;
             let output = app.output_tokens_total;
             let total = input.saturating_add(output);
@@ -2456,6 +2461,9 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 "  Pricing assumed: ${in_per_m:.2}/M input, ${out_per_m:.2}/M output"
             ));
             app.blocks.push(Block::System(msg));
+        }
+        "usage" => {
+            app.blocks.push(Block::System(render_usage_report(app)));
         }
         "context" | "ctx" => {
             app.blocks.push(Block::System(render_context_report(app)));
@@ -3147,6 +3155,34 @@ fn pricing_for(model: &str) -> (f64, f64) {
     }
 }
 
+/// `/usage` report: the active provider's real quota/rate-limit status (5h +
+/// weekly for subscriptions, token/request budgets for API keys), captured from
+/// the last turn's response. Falls back to a hint when no turn has run yet.
+fn render_usage_report(app: &App) -> String {
+    let provider = Provider::from_model(&app.config.model);
+    let mut msg = format!(
+        "Usage — provider: {}, model: {}\n",
+        provider.display_name(),
+        app.config.model
+    );
+    match &app.last_quota {
+        Some(snapshot) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            msg.push_str(&snapshot.render(now));
+        }
+        None => {
+            msg.push_str(
+                "  No live quota data yet — send a message, then run /usage.\n  \
+                 (quota is read from the provider's response to your turns)",
+            );
+        }
+    }
+    msg
+}
+
 /// Render the visible chat blocks as a portable Markdown transcript for
 /// `/export`. Reasoning bodies and tool args/outputs are included so the
 /// export captures the same shape the user saw on screen.
@@ -3615,6 +3651,10 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             app.input_tokens_total = app.input_tokens_total.saturating_add(input_tokens);
             app.output_tokens_total = app.output_tokens_total.saturating_add(output_tokens);
         }
+        AgentEvent::Quota { snapshot } => {
+            // Latest real provider quota; rendered on demand by `/usage`.
+            app.last_quota = Some(snapshot);
+        }
         AgentEvent::TodosSnapshot { todos } => {
             if todos.is_empty() && should_keep_recent_completed_todos_for_empty_snapshot(app) {
                 return;
@@ -4045,6 +4085,41 @@ mod tests {
         assert!(text.contains("Context window"));
         assert!(text.contains(&app.config.model));
         assert!(text.contains("composition"));
+    }
+
+    #[tokio::test]
+    async fn usage_slash_without_quota_shows_hint() {
+        let mut app = App::new();
+        handle_slash(&mut app, "usage").await;
+        let Some(Block::System(text)) = app.blocks.last() else {
+            panic!("expected a system block from /usage");
+        };
+        assert!(text.contains("Usage — provider:"), "{text}");
+        assert!(text.contains(&app.config.model), "{text}");
+        assert!(text.contains("No live quota data yet"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn usage_slash_renders_captured_quota() {
+        let mut app = App::new();
+        app.last_quota = Some(opencli_core::usage::QuotaSnapshot {
+            provider: Some(opencli_core::provider::Provider::OpenAi),
+            plan: Some("pro".into()),
+            windows: vec![opencli_core::usage::QuotaWindow {
+                label: "5h".into(),
+                used_percent: Some(12.5),
+                remaining: None,
+                limit: None,
+                resets_at_epoch: None,
+            }],
+            captured_at_epoch: 0,
+        });
+        handle_slash(&mut app, "usage").await;
+        let Some(Block::System(text)) = app.blocks.last() else {
+            panic!("expected a system block from /usage");
+        };
+        assert!(text.contains("Plan: pro"), "{text}");
+        assert!(text.contains("5-hour: 12.5% used"), "{text}");
     }
 
     #[tokio::test]

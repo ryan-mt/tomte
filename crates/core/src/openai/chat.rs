@@ -690,7 +690,7 @@ pub fn handle_chat_response(resp: reqwest::Response) -> StreamHandle {
             }
         }
     });
-    StreamHandle { rx }
+    StreamHandle { rx, quota: None }
 }
 
 /// HTTP client for an OpenAI-compatible Chat Completions provider configured in

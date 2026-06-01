@@ -294,6 +294,12 @@ pub trait BuiltinTool: Send + Sync {
     fn is_read_only(&self) -> bool {
         false
     }
+    /// Outer hard timeout for this tool. Most tools share the agent default;
+    /// long-running orchestration tools such as `dispatch_agent` can opt into a
+    /// larger cap without making every file/search/shell call wait longer.
+    fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(180)
+    }
     async fn compute_preview(&self, _args: &Value, _ctx: &ToolContext) -> Option<String> {
         None
     }

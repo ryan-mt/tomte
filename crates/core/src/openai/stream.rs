@@ -9,6 +9,10 @@ use crate::tool_args::normalize_argument_fragment;
 /// Wrapper around a streaming SSE response from the Responses API.
 pub struct StreamHandle {
     pub rx: mpsc::Receiver<anyhow::Result<ResponseStreamEvent>>,
+    /// Provider quota/rate-limit snapshot captured from the response headers at
+    /// stream start, when present. Consumed once by the agent and surfaced via
+    /// `/usage`. `None` when the provider sent no recognizable rate-limit headers.
+    pub quota: Option<crate::usage::QuotaSnapshot>,
 }
 
 /// Semantic stream events the agent layer cares about. Events the model
@@ -58,6 +62,10 @@ pub enum ResponseStreamEvent {
     Failed {
         response: Value,
     },
+    /// Provider quota/rate-limit snapshot delivered in-stream (the Codex
+    /// `codex.rate_limits` SSE event). Header-delivered quota rides on
+    /// [`StreamHandle::quota`] instead. Non-terminal.
+    RateLimits(crate::usage::QuotaSnapshot),
     Error {
         message: String,
     },
@@ -126,7 +134,15 @@ impl StreamHandle {
                 }
             }
         });
-        Self { rx }
+        Self { rx, quota: None }
+    }
+
+    /// Attach a quota snapshot parsed from the response headers. Builder form so
+    /// the provider clients can capture headers (which they have, before the
+    /// body is consumed) without `from_response` needing to know the provider.
+    pub fn with_quota(mut self, quota: Option<crate::usage::QuotaSnapshot>) -> Self {
+        self.quota = quota;
+        self
     }
 }
 
@@ -278,6 +294,12 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         },
         "response.completed" => ResponseStreamEvent::Completed {
             response: value.get("response").cloned().unwrap_or(Value::Null),
+        },
+        // Codex/ChatGPT-backend in-stream quota event (some routes send the
+        // snapshot here instead of, or alongside, the `x-codex-*` headers).
+        "codex.rate_limits" => match crate::usage::parse_codex_rate_limit_event(&value) {
+            Some(snapshot) => ResponseStreamEvent::RateLimits(snapshot),
+            None => ResponseStreamEvent::Other { kind: kind.clone() },
         },
         "response.failed" => ResponseStreamEvent::Failed {
             response: value.get("response").cloned().unwrap_or(Value::Null),

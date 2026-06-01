@@ -149,7 +149,16 @@ impl AnthropicClient {
             };
             return Err(anyhow!("Anthropic {} {}", status, redact_auth_in(&text)));
         }
-        Ok(handle_from_response(resp))
+        // Capture rate-limit/quota headers before the body stream is consumed.
+        // OAuth (Pro/Max) sends the `unified` 5h/weekly family; API keys send
+        // the documented `anthropic-ratelimit-{tokens,requests}-*` counts.
+        let quota = crate::usage::parse_rate_limit_headers(
+            resp.headers(),
+            Provider::Anthropic,
+            self.credential.is_anthropic_oauth(),
+            chrono::Utc::now().timestamp(),
+        );
+        Ok(handle_from_response(resp).with_quota(quota))
     }
 
     pub async fn create(&self, req: ResponsesRequest) -> Result<serde_json::Value> {
