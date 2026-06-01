@@ -27,6 +27,11 @@ use tokio::sync::mpsc;
 use crate::openai::stream::{ResponseStreamEvent, StreamHandle};
 use crate::tool_args::accumulate_argument_fragment;
 
+/// Cap on distinct content blocks tracked during one response. A real Anthropic
+/// response opens only a handful; the cap stops a malformed stream of unique
+/// block indices from growing the pending-block map without bound.
+const MAX_PENDING_BLOCKS: usize = 1024;
+
 struct PendingBlock {
     kind: String,
     item_id: String,
@@ -232,6 +237,14 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 let index =
                                     parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0)
                                         as u32;
+                                // A real response opens only a handful of blocks;
+                                // refuse to track unboundedly many distinct
+                                // indices from a malformed stream.
+                                if !blocks.contains_key(&index)
+                                    && blocks.len() >= MAX_PENDING_BLOCKS
+                                {
+                                    continue;
+                                }
                                 let block = parsed.get("content_block");
                                 let btype = block
                                     .and_then(|b| b.get("type"))

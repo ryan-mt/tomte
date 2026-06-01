@@ -125,6 +125,12 @@ const TOOL_RESULT_MAX_BYTES: usize = 1_048_576;
 /// responsive and avoids IO/socket stampedes while still preserving parallelism.
 const MAX_PARALLEL_TOOL_CALLS: usize = 8;
 
+/// Cap on distinct orphan tool-argument buffers held during one stream —
+/// argument fragments that arrive before their tool call's `OutputItemAdded`.
+/// A normal stream has a handful; the cap stops a malformed stream of unique
+/// item ids from growing the buffer map without bound.
+const MAX_ORPHAN_ARG_BUFFERS: usize = 256;
+
 /// Unknown/malformed tool calls are replayed as a plain user message instead of
 /// a provider function_call item. Keep model-controlled text inside that
 /// reminder bounded and inert.
@@ -1108,7 +1114,9 @@ impl Agent {
                                     })
                                     .await;
                             }
-                        } else {
+                        } else if orphan_arg_buffers.contains_key(&item_id)
+                            || orphan_arg_buffers.len() < MAX_ORPHAN_ARG_BUFFERS
+                        {
                             let _ = orphan_arg_buffers.entry(item_id).or_default().push(&delta);
                         }
                     }

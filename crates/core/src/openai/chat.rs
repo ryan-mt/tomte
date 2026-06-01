@@ -223,6 +223,11 @@ struct ToolAcc {
 const CHAT_TOOL_ARGUMENT_MAX_BYTES: usize = 2 * 1024 * 1024;
 const CHAT_TOOL_ARGUMENT_BUFFER_BYTES: usize = CHAT_TOOL_ARGUMENT_MAX_BYTES + 1;
 
+/// Cap on distinct tool calls accumulated during one response. A real response
+/// has a handful; the cap stops a malformed stream of unique `index` values
+/// from growing the accumulator map without bound.
+const MAX_PENDING_TOOL_CALLS: usize = 512;
+
 async fn apply_tool_delta(
     tools: &mut BTreeMap<u32, ToolAcc>,
     index: u32,
@@ -231,6 +236,11 @@ async fn apply_tool_delta(
     args_fragment: Option<String>,
     tx: &mpsc::Sender<anyhow::Result<ResponseStreamEvent>>,
 ) {
+    // A real response has a handful of tool calls; refuse to accumulate
+    // unboundedly many distinct indices from a malformed stream.
+    if !tools.contains_key(&index) && tools.len() >= MAX_PENDING_TOOL_CALLS {
+        return;
+    }
     let acc = tools.entry(index).or_insert_with(|| ToolAcc {
         id: id.clone().unwrap_or_else(|| format!("call_{index}")),
         name: None,
@@ -790,6 +800,25 @@ mod tests {
     use futures_util::stream;
     use std::{convert::Infallible, time::Duration};
     use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn apply_tool_delta_bounds_distinct_indices() {
+        let (tx, _rx) = mpsc::channel::<anyhow::Result<ResponseStreamEvent>>(1 << 16);
+        let mut tools: BTreeMap<u32, ToolAcc> = BTreeMap::new();
+        // Feed far more distinct tool-call indices than the cap allows.
+        for i in 0..(MAX_PENDING_TOOL_CALLS as u32 + 100) {
+            apply_tool_delta(
+                &mut tools,
+                i,
+                Some(format!("call_{i}")),
+                Some("read_file".into()),
+                Some("{}".into()),
+                &tx,
+            )
+            .await;
+        }
+        assert_eq!(tools.len(), MAX_PENDING_TOOL_CALLS);
+    }
 
     #[test]
     fn chat_tool_helpers_accept_camel_case_aliases() {
