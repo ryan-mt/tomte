@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::openai::stream::{ResponseStreamEvent, StreamHandle};
-use crate::tool_args::normalize_argument_fragment;
+use crate::tool_args::accumulate_argument_fragment;
 
 struct PendingBlock {
     kind: String,
@@ -46,7 +46,10 @@ fn append_tool_args_capped(
     truncated: &mut bool,
     fragment: &str,
 ) -> Option<String> {
-    let fragment = normalize_argument_fragment(fragment)?;
+    // Drop a leading empty-args placeholder, keep mid-object fragments verbatim
+    // (so a bare `"limit": null` survives) — shared rule, see
+    // `accumulate_argument_fragment`.
+    let fragment = accumulate_argument_fragment(buf.is_empty(), fragment)?;
     if *truncated {
         return None;
     }
@@ -79,7 +82,10 @@ fn non_empty_tool_input(value: &Value) -> Option<String> {
         Value::Null => None,
         Value::Array(arr) if arr.is_empty() => None,
         Value::Object(map) if map.is_empty() => None,
-        Value::String(s) => normalize_argument_fragment(s).map(str::to_string),
+        // Raw JSON-text fragment: keep it verbatim (see `append_tool_args_capped`).
+        // Normalizing here would drop a bare `null`/`{}`/`[]` chunk mid-stream.
+        Value::String(s) if s.is_empty() => None,
+        Value::String(s) => Some(s.clone()),
         other => serde_json::to_string(other).ok(),
     }
 }
@@ -495,6 +501,37 @@ mod tests {
     use futures_util::stream;
     use std::{convert::Infallible, time::Duration};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn input_json_delta_concatenates_bare_null_verbatim() {
+        // Regression: Claude streams `"limit": null` and the `null` value arrives
+        // as its own input_json_delta chunk. It must be kept, not dropped as an
+        // "empty placeholder", or the accumulated args become invalid JSON.
+        let mut buf = String::new();
+        let mut truncated = false;
+        for frag in [
+            r#"{"path":"sample.py","limit":"#,
+            "null",
+            r#","offset":null}"#,
+        ] {
+            append_tool_args_capped(&mut buf, &mut truncated, frag);
+        }
+        assert_eq!(buf, r#"{"path":"sample.py","limit":null,"offset":null}"#);
+        // And it parses cleanly with limit == null.
+        let v: serde_json::Value = serde_json::from_str(&buf).unwrap();
+        assert!(v["limit"].is_null());
+        assert_eq!(v["path"], "sample.py");
+    }
+
+    #[test]
+    fn non_empty_tool_input_keeps_bare_null_string_fragment() {
+        assert_eq!(
+            non_empty_tool_input(&serde_json::json!("null")),
+            Some("null".to_string())
+        );
+        // A truly empty string fragment is still skipped.
+        assert_eq!(non_empty_tool_input(&serde_json::json!("")), None);
+    }
 
     #[tokio::test]
     async fn message_stop_emits_completed_once() {

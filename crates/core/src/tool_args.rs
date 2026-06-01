@@ -12,6 +12,31 @@ pub(crate) fn normalize_argument_fragment(value: &str) -> Option<&str> {
     }
 }
 
+/// Decide what a streamed tool-argument accumulator should append for one
+/// fragment. While the buffer is still empty, a leading empty-args placeholder
+/// (`{}`/`[]`/`null`, possibly prefixing the real object) is normalized away via
+/// [`normalize_argument_fragment`]; once mid-object every fragment is kept
+/// VERBATIM, so a bare `null`/`{}`/`[]` that is the real value of a field (e.g.
+/// the streamed value of `"limit": null`) is not dropped and the accumulated
+/// JSON stays valid. Returns `None` when the fragment should be skipped.
+///
+/// This is the single source of truth for the leading-placeholder rule, shared
+/// by every streaming arg accumulator (OpenAI Responses, OpenAI-compatible Chat
+/// Completions, and Anthropic) so they cannot drift apart — a past divergence
+/// here silently corrupted Chat Completions tool calls.
+pub(crate) fn accumulate_argument_fragment(buffer_is_empty: bool, fragment: &str) -> Option<&str> {
+    let fragment = if buffer_is_empty {
+        normalize_argument_fragment(fragment)?
+    } else {
+        fragment
+    };
+    if fragment.is_empty() {
+        None
+    } else {
+        Some(fragment)
+    }
+}
+
 pub(crate) fn is_empty_argument_fragment(value: &str) -> bool {
     let trimmed = value.trim();
     trimmed.is_empty() || trimmed == "{}" || trimmed == "[]" || trimmed.eq_ignore_ascii_case("null")
@@ -45,7 +70,27 @@ fn looks_like_json_payload(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_empty_argument_fragment, normalize_argument_fragment};
+    use super::{
+        accumulate_argument_fragment, is_empty_argument_fragment, normalize_argument_fragment,
+    };
+
+    #[test]
+    fn accumulate_drops_leading_placeholder_keeps_midstream_verbatim() {
+        // Empty buffer: a leading placeholder is dropped, a payload after it recovered.
+        assert_eq!(accumulate_argument_fragment(true, "{}"), None);
+        assert_eq!(accumulate_argument_fragment(true, "null"), None);
+        assert_eq!(accumulate_argument_fragment(true, ""), None);
+        assert_eq!(
+            accumulate_argument_fragment(true, r#"{} {"a":1}"#),
+            Some(r#"{"a":1}"#)
+        );
+        // Mid-stream (buffer non-empty): a bare null/{} is the real field value
+        // and must be kept VERBATIM, not dropped.
+        assert_eq!(accumulate_argument_fragment(false, "null"), Some("null"));
+        assert_eq!(accumulate_argument_fragment(false, "{}"), Some("{}"));
+        // A truly empty mid-stream fragment is still skipped.
+        assert_eq!(accumulate_argument_fragment(false, ""), None);
+    }
 
     #[test]
     fn treats_empty_placeholders_as_absent() {

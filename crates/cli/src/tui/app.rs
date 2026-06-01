@@ -460,6 +460,32 @@ pub struct PendingPlanExit {
 
 const GOAL_START_PREFIX: &str = "[opencli:/goal start]";
 const GOAL_CONTINUATION_PREFIX: &str = "[opencli:/goal continuation]";
+/// Max words allowed in a `/goal` objective. The objective is re-injected into
+/// context on every autonomous continuation turn, so an overlong one crowds out
+/// the actual work and degrades the model's reasoning ("mất thông minh"). ~100
+/// words (≈150 tokens/turn) stays negligible over a long run while still fitting
+/// a detailed, multi-step objective; longer detail belongs in a normal message.
+const GOAL_MAX_WORDS: usize = 100;
+
+/// Char ceiling that backstops [`GOAL_MAX_WORDS`] for scripts without spaces
+/// (CJK, Thai, …), where word-counting collapses a whole objective to one
+/// "word" and would let the limit be bypassed entirely. Sized so any objective
+/// within the word cap (~100 words ≈ ~650 chars) stays under it, so it only
+/// bites genuinely overlong non-whitespace-delimited input.
+const GOAL_MAX_CHARS: usize = 800;
+
+/// Word count used to bound a `/goal` objective (whitespace-separated).
+fn goal_word_count(objective: &str) -> usize {
+    objective.split_whitespace().count()
+}
+
+/// Whether a `/goal` objective is too long to re-inject every turn. Bounds by
+/// word count (whitespace-delimited languages) AND raw char count, so a CJK/Thai
+/// objective with no whitespace — which counts as a single word — is still
+/// caught instead of bypassing the limit.
+fn goal_exceeds_limit(objective: &str) -> bool {
+    goal_word_count(objective) > GOAL_MAX_WORDS || objective.chars().count() > GOAL_MAX_CHARS
+}
 const PLAN_APPROVED_PREFIX: &str = "[opencli:/plan approved]";
 const PLAN_REJECTED_PREFIX: &str = "[opencli:/plan rejected]";
 pub const TODO_RECENT_COMPLETED_TTL: Duration = Duration::from_secs(30);
@@ -1823,19 +1849,11 @@ async fn apply_resume(
 /// summary, persists, then reports back via `AgentEvent::CompactDone`. Running
 /// off the main loop is what keeps the UI responsive and the progress bar
 /// animating instead of freezing on the model call. Returns immediately.
-/// Heuristic match for a provider's "input too large for the context window"
-/// rejection, across OpenAI / Anthropic / OpenAI-compatible phrasings. Turns a
-/// raw API error into an actionable /compact recovery hint.
+/// Match a provider's "input too large for the context window" rejection so the
+/// raw API error becomes an actionable /compact hint. Delegates to the core
+/// heuristic the agent's auto-recovery also uses, keeping one source of truth.
 fn is_context_overflow(message: &str) -> bool {
-    let m = message.to_ascii_lowercase();
-    m.contains("context window")
-        || m.contains("context length")
-        || m.contains("context_length_exceeded")
-        || m.contains("maximum context")
-        || m.contains("prompt is too long")
-        || m.contains("too many tokens")
-        || m.contains("exceeds the context")
-        || m.contains("reduce the length")
+    opencli_core::agent::is_context_overflow_message(message)
 }
 
 fn start_compaction(
@@ -2233,6 +2251,13 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                     app.blocks
                         .push(Block::System("No active goal to stop.".into()));
                 }
+            } else if goal_exceeds_limit(trimmed) {
+                app.blocks.push(Block::System(format!(
+                    "Goal too long ({} words / {} chars; max {GOAL_MAX_WORDS} words or {GOAL_MAX_CHARS} chars). The objective is re-sent to the model every turn, so a long one crowds out the real work and dulls its reasoning. Tighten it to one clear objective and put the extra detail in a normal message before running a short /goal.",
+                    goal_word_count(trimmed),
+                    trimmed.chars().count()
+                )));
+                app.auto_scroll = true;
             } else {
                 let objective = trimmed.to_string();
                 if let Some(goal) = &app.active_goal {
@@ -3605,6 +3630,37 @@ fn rotate_assistant_block(blocks: &mut Vec<Block>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn goal_word_count_and_limit_boundary() {
+        assert_eq!(goal_word_count("  fix   the   build  "), 3);
+        assert_eq!(goal_word_count(""), 0);
+        // A concise, detailed objective stays well under the cap.
+        let ok = "Refactor the auth module to the new token format, update all call \
+                  sites, keep every existing test passing, and verify the login flow.";
+        assert!(
+            goal_word_count(ok) <= GOAL_MAX_WORDS,
+            "detailed goal must fit"
+        );
+        assert!(!goal_exceeds_limit(ok), "detailed goal must fit");
+        // Exactly at the cap is accepted; one over is rejected.
+        let at_cap = "w ".repeat(GOAL_MAX_WORDS);
+        let over_cap = "w ".repeat(GOAL_MAX_WORDS + 1);
+        assert!(goal_word_count(&at_cap) <= GOAL_MAX_WORDS);
+        assert!(!goal_exceeds_limit(&at_cap));
+        assert!(goal_word_count(&over_cap) > GOAL_MAX_WORDS);
+        assert!(goal_exceeds_limit(&over_cap));
+        // A space-free CJK objective counts as one "word" but must NOT bypass the
+        // limit — the char ceiling catches it.
+        let cjk_huge = "目".repeat(GOAL_MAX_CHARS + 1);
+        assert_eq!(goal_word_count(&cjk_huge), 1, "no whitespace → one word");
+        assert!(
+            goal_exceeds_limit(&cjk_huge),
+            "char ceiling must catch CJK abuse"
+        );
+        // A short CJK objective is still fine.
+        assert!(!goal_exceeds_limit(&"目标".repeat(5)));
+    }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let path =

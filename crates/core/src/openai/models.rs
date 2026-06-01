@@ -72,6 +72,15 @@ pub enum InputItem {
         #[serde(default, skip_serializing)]
         error: bool,
     },
+    /// Provider-specific, opaque continuity item. A reasoning block can only be
+    /// replayed to the provider that produced it. Because history is a shared IR
+    /// that can cross providers (a `/model` switch, a resumed session), EVERY
+    /// native provider must drop foreign reasoning at its IR→wire boundary:
+    /// Anthropic keeps only signed blocks (`anthropic/translate.rs`), the OpenAI
+    /// Responses path keeps only items with a real reasoning id and no signature
+    /// (`openai/client.rs::strip_unsendable_reasoning`), and the Chat Completions
+    /// adapter drops them entirely (`openai/chat.rs`). New providers must do the
+    /// same, or they will reject the foreign id (e.g. OpenAI `400 input[N].id`).
     #[serde(rename = "reasoning")]
     Reasoning {
         id: String,

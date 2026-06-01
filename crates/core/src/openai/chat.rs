@@ -23,7 +23,7 @@ use super::models::{InputItem, MessageContent, ResponsesRequest, Tool, ToolChoic
 use super::stream::{ResponseStreamEvent, StreamHandle};
 use crate::client::ProviderClient;
 use crate::provider::Provider;
-use crate::tool_args::normalize_argument_fragment;
+use crate::tool_args::accumulate_argument_fragment;
 
 /// Build a Chat Completions request body from the shared IR. Reasoning/verbosity
 /// and the Responses-only fields are intentionally dropped: most compatible
@@ -108,6 +108,42 @@ pub fn translate_chat_request(req: &ResponsesRequest) -> Value {
         body.insert("tool_choice".into(), tool_choice_to_chat(tc));
     }
     Value::Object(body)
+}
+
+/// Map the shared IR reasoning effort onto a Chat Completions `reasoning_effort`
+/// value. Returns `None` for levels with no standard representation, so the
+/// field is omitted rather than risking a 400 upstream. `xhigh`/`max`/
+/// `ultracode` clamp to `high`, the top tier Chat Completions defines.
+fn chat_reasoning_effort(effort: &str) -> Option<&'static str> {
+    match effort {
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" | "max" | "ultracode" => Some("high"),
+        _ => None, // none / disabled / unknown — let the provider default
+    }
+}
+
+/// Build the wire body for a Chat Completions request, injecting
+/// `reasoning_effort` when the provider opts in (`forward_reasoning_effort`) and
+/// the selected effort maps to a standard value. Shared by `send` and its test
+/// so the test exercises the real injection rather than a parallel copy.
+fn chat_request_body(req: &ResponsesRequest, forward_reasoning_effort: bool) -> Value {
+    let mut body = translate_chat_request(req);
+    if forward_reasoning_effort {
+        if let Some(effort) = req
+            .reasoning
+            .as_ref()
+            .and_then(|r| r.effort.as_deref())
+            .and_then(chat_reasoning_effort)
+        {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("reasoning_effort".into(), json!(effort));
+            }
+        }
+    }
+    body
 }
 
 /// Collapse all-text content to a plain string (what every compatible endpoint
@@ -245,7 +281,10 @@ async fn apply_tool_delta(
 }
 
 fn append_tool_args_capped(acc: &mut ToolAcc, fragment: &str) {
-    let Some(fragment) = normalize_argument_fragment(fragment) else {
+    // Drop a leading empty-args placeholder, keep mid-object fragments verbatim
+    // (so a bare `"limit": null` survives) — shared rule, see
+    // `accumulate_argument_fragment`.
+    let Some(fragment) = accumulate_argument_fragment(acc.args.is_empty(), fragment) else {
         return;
     };
     if acc.args_truncated {
@@ -304,7 +343,14 @@ fn chat_argument_value_from_keys(value: &Value, keys: &[&str]) -> Option<String>
 fn chat_argument_string_value(value: Option<&Value>) -> Option<String> {
     match value? {
         Value::Null => None,
-        Value::String(s) => normalize_argument_fragment(s).map(str::to_string),
+        // Raw streamed JSON-text fragment: keep it verbatim. A bare
+        // `null`/`{}`/`[]` arriving mid-stream is the real value of a field (e.g.
+        // the streamed value of `"limit": null`); the LEADING empty-args
+        // placeholder is dropped instead by `append_tool_args_capped` while its
+        // buffer is still empty. Normalizing here would corrupt args into
+        // `"limit": ,` (it sits ahead of that accumulator on the stream path).
+        Value::String(s) if s.is_empty() => None,
+        Value::String(s) => Some(s.clone()),
         Value::Array(arr) if arr.is_empty() => None,
         Value::Object(map) if map.is_empty() => None,
         Value::Number(n) => Some(n.to_string()),
@@ -655,10 +701,16 @@ pub struct ChatCompletionsClient {
     provider_id: String,
     base_url: String,
     api_key: String,
+    forward_reasoning_effort: bool,
 }
 
 impl ChatCompletionsClient {
-    pub fn new(provider_id: String, base_url: String, api_key: String) -> Result<Self> {
+    pub fn new(
+        provider_id: String,
+        base_url: String,
+        api_key: String,
+        forward_reasoning_effort: bool,
+    ) -> Result<Self> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .build()?;
@@ -667,6 +719,7 @@ impl ChatCompletionsClient {
             provider_id,
             base_url,
             api_key,
+            forward_reasoning_effort,
         })
     }
 
@@ -683,7 +736,7 @@ impl ChatCompletionsClient {
     async fn send(&self, mut req: ResponsesRequest, stream: bool) -> Result<reqwest::Response> {
         req.model = self.wire_model(&req.model);
         req.stream = stream;
-        let body = translate_chat_request(&req);
+        let body = chat_request_body(&req, self.forward_reasoning_effort);
         let mut builder = self
             .http
             .post(self.endpoint())
@@ -941,6 +994,42 @@ mod tests {
         assert_eq!(acc.args.len(), CHAT_TOOL_ARGUMENT_BUFFER_BYTES);
         assert!(acc.args.is_char_boundary(acc.args.len()));
         assert!(acc.args_truncated);
+    }
+
+    fn empty_acc() -> ToolAcc {
+        ToolAcc {
+            id: "call_x".into(),
+            name: Some("read_file".into()),
+            args: String::new(),
+            args_truncated: false,
+            added: true,
+            emitted_args_len: 0,
+        }
+    }
+
+    #[test]
+    fn append_tool_args_keeps_bare_null_value_mid_stream() {
+        // Regression: a streamed `"limit": null` whose `null` arrives as its own
+        // delta chunk must be kept, not dropped as an "empty placeholder", or the
+        // accumulated Chat Completions args become invalid JSON.
+        let mut acc = empty_acc();
+        for frag in [r#"{"path":"a.py","limit":"#, "null", r#","offset":null}"#] {
+            append_tool_args_capped(&mut acc, frag);
+        }
+        assert_eq!(acc.args, r#"{"path":"a.py","limit":null,"offset":null}"#);
+        let v: serde_json::Value = serde_json::from_str(&acc.args).unwrap();
+        assert!(v["limit"].is_null());
+        assert_eq!(v["path"], "a.py");
+    }
+
+    #[test]
+    fn append_tool_args_drops_only_leading_placeholder() {
+        // A leading `{}` placeholder is dropped; the real object that follows is
+        // kept verbatim (a provider that prefixes args with an empty object).
+        let mut acc = empty_acc();
+        append_tool_args_capped(&mut acc, "{}");
+        append_tool_args_capped(&mut acc, r#"{"path":"a.py"}"#);
+        assert_eq!(acc.args, r#"{"path":"a.py"}"#);
     }
 
     #[tokio::test]
@@ -1423,6 +1512,7 @@ mod tests {
             "groq".into(),
             "https://api.groq.com/openai/v1/".into(),
             "k".into(),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1432,5 +1522,32 @@ mod tests {
         assert_eq!(c.wire_model("groq/llama-3.3-70b"), "llama-3.3-70b");
         // A bare id (no provider prefix) is left untouched.
         assert_eq!(c.wire_model("llama-3.3-70b"), "llama-3.3-70b");
+    }
+
+    #[test]
+    fn forwards_reasoning_effort_only_when_enabled_and_mappable() {
+        use crate::openai::models::ReasoningConfig;
+        let req = |effort: &str| ResponsesRequest {
+            reasoning: Some(ReasoningConfig {
+                effort: Some(effort.to_string()),
+                summary: None,
+            }),
+            ..ResponsesRequest::new("m", vec![])
+        };
+        // Drives the REAL body-builder that `send` uses, not a parallel copy.
+        let body_effort = |forward: bool, effort: &str| -> Option<String> {
+            chat_request_body(&req(effort), forward)
+                .get("reasoning_effort")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+
+        // Disabled: never forwarded, even for a valid level.
+        assert_eq!(body_effort(false, "high"), None);
+        // Enabled: standard levels pass through; xhigh clamps to high.
+        assert_eq!(body_effort(true, "medium").as_deref(), Some("medium"));
+        assert_eq!(body_effort(true, "xhigh").as_deref(), Some("high"));
+        // Enabled but unmappable extreme: omitted rather than risking a 400.
+        assert_eq!(body_effort(true, "none"), None);
     }
 }

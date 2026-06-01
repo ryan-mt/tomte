@@ -25,6 +25,26 @@ const TOOL_HARD_TIMEOUT: Duration = Duration::from_secs(180);
 /// a clear error so the user can re-prompt to continue.
 const MAX_AGENT_STEPS: usize = 250;
 
+/// How many times a single turn may auto-recover from a hard context-window
+/// overflow (shed tool-output bulk and retry) before giving up and surfacing the
+/// error. Bounded so a history that can't be shrunk further can't spin forever.
+const MAX_OVERFLOW_RECOVERIES: usize = 2;
+
+/// Heuristic match for a provider's "input too large for the context window"
+/// rejection across OpenAI / Anthropic / OpenAI-compatible phrasings. The single
+/// source of truth the agent's auto-recovery and the TUI's error hint both use.
+pub fn is_context_overflow_message(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("context window")
+        || m.contains("context length")
+        || m.contains("context_length_exceeded")
+        || m.contains("maximum context")
+        || m.contains("prompt is too long")
+        || m.contains("too many tokens")
+        || m.contains("exceeds the context")
+        || m.contains("reduce the length")
+}
+
 /// Bound streamed function-call arguments before parsing. Normal tool calls are
 /// small JSON objects; a runaway provider or incompatible model can otherwise
 /// stream unbounded bytes and wedge the process before the tool layer can reject
@@ -53,7 +73,7 @@ const TODO_REMINDER_ITEM_CHARS: usize = 180;
 use crate::client::LlmClient;
 use crate::config::Config;
 use crate::openai::{InputItem, MessageContent, ResponseStreamEvent, ResponsesRequest};
-use crate::tool_args::normalize_argument_fragment;
+use crate::tool_args::{accumulate_argument_fragment, normalize_argument_fragment};
 use crate::tools::{ApprovalMode, Registry, SessionState, TodoItem, TodoStatus, ToolContext};
 
 /// Streaming event surfaced to the UI/CLI layer.
@@ -273,6 +293,18 @@ pub struct Agent {
     /// When true, file-edit tools auto-approve even though `require_approval`
     /// is on. Powers "accept edits" mode in the TUI; shell still prompts.
     pub auto_approve_edits: bool,
+    /// Input (context) tokens the provider reported for the most recent request,
+    /// folded with cache-read/creation tokens. Drives proactive microcompaction:
+    /// it is the only *accurate* measure of context occupancy we have (the
+    /// system prompt + tool schemas dwarf `history`, so a local byte estimate
+    /// would badly undercount). 0 until the first response lands.
+    pub last_input_tokens: u64,
+    /// Length of `history` as of the most recently built request — i.e. the
+    /// prefix the model has already been shown. Microcompaction only sheds
+    /// outputs within this prefix, never the just-produced batch a multi-tool
+    /// response appended but hasn't been sent back yet (which would hand the
+    /// model "[cleared]" for results it never saw). 0 until the first request.
+    pub history_seen_len: usize,
 }
 
 impl Agent {
@@ -292,6 +324,8 @@ impl Agent {
             pending_approvals: Arc::new(Mutex::new(std::collections::HashMap::new())),
             require_approval: false,
             auto_approve_edits: false,
+            last_input_tokens: 0,
+            history_seen_len: 0,
         }
     }
 
@@ -590,6 +624,75 @@ impl Agent {
         Ok(original_len)
     }
 
+    /// Proactively shed stale tool-output bulk when the last request's context
+    /// occupancy crossed [`MICROCOMPACT_PCT`]% of the window. Cheaper and far
+    /// less lossy than the full-summary `/compact` fallback (which the TUI fires
+    /// at 85%): it keeps every message, reasoning block, and the most recent
+    /// tool results, dropping only old, already-acted-on tool outputs — the
+    /// bulkiest, lowest-value content. Mirrors Claude Code's `clear_tool_uses`
+    /// context-editing strategy. A no-op unless `auto_compact` is on and we are
+    /// genuinely near the limit, so it almost never costs a prompt-cache miss.
+    /// Scoped to `history_seen_len` so it can never clear the just-produced batch
+    /// of a multi-tool response before the model has been shown those results.
+    fn microcompact_tool_outputs(&mut self) {
+        if !self.config.auto_compact {
+            return;
+        }
+        let limit = self.config.effective_context_limit();
+        if limit == 0 || self.last_input_tokens.saturating_mul(100) < limit * MICROCOMPACT_PCT {
+            return;
+        }
+        // Only shed within the prefix the model has already seen; outputs the
+        // current turn appended but hasn't sent back yet must stay intact.
+        let seen = self.history_seen_len.min(self.history.len());
+        let cleared = clear_stale_tool_outputs(
+            &mut self.history[..seen],
+            MICROCOMPACT_KEEP_RECENT,
+            MICROCOMPACT_MIN_OUTPUT_BYTES,
+        );
+        if cleared > 0 {
+            tracing::info!(
+                cleared,
+                input_tokens = self.last_input_tokens,
+                limit,
+                "microcompacted stale tool outputs to conserve context"
+            );
+        }
+    }
+
+    /// Last-ditch context relief when a request was already rejected for
+    /// overflowing the window: clear every tool output but the two most recent,
+    /// regardless of size. Free (no model call, so it cannot itself overflow) and
+    /// usually sufficient because tool outputs dominate a long session's context.
+    /// Returns whether it actually freed anything — `false` means the bulk is in
+    /// messages/reasoning we won't auto-drop, so the caller surfaces the error.
+    fn emergency_shed_context(&mut self) -> bool {
+        clear_stale_tool_outputs(&mut self.history, 2, 0) > 0
+    }
+
+    /// Try to recover from a context-overflow rejection without failing the
+    /// turn: if recoveries aren't exhausted, the message looks like an overflow,
+    /// and shedding stale tool outputs actually frees space, shed and signal a
+    /// retry (bumping `recoveries`). Shared by the pre-stream send error and the
+    /// mid-stream `Failed`/`Error` paths, so every way a provider surfaces
+    /// overflow — a 4xx before the stream, or an error event during it — gets the
+    /// same auto-recovery instead of only the pre-stream case.
+    fn try_recover_overflow(&mut self, message: &str, recoveries: &mut usize) -> bool {
+        if *recoveries < MAX_OVERFLOW_RECOVERIES
+            && is_context_overflow_message(message)
+            && self.emergency_shed_context()
+        {
+            *recoveries += 1;
+            tracing::warn!(
+                attempt = *recoveries,
+                "context overflow — shed stale tool outputs and retrying turn"
+            );
+            true
+        } else {
+            false
+        }
+    }
+
     /// Drive a request through the streaming path and return the accumulated
     /// assistant text. A minimal recv loop for tool-free turns (used by
     /// `compact_history`): it handles only text and terminal events. It does
@@ -642,7 +745,8 @@ impl Agent {
 
     async fn run_turn_inner(&mut self, tx: mpsc::Sender<AgentEvent>) -> Result<()> {
         let mut steps = 0usize;
-        loop {
+        let mut overflow_recoveries = 0usize;
+        'turn: loop {
             steps += 1;
             if steps > MAX_AGENT_STEPS {
                 return Err(anyhow::anyhow!(
@@ -650,10 +754,17 @@ impl Agent {
                      the model may be stuck in a loop; send another message to continue"
                 ));
             }
+            // Proactively shed stale tool-output bulk before building the next
+            // request, so a long tool-using turn stays under the window instead
+            // of ballooning into a hard overflow (or a lossy full /compact).
+            self.microcompact_tool_outputs();
             let input = {
                 let todos = self.session.lock().await.todos.clone();
                 input_with_todo_reminder(&self.history, &todos)
             };
+            // The model is about to be shown all of current history; from here
+            // those items are eligible for microcompaction on a later turn.
+            self.history_seen_len = self.history.len();
             let request = ResponsesRequest::new(self.config.model.clone(), input)
                 .with_instructions(instructions_for_approval(
                     &self.system_prompt,
@@ -662,7 +773,27 @@ impl Agent {
                 .with_tools(self.registry.definitions())
                 .with_reasoning(self.config.reasoning_effort.clone())
                 .with_verbosity(self.config.verbosity.clone());
-            let mut handle = self.client.stream(request).await?;
+            if wire_debug_enabled() {
+                eprintln!(
+                    "[opencli wire] → model={} reasoning={:?} verbosity={:?}",
+                    request.model, request.reasoning, request.text
+                );
+            }
+            let mut handle = match self.client.stream(request).await {
+                Ok(handle) => handle,
+                Err(e) => {
+                    // Auto-recover from a hard context-window overflow instead of
+                    // failing the turn: shed old tool-output bulk and retry, so
+                    // the user never has to manually /compact and resend. Bounded,
+                    // and only when shedding actually frees space — a history that
+                    // can't be shrunk still surfaces the error with the /compact
+                    // hint (handled by the TUI).
+                    if self.try_recover_overflow(&e.to_string(), &mut overflow_recoveries) {
+                        continue;
+                    }
+                    return Err(e);
+                }
+            };
 
             let mut pending_calls: Vec<PendingCall> = Vec::new();
             let mut final_text = String::new();
@@ -687,7 +818,14 @@ impl Agent {
                         ));
                     }
                     Ok(None) => break,
-                    Ok(Some(Err(e))) => return Err(e),
+                    Ok(Some(Err(e))) => {
+                        // A streamed error can carry an overflow rejection too;
+                        // recover the same way as a pre-stream 4xx.
+                        if self.try_recover_overflow(&e.to_string(), &mut overflow_recoveries) {
+                            continue 'turn;
+                        }
+                        return Err(e);
+                    }
                     Ok(Some(Ok(v))) => v,
                 };
                 match ev {
@@ -885,23 +1023,39 @@ impl Agent {
                         }
                     }
                     ResponseStreamEvent::Completed { response } => {
-                        emit_usage(&response, &tx, self.config.effective_context_limit()).await;
+                        if let Some(tokens) =
+                            emit_usage(&response, &tx, self.config.effective_context_limit()).await
+                        {
+                            self.last_input_tokens = tokens;
+                        }
                         break;
                     }
                     ResponseStreamEvent::Failed { response } => {
                         // Previously handled identically to Completed, which
                         // masked content-filter / quota / 5xx errors as a
                         // successful empty turn. Surface them instead.
-                        emit_usage(&response, &tx, self.config.effective_context_limit()).await;
+                        if let Some(tokens) =
+                            emit_usage(&response, &tx, self.config.effective_context_limit()).await
+                        {
+                            self.last_input_tokens = tokens;
+                        }
                         let message = response
                             .get("error")
                             .and_then(|e| e.get("message"))
                             .and_then(|m| m.as_str())
                             .unwrap_or("response.failed (no message)")
                             .to_string();
+                        // A context-overflow can surface mid-stream as a failed
+                        // event rather than a pre-stream 4xx; recover the same way.
+                        if self.try_recover_overflow(&message, &mut overflow_recoveries) {
+                            continue 'turn;
+                        }
                         return Err(anyhow::anyhow!("response.failed: {message}"));
                     }
                     ResponseStreamEvent::Error { message } => {
+                        if self.try_recover_overflow(&message, &mut overflow_recoveries) {
+                            continue 'turn;
+                        }
                         return Err(anyhow::anyhow!(message));
                     }
                     crate::openai::stream::ResponseStreamEvent::Other { kind } => {
@@ -1556,7 +1710,10 @@ struct ToolArgsBuffer {
 
 impl ToolArgsBuffer {
     fn push<'a>(&mut self, chunk: &'a str) -> Option<&'a str> {
-        let chunk = normalize_argument_fragment(chunk)?;
+        // Drop a leading empty-args placeholder, keep mid-object fragments
+        // verbatim (so a bare `"limit": null` survives) — shared rule, see
+        // `accumulate_argument_fragment`.
+        let chunk = accumulate_argument_fragment(self.text.is_empty(), chunk)?;
         if self.too_large {
             return None;
         }
@@ -1808,6 +1965,47 @@ fn history_tool_name_for_registry(registry: &crate::tools::Registry, name: &str)
         .find(name)
         .map(|tool| tool.name().to_string())
         .unwrap_or_else(|| history_tool_name(name))
+}
+
+/// Marker substituted for an old tool output that microcompaction cleared.
+const CLEARED_TOOL_OUTPUT_MARKER: &str =
+    "[older tool output cleared to conserve context — re-run the tool if you need this again]";
+/// Most-recent tool outputs kept verbatim during microcompaction.
+const MICROCOMPACT_KEEP_RECENT: usize = 6;
+/// Only clear outputs larger than this; tiny ones aren't worth a cache miss.
+const MICROCOMPACT_MIN_OUTPUT_BYTES: usize = 1024;
+/// Context-occupancy percent at which microcompaction engages — below the 85%
+/// full-summary fallback so it sheds bulk first and far more cheaply.
+const MICROCOMPACT_PCT: u64 = 75;
+
+/// Replace the `output` of stale `FunctionCallOutput` items with a short marker,
+/// keeping the most recent `keep_recent` intact and only touching outputs larger
+/// than `min_bytes`. Structure is preserved (every `function_call` keeps its
+/// paired output item, so both the OpenAI and Anthropic wires stay valid); only
+/// the bulky, already-acted-on text is shed. Returns the number cleared.
+fn clear_stale_tool_outputs(
+    history: &mut [InputItem],
+    keep_recent: usize,
+    min_bytes: usize,
+) -> usize {
+    let positions: Vec<usize> = history
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, item)| {
+            matches!(item, InputItem::FunctionCallOutput { .. }).then_some(idx)
+        })
+        .collect();
+    let clearable = positions.len().saturating_sub(keep_recent);
+    let mut cleared = 0;
+    for &idx in positions.iter().take(clearable) {
+        if let InputItem::FunctionCallOutput { output, .. } = &mut history[idx] {
+            if output.len() > min_bytes && output != CLEARED_TOOL_OUTPUT_MARKER {
+                *output = CLEARED_TOOL_OUTPUT_MARKER.to_string();
+                cleared += 1;
+            }
+        }
+    }
+    cleared
 }
 
 fn append_tool_result_history(
@@ -2657,8 +2855,25 @@ fn json_type_label(value: &Value) -> &'static str {
     }
 }
 
-async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, limit: u64) {
+/// Opt-in wire diagnostic (`OPENCLI_DEBUG_WIRE=1`). Lets the user confirm the
+/// reasoning effort they selected is actually carried to the provider and that
+/// the model spent reasoning tokens — provider-agnostic, so it works the same
+/// for OpenAI, Anthropic, and any future provider on the shared agent loop.
+fn wire_debug_enabled() -> bool {
+    std::env::var_os("OPENCLI_DEBUG_WIRE").is_some()
+}
+
+/// Emit the turn's usage/telemetry events and return the folded input-token
+/// count (input + cache-read + cache-creation), or `None` when the response
+/// carried no usable usage (no `usage` block, or one with a zero input count —
+/// e.g. a `Failed` event, or a provider that serializes `"usage": null`). The
+/// caller records `Some` on the agent to drive microcompaction and skips on
+/// `None`, so a usage-less response never clobbers the last good occupancy.
+async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, limit: u64) -> Option<u64> {
     if let Some(usage) = response.get("usage") {
+        if wire_debug_enabled() {
+            eprintln!("[opencli wire] ← usage={usage}");
+        }
         let get = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
         // With prompt caching on, Anthropic reports the cached prompt tokens
         // separately from `input_tokens`. The true context occupancy (what the
@@ -2692,7 +2907,12 @@ async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, limit: u64)
         } else if i * 10 >= limit * 8 {
             let _ = tx.send(AgentEvent::ContextWarning { used: i, limit }).await;
         }
+        // A real request always reports a non-zero input count; `i == 0` means
+        // the block lacked input tokens (`"usage": null`), so don't overwrite a
+        // good prior reading with 0.
+        return if i > 0 { Some(i) } else { None };
     }
+    None
 }
 
 fn guess_mime(p: &std::path::Path) -> &'static str {
@@ -2902,8 +3122,168 @@ mod context_limit_tests {
 
 #[cfg(test)]
 mod compaction_tests {
-    use super::{compacted_history, should_compact, COMPACT_MIN_ITEMS};
+    use super::{
+        clear_stale_tool_outputs, compacted_history, emit_usage, is_context_overflow_message,
+        should_compact, CLEARED_TOOL_OUTPUT_MARKER, COMPACT_MIN_ITEMS,
+    };
     use crate::openai::{InputItem, MessageContent};
+    use serde_json::json;
+    use tokio::sync::mpsc;
+
+    fn tool_output(call_id: &str, output: &str) -> InputItem {
+        InputItem::FunctionCallOutput {
+            call_id: call_id.into(),
+            output: output.into(),
+            error: false,
+        }
+    }
+
+    #[test]
+    fn microcompact_clears_old_large_outputs_keeps_recent_and_structure() {
+        let big = "x".repeat(2048);
+        let mut history = vec![
+            InputItem::Message {
+                role: "user".into(),
+                content: vec![MessageContent::text("go")],
+            },
+            tool_output("c1", &big),   // old + large → cleared
+            tool_output("c2", "tiny"), // old but small → kept
+            tool_output("c3", &big),   // within keep_recent → kept
+            tool_output("c4", &big),   // within keep_recent → kept
+        ];
+
+        let cleared = clear_stale_tool_outputs(&mut history, 2, 1024);
+
+        assert_eq!(cleared, 1, "only the old large output is cleared");
+        // Message untouched; item count unchanged (structure preserved).
+        assert_eq!(history.len(), 5);
+        assert!(matches!(history[0], InputItem::Message { .. }));
+        match &history[1] {
+            InputItem::FunctionCallOutput {
+                output, call_id, ..
+            } => {
+                assert_eq!(output, CLEARED_TOOL_OUTPUT_MARKER);
+                assert_eq!(call_id, "c1", "call_id (tool_use pairing) is preserved");
+            }
+            other => panic!("expected FunctionCallOutput, got {other:?}"),
+        }
+        match &history[2] {
+            InputItem::FunctionCallOutput { output, .. } => assert_eq!(output, "tiny"),
+            other => panic!("expected FunctionCallOutput, got {other:?}"),
+        }
+        // The two most recent large outputs are kept verbatim.
+        match &history[4] {
+            InputItem::FunctionCallOutput { output, .. } => assert_eq!(output.len(), 2048),
+            other => panic!("expected FunctionCallOutput, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emergency_shed_clears_small_old_outputs_keeps_two_recent() {
+        // Emergency config: keep_recent=2, min_bytes=0 → even small old outputs go.
+        let mut history = vec![
+            tool_output("c1", "small-but-old"),
+            tool_output("c2", "also-old"),
+            tool_output("c3", "recent-1"),
+            tool_output("c4", "recent-2"),
+        ];
+        let cleared = clear_stale_tool_outputs(&mut history, 2, 0);
+        assert_eq!(cleared, 2, "both old outputs cleared regardless of size");
+        assert_eq!(
+            match &history[3] {
+                InputItem::FunctionCallOutput { output, .. } => output.as_str(),
+                _ => "",
+            },
+            "recent-2",
+            "the two most recent outputs survive"
+        );
+    }
+
+    #[test]
+    fn context_overflow_message_matches_provider_phrasings() {
+        for m in [
+            "OpenAI 400: This model's maximum context length is 128000 tokens",
+            "prompt is too long: 250000 tokens > 200000",
+            "input length and max_tokens exceed the context window",
+            "context_length_exceeded",
+        ] {
+            assert!(is_context_overflow_message(m), "should match: {m}");
+        }
+        // Unrelated errors must NOT trigger auto-recovery.
+        assert!(!is_context_overflow_message(
+            "401 Unauthorized: invalid api key"
+        ));
+        assert!(!is_context_overflow_message("connection reset by peer"));
+    }
+
+    #[test]
+    fn microcompact_is_idempotent() {
+        let big = "y".repeat(2048);
+        let mut history = vec![tool_output("c1", &big), tool_output("c2", &big)];
+        assert_eq!(clear_stale_tool_outputs(&mut history, 1, 1024), 1);
+        // Second pass finds nothing new to clear (already a marker).
+        assert_eq!(clear_stale_tool_outputs(&mut history, 1, 1024), 0);
+    }
+
+    #[test]
+    fn microcompact_seen_prefix_spares_unsent_batch() {
+        // Regression: microcompaction passes only the already-seen prefix
+        // (`history[..history_seen_len]`) to clear_stale_tool_outputs, so a large
+        // just-produced tool batch beyond that prefix is never cleared before the
+        // model has been shown those results.
+        let big = "x".repeat(2048);
+        let mut history = [
+            tool_output("seen1", &big), // seen + old + large → cleared
+            tool_output("seen2", &big), // seen, within keep_recent → kept
+            // ---- unsent tail (the fresh batch) begins here ----
+            tool_output("fresh1", &big),
+            tool_output("fresh2", &big),
+            tool_output("fresh3", &big),
+        ];
+        let seen = 2; // only the first two were sent to the model
+        let cleared = clear_stale_tool_outputs(&mut history[..seen], 1, 1024);
+        assert_eq!(cleared, 1, "only old SEEN outputs are cleared");
+        // The fresh, never-sent batch is fully intact.
+        for (i, id) in [(2, "fresh1"), (3, "fresh2"), (4, "fresh3")] {
+            match &history[i] {
+                InputItem::FunctionCallOutput {
+                    output, call_id, ..
+                } => {
+                    assert_eq!(output.len(), 2048, "{id} must survive verbatim");
+                    assert_eq!(call_id, id);
+                }
+                other => panic!("expected FunctionCallOutput, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn emit_usage_returns_none_without_usable_usage() {
+        let (tx, _rx) = mpsc::channel(16);
+        // No usage block (e.g. a Failed event) → None, so the caller leaves
+        // last_input_tokens untouched instead of clobbering it with 0.
+        assert_eq!(emit_usage(&json!({}), &tx, 100_000).await, None);
+        // Present but null (a Chat Completions stream with no usage chunk) → None.
+        assert_eq!(
+            emit_usage(&json!({ "usage": null }), &tx, 100_000).await,
+            None
+        );
+        // A real usage block → Some(folded input tokens).
+        assert_eq!(
+            emit_usage(&json!({ "usage": { "input_tokens": 1234 } }), &tx, 100_000).await,
+            Some(1234)
+        );
+        // Cache fields fold into the input total.
+        assert_eq!(
+            emit_usage(
+                &json!({ "usage": { "input_tokens": 100, "cache_read_input_tokens": 20 } }),
+                &tx,
+                100_000
+            )
+            .await,
+            Some(120)
+        );
+    }
 
     #[test]
     fn compacted_history_is_single_orphan_free_user_message() {
@@ -3381,6 +3761,29 @@ mod function_call_id_tests {
     use crate::client::LlmClient;
     use crate::config::{Config, ProviderConfig};
     use crate::openai::{InputItem, MessageContent};
+
+    #[test]
+    fn args_buffer_keeps_bare_null_value_mid_stream() {
+        // Regression: a streamed `"limit": null` whose `null` arrives as its own
+        // delta chunk must NOT be dropped as an empty placeholder.
+        let mut buf = ToolArgsBuffer::default();
+        for chunk in [r#"{"path":"a.py","limit":"#, "null", r#","offset":null}"#] {
+            buf.push(chunk);
+        }
+        assert_eq!(buf.text, r#"{"path":"a.py","limit":null,"offset":null}"#);
+        let v: serde_json::Value = serde_json::from_str(&buf.text).unwrap();
+        assert!(v["limit"].is_null());
+    }
+
+    #[test]
+    fn args_buffer_drops_only_leading_placeholder() {
+        // A leading `{}` placeholder is dropped; the real object that follows is
+        // kept. (Mirrors a provider that prefixes args with an empty object.)
+        let mut buf = ToolArgsBuffer::default();
+        buf.push("{}");
+        buf.push(r#"{"path":"a.py"}"#);
+        assert_eq!(buf.text, r#"{"path":"a.py"}"#);
+    }
     use crate::tools::{BuiltinTool, TodoItem, TodoStatus, ToolContext};
     use anyhow::Result;
     use async_trait::async_trait;
@@ -4466,12 +4869,36 @@ mod function_call_id_tests {
                     api_key: Some("sk-test".to_string()),
                     api_key_env: None,
                     context_limit: None,
+                    forward_reasoning_effort: false,
                 },
             )]),
             ..Config::default()
         };
         let client = LlmClient::for_config(&config).await.unwrap();
         Agent::new(client, config)
+    }
+
+    #[tokio::test]
+    async fn try_recover_overflow_sheds_and_retries_only_for_overflow() {
+        let mut agent = session_test_agent().await;
+        let big = "x".repeat(2048);
+        let out = |id: &str| InputItem::FunctionCallOutput {
+            call_id: id.into(),
+            output: big.clone(),
+            error: false,
+        };
+        agent.history = vec![out("c1"), out("c2"), out("c3"), out("c4")];
+
+        let mut recoveries = 0usize;
+        // An unrelated error must NOT trigger shedding/retry.
+        assert!(!agent.try_recover_overflow("401 unauthorized: bad key", &mut recoveries));
+        assert_eq!(recoveries, 0);
+        // An overflow rejection sheds stale outputs and signals a retry.
+        assert!(agent.try_recover_overflow("prompt is too long: 250000 tokens", &mut recoveries));
+        assert_eq!(recoveries, 1, "a successful recovery bumps the counter");
+        // Once the recovery budget is spent, even an overflow is surfaced.
+        recoveries = super::MAX_OVERFLOW_RECOVERIES;
+        assert!(!agent.try_recover_overflow("context window exceeded", &mut recoveries));
     }
 
     #[tokio::test]

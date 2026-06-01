@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::auth::Credential;
 
-use super::models::ResponsesRequest;
+use super::models::{InputItem, ResponsesRequest};
 use super::stream::StreamHandle;
 
 /// Cap connect time so a black-holed DNS or unreachable host fails fast
@@ -40,6 +40,31 @@ fn redact_auth_in(body: &str) -> String {
 
 const API_BASE: &str = "https://api.openai.com/v1";
 const CHATGPT_BACKEND_BASE: &str = "https://chatgpt.com/backend-api/codex";
+
+/// Drop reasoning items the Responses API can't replay before they hit the wire.
+///
+/// History is a shared, provider-agnostic IR: a single conversation can cross
+/// providers (a `/model` switch, or resuming a session that ran on another
+/// provider). Reasoning/thinking items, however, are provider-specific and
+/// opaque — only the provider that produced one can replay it. Sending a foreign
+/// reasoning item to the Responses API fails with `400 Invalid 'input[N].id'`
+/// (Anthropic thinking blocks carry no OpenAI reasoning id, so they are stored
+/// with an empty `id`).
+///
+/// The rule is therefore provider-general, not a patch for one other backend:
+/// keep a reasoning item only if it looks like a genuine OpenAI Responses
+/// reasoning item — a non-empty reasoning id and no Anthropic thinking
+/// `signature`. Anything else originated elsewhere and is dropped. This mirrors
+/// the Anthropic translator, which drops reasoning lacking a signature at its
+/// own IR→wire boundary; every native provider must sanitize foreign reasoning
+/// the same way at its send boundary. Dropping is lossless here: the OpenAI path
+/// never stores its own reasoning ids today, so nothing legitimate is lost.
+fn strip_unsendable_reasoning(input: &mut Vec<InputItem>) {
+    input.retain(|item| match item {
+        InputItem::Reasoning { id, signature, .. } => !id.trim().is_empty() && signature.is_none(),
+        _ => true,
+    });
+}
 
 fn normalize_openai_reasoning_effort(
     model: &str,
@@ -125,6 +150,7 @@ impl OpenAiClient {
     /// Stream a Responses API request, returning a handle producing SSE events.
     pub async fn stream(&self, mut req: ResponsesRequest) -> Result<StreamHandle> {
         req.stream = true;
+        strip_unsendable_reasoning(&mut req.input);
         self.apply_credential_defaults(&mut req);
         self.send_internal(req).await
     }
@@ -132,6 +158,7 @@ impl OpenAiClient {
     /// Non-streaming variant.
     pub async fn create(&self, mut req: ResponsesRequest) -> Result<serde_json::Value> {
         req.stream = false;
+        strip_unsendable_reasoning(&mut req.input);
         self.apply_credential_defaults(&mut req);
         let builder = self
             .http
@@ -236,7 +263,73 @@ impl crate::client::ProviderClient for OpenAiClient {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_openai_reasoning_effort;
+    use super::{normalize_openai_reasoning_effort, strip_unsendable_reasoning};
+    use crate::openai::models::{InputItem, MessageContent};
+
+    #[test]
+    fn strips_empty_id_reasoning_but_keeps_real_ids_and_other_items() {
+        let mut input = vec![
+            InputItem::Message {
+                role: "user".into(),
+                content: vec![MessageContent::text("hi")],
+            },
+            // Anthropic-origin reasoning carried across a /model switch.
+            InputItem::Reasoning {
+                id: String::new(),
+                summary: Vec::new(),
+                thinking: Some("internal".into()),
+                signature: Some("sig".into()),
+            },
+            // A genuine OpenAI reasoning item must survive.
+            InputItem::Reasoning {
+                id: "rs_123".into(),
+                summary: Vec::new(),
+                thinking: None,
+                signature: None,
+            },
+            InputItem::FunctionCallOutput {
+                call_id: "call_1".into(),
+                output: "ok".into(),
+                error: false,
+            },
+        ];
+
+        strip_unsendable_reasoning(&mut input);
+
+        assert_eq!(input.len(), 3);
+        assert!(matches!(input[0], InputItem::Message { .. }));
+        assert!(
+            matches!(&input[1], InputItem::Reasoning { id, .. } if id == "rs_123"),
+            "real-id reasoning must be preserved"
+        );
+        assert!(matches!(input[2], InputItem::FunctionCallOutput { .. }));
+    }
+
+    #[test]
+    fn strips_signed_reasoning_even_with_a_nonempty_id() {
+        // A reasoning item that still carries an Anthropic thinking signature is
+        // foreign to the Responses API regardless of its id.
+        let mut input = vec![InputItem::Reasoning {
+            id: "rs_looks_real".into(),
+            summary: Vec::new(),
+            thinking: Some("internal".into()),
+            signature: Some("sig".into()),
+        }];
+        strip_unsendable_reasoning(&mut input);
+        assert!(input.is_empty());
+    }
+
+    #[test]
+    fn strips_whitespace_only_id_reasoning() {
+        let mut input = vec![InputItem::Reasoning {
+            id: "   ".into(),
+            summary: Vec::new(),
+            thinking: None,
+            signature: None,
+        }];
+        strip_unsendable_reasoning(&mut input);
+        assert!(input.is_empty());
+    }
 
     #[test]
     fn chatgpt_oauth_keeps_none_and_maps_minimal_to_none() {
