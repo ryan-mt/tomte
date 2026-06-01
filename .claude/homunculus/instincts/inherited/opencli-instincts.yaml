@@ -1,0 +1,299 @@
+# Instincts generated from https://github.com/ryan-mt/opencli
+# Generated: 2026-06-01T04:43:14.543Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: opencli-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/ryan-mt/opencli
+---
+
+# Opencli Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: fix
+
+## Evidence
+
+- 1 commits analyzed
+- Detected conventional commit pattern
+- Examples: fix: harden beta 3 — context management, streamed tool calls, reasoning portability
+
+---
+id: opencli-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/ryan-mt/opencli
+---
+
+# Opencli Commit Length
+
+## Action
+
+Write moderate-length commit messages (~83 characters)
+
+## Evidence
+
+- Average commit message length: 83 chars
+- Based on 1 commits
+
+---
+id: opencli-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/ryan-mt/opencli
+---
+
+# Opencli Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: opencli-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/ryan-mt/opencli
+---
+
+# Opencli Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: opencli-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/ryan-mt/opencli
+---
+
+# Opencli Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: opencli-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/ryan-mt/opencli
+---
+
+# Opencli Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: opencli-instinct-camelcase-files
+trigger: "When creating a new source file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: ryan-mt/opencli
+---
+
+# Opencli Instinct Camelcase Files
+
+## Action
+
+Name the file using camelCase
+
+## Evidence
+
+- Pattern in namingConventions.files
+
+---
+id: opencli-instinct-camelcase-functions
+trigger: "When defining a new function"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: ryan-mt/opencli
+---
+
+# Opencli Instinct Camelcase Functions
+
+## Action
+
+Name the function using camelCase
+
+## Evidence
+
+- Pattern in namingConventions.functions
+
+---
+id: opencli-instinct-pascalcase-classes
+trigger: "When defining a new class or struct"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: ryan-mt/opencli
+---
+
+# Opencli Instinct Pascalcase Classes
+
+## Action
+
+Name the class or struct using PascalCase
+
+## Evidence
+
+- Pattern in namingConventions.classes
+
+---
+id: opencli-instinct-screaming-constants
+trigger: "When declaring a constant"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: ryan-mt/opencli
+---
+
+# Opencli Instinct Screaming Constants
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE
+
+## Evidence
+
+- Pattern in namingConventions.constants
+
+---
+id: opencli-instinct-relative-imports
+trigger: "When importing modules or files"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: ryan-mt/opencli
+---
+
+# Opencli Instinct Relative Imports
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in importStyle
+
+---
+id: opencli-instinct-named-exports
+trigger: "When exporting functions, types, or values"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: ryan-mt/opencli
+---
+
+# Opencli Instinct Named Exports
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in exportStyle
+
+---
+id: opencli-instinct-git-conventional-fix
+trigger: "When committing a bug fix"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: ryan-mt/opencli
+---
+
+# Opencli Instinct Git Conventional Fix
+
+## Action
+
+Prefix the commit message with 'fix:' following conventional commit format
+
+## Evidence
+
+- Seen in commit 'fix: harden beta 3 — context management, streamed tool calls, reasoning portability'
+- Pattern in commits.prefixes
+
+---
+id: opencli-instinct-git-commit-length
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: ryan-mt/opencli
+---
+
+# Opencli Instinct Git Commit Length
+
+## Action
+
+Write a descriptive commit message averaging around 80 characters
+
+## Evidence
+
+- Pattern in commits.averageLength
+
+---
+id: opencli-instinct-tests-in-separate-folder
+trigger: "When adding new tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: ryan-mt/opencli
+---
+
+# Opencli Instinct Tests In Separate Folder
+
+## Action
+
+Place test files in a separate folder from source files
+
+## Evidence
+
+- Pattern in architecture.testLocation
+
