@@ -157,25 +157,24 @@ pub fn save(record: &SessionRecord) -> std::io::Result<()> {
     std::fs::rename(&tmp, &path)
 }
 
-#[cfg(unix)]
 fn write_session_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
 
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).truncate(true).write(true);
+    // Owner-only perms are Unix-specific; other platforms inherit the dir ACL.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path)?;
     f.write_all(bytes)?;
+    // fsync the staging file before save() renames it over the target, so a
+    // crash can't leave a renamed-but-unflushed (empty/partial) session. Now
+    // applied on every platform, not just Unix.
     f.sync_all()?;
     Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_session_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)
 }
 
 fn validate_session_id(id: &str) -> std::io::Result<()> {

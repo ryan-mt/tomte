@@ -32,6 +32,7 @@ Beta 4 focuses on making long agent sessions easier to run, inspect, and recover
 - Showed both consumed and remaining quota in `/usage` (`12.5% used (87.5% left)`), so a percentage reads unambiguously whether the provider's native UI counts up (Claude utilization) or down (ChatGPT/Codex remaining). All providers are still normalized to one "used" convention internally; this only clarifies the display.
 - Capped the per-stream tool-call and content-block accumulators (orphan argument buffers in the Responses path, Anthropic content blocks, and Chat Completions tool calls), so a malformed stream emitting unboundedly many distinct ids/indices can no longer grow memory during a single turn.
 - Bounded the in-memory composer recall history (Up/Down) at 1000 entries so a multi-day session can't grow it without limit.
+- Fsync the staging session file before the atomic rename on every platform (previously Unix-only), so a crash mid-save can no longer leave a renamed-but-unflushed empty/partial session, and unified the per-platform write paths into one.
 
 ### Safety and security
 
