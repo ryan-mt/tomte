@@ -825,7 +825,7 @@ mod tests {
     fn delayed_two_line_command() -> &'static str {
         #[cfg(windows)]
         {
-            "echo first & powershell -NoProfile -Command \"Start-Sleep -Milliseconds 200\" & echo second"
+            "echo first & ping -n 2 127.0.0.1 >NUL & echo second"
         }
         #[cfg(not(windows))]
         {

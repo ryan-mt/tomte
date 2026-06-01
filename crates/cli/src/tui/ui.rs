@@ -2553,18 +2553,22 @@ fn shorten_home_path(path: &Path) -> String {
     if let Some(home) = dirs::home_dir() {
         return shorten_path_with_home(path, &home);
     }
-    path.display().to_string()
+    display_path(path)
 }
 
 fn shorten_path_with_home(path: &Path, home: &Path) -> String {
     let Ok(rest) = path.strip_prefix(home) else {
-        return path.display().to_string();
+        return display_path(path);
     };
     if rest.as_os_str().is_empty() {
         "~".to_string()
     } else {
-        format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display())
+        format!("~/{}", display_path(rest))
     }
+}
+
+fn display_path(path: &Path) -> String {
+    path.display().to_string().replace('\\', "/")
 }
 
 fn wrap(text: &str, width: usize) -> Vec<String> {

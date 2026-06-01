@@ -222,7 +222,7 @@ async fn execute_grep_with_commands(
                 if msg.is_empty() { "unknown error" } else { msg }
             ));
         }
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stdout = normalize_search_output_paths(&String::from_utf8_lossy(&out.stdout), mode);
         return Ok(apply_limits(&stdout, a.head_limit, a.offset, 8000));
     }
     if a.multiline.unwrap_or(false) {
@@ -274,7 +274,7 @@ async fn execute_grep_with_commands(
             if msg.is_empty() { "unknown error" } else { msg }
         ));
     }
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stdout = normalize_search_output_paths(&String::from_utf8_lossy(&out.stdout), mode);
     let stdout = if mode == "count" {
         filter_zero_count_lines(&stdout)
     } else {
@@ -501,10 +501,42 @@ fn relativize_glob_results(
             let rel = p.strip_prefix("./").unwrap_or(&p);
             let full = search_root.join(rel);
             full.strip_prefix(cwd)
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| rel.to_string())
+                .map(path_to_slash_string)
+                .unwrap_or_else(|_| normalize_path_separators(rel))
         })
         .collect()
+}
+
+fn path_to_slash_string(path: &std::path::Path) -> String {
+    normalize_path_separators(&path.to_string_lossy())
+}
+
+fn normalize_path_separators(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn normalize_search_output_paths(output: &str, mode: &str) -> String {
+    output
+        .lines()
+        .map(|line| normalize_search_output_line(line, mode))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn normalize_search_output_line(line: &str, mode: &str) -> String {
+    if line.is_empty() || line == "--" {
+        return line.to_string();
+    }
+
+    if matches!(mode, "files_with_matches") {
+        return normalize_path_separators(line);
+    }
+
+    let Some(idx) = line.find([':', '-']) else {
+        return normalize_path_separators(line);
+    };
+    let (path, rest) = line.split_at(idx);
+    format!("{}{}", normalize_path_separators(path), rest)
 }
 
 /// Match a glob against a relative path for the no-ripgrep `find` fallback,
@@ -1162,5 +1194,21 @@ mod tests {
         // A pattern without a slash matches the basename at any depth.
         assert!(glob_fallback_matches("*.rs", "a/b/c.rs"));
         assert!(!glob_fallback_matches("*.rs", "a/b/c.tsx"));
+    }
+
+    #[test]
+    fn search_output_paths_use_forward_slashes() {
+        assert_eq!(
+            normalize_search_output_line(r"src\lib.rs:1:needle", "content"),
+            "src/lib.rs:1:needle"
+        );
+        assert_eq!(
+            normalize_search_output_line(r"src\lib.rs-2-context", "content"),
+            "src/lib.rs-2-context"
+        );
+        assert_eq!(
+            normalize_search_output_line(r"src\lib.rs", "files_with_matches"),
+            "src/lib.rs"
+        );
     }
 }
