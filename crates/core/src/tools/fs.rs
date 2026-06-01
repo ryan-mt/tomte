@@ -23,6 +23,22 @@ pub(super) async fn atomic_write_preserving_permissions(
         .await
         .ok()
         .map(|meta| meta.permissions());
+    // Any failure after the temp file is created (a partial write, a failed
+    // permission set, or a cross-device/EISDIR rename) must not leave a stray
+    // `.tmp` sibling behind to accumulate on disk.
+    let result = write_temp_then_swap(path, tmp, bytes, permissions).await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(tmp).await;
+    }
+    result
+}
+
+async fn write_temp_then_swap(
+    path: &std::path::Path,
+    tmp: &std::path::Path,
+    bytes: &[u8],
+    permissions: Option<std::fs::Permissions>,
+) -> Result<()> {
     tokio::fs::write(tmp, bytes)
         .await
         .with_context(|| format!("write temp {}", tmp.display()))?;
@@ -1080,6 +1096,24 @@ mod tests {
 
     fn read_args(path: &str, offset: Option<usize>, limit: Option<usize>) -> Value {
         json!({"path": path, "offset": offset, "limit": limit})
+    }
+
+    #[tokio::test]
+    async fn atomic_write_removes_temp_on_failed_swap() {
+        let dir = tempfile::tempdir().unwrap();
+        // Make the destination an existing directory so `rename(file -> dir)`
+        // fails (EISDIR) after the temp file has already been written.
+        let path = dir.path().join("dest");
+        std::fs::create_dir(&path).unwrap();
+        let tmp = dir.path().join("dest.tmp");
+
+        let res = atomic_write_preserving_permissions(&path, &tmp, b"payload").await;
+
+        assert!(res.is_err(), "rename onto a directory should fail");
+        assert!(
+            !tmp.exists(),
+            "temp file must be cleaned up after a failed swap"
+        );
     }
 
     #[tokio::test]
