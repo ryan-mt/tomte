@@ -209,7 +209,7 @@ async fn execute_grep_with_commands(
         cmd.arg(".");
     }
     cmd.current_dir(&ctx.cwd);
-    let out = cmd.output().await;
+    let out = run_capped(cmd, SEARCH_OUTPUT_CAP_BYTES).await;
     if let Ok(out) = out {
         // rg exits 0 on matches and 1 on "no matches" (both fine); exit 2+
         // is a real error (invalid regex, bad glob). Surface that instead of
@@ -265,7 +265,7 @@ async fn execute_grep_with_commands(
         None => grep.arg("."),
     };
     grep.current_dir(&ctx.cwd);
-    let out = grep.output().await?;
+    let out = run_capped(grep, SEARCH_OUTPUT_CAP_BYTES).await?;
     if !out.status.success() && out.status.code() != Some(1) {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let msg = stderr.trim();
@@ -281,6 +281,62 @@ async fn execute_grep_with_commands(
         stdout
     };
     Ok(apply_limits(&stdout, a.head_limit, a.offset, 8000))
+}
+
+/// Hard ceiling on raw search stdout captured into memory before
+/// [`apply_limits`] trims it. Generous enough to preserve deep `offset`
+/// pagination, but bounded so a pathological match set (e.g. every line of a
+/// giant minified file) can't balloon memory. ~4 MiB.
+const SEARCH_OUTPUT_CAP_BYTES: usize = 4 * 1024 * 1024;
+
+/// Like [`Command::output`], but stops capturing stdout at `cap` bytes and
+/// kills the child if it overruns, so it can neither balloon memory nor block
+/// forever writing to a full pipe once we stop reading.
+async fn run_capped(mut cmd: Command, cap: usize) -> std::io::Result<std::process::Output> {
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn()?;
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let mut stderr = child.stderr.take().expect("stderr piped");
+
+    let mut out = Vec::new();
+    let overran = read_to_cap(&mut stdout, &mut out, cap).await?;
+    if overran {
+        // We stopped reading; kill so the child doesn't block writing to a
+        // full pipe while we wait for it to exit.
+        let _ = child.start_kill();
+    }
+    let mut err = Vec::new();
+    let _ = read_to_cap(&mut stderr, &mut err, 64 * 1024).await;
+    let status = child.wait().await?;
+    Ok(std::process::Output {
+        status,
+        stdout: out,
+        stderr: err,
+    })
+}
+
+/// Read from `r` into `buf` until EOF or `cap` bytes. Returns `true` when the
+/// cap was reached (more data may remain unread).
+async fn read_to_cap<R>(r: &mut R, buf: &mut Vec<u8>, cap: usize) -> std::io::Result<bool>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut chunk = [0u8; 8192];
+    while buf.len() < cap {
+        let n = r.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(false);
+        }
+        let room = cap - buf.len();
+        buf.extend_from_slice(&chunk[..n.min(room)]);
+        if n > room {
+            return Ok(true);
+        }
+    }
+    Ok(true)
 }
 
 fn normalize_grep_output_mode(mode: Option<&str>) -> Option<&'static str> {
@@ -1211,5 +1267,32 @@ mod tests {
             normalize_search_output_line(r"src\lib.rs", "files_with_matches"),
             "src/lib.rs"
         );
+    }
+
+    #[tokio::test]
+    async fn read_to_cap_stops_at_limit() {
+        let data = [b'x'; 10_000];
+        let mut buf = Vec::new();
+        let overran = read_to_cap(&mut &data[..], &mut buf, 4096).await.unwrap();
+        assert!(overran);
+        assert_eq!(buf.len(), 4096);
+    }
+
+    #[tokio::test]
+    async fn read_to_cap_reads_everything_under_limit() {
+        let data = [b'x'; 100];
+        let mut buf = Vec::new();
+        let overran = read_to_cap(&mut &data[..], &mut buf, 4096).await.unwrap();
+        assert!(!overran);
+        assert_eq!(buf.len(), 100);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_capped_bounds_and_kills_a_stdout_flood() {
+        // `yes` writes to stdout forever; run_capped must bound it and return
+        // instead of hanging or growing without limit.
+        let out = run_capped(Command::new("yes"), 8192).await.unwrap();
+        assert!(out.stdout.len() <= 8192 + 8192);
     }
 }
