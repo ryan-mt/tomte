@@ -269,8 +269,22 @@ async fn collect_workspace_symbols(cwd: &Path) -> Result<Vec<Symbol>> {
     Ok(out)
 }
 
+/// Recursion depth cap for the source-file walk. A belt-and-suspenders guard
+/// against stack exhaustion on pathologically deep trees, in addition to not
+/// following directory symlinks below.
+const MAX_WALK_DEPTH: usize = 64;
+
 fn collect_source_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    if out.len() >= 2_000 {
+    collect_source_files_at(root, dir, out, 0)
+}
+
+fn collect_source_files_at(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    depth: usize,
+) -> Result<()> {
+    if out.len() >= 2_000 || depth >= MAX_WALK_DEPTH {
         return Ok(());
     }
     let entries = match std::fs::read_dir(dir) {
@@ -281,12 +295,19 @@ fn collect_source_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Resu
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if path.is_dir() {
+        // Use the directory entry's own type, which — unlike `Path::is_dir` —
+        // does not traverse symlinks. Skipping symlinked directories stops a
+        // symlink cycle from recursing until the stack overflows.
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if file_type.is_dir() {
             if should_skip_dir(&name) {
                 continue;
             }
-            collect_source_files(root, &path, out)?;
-        } else if path.is_file() && is_source_path(&path) && path.starts_with(root) {
+            collect_source_files_at(root, &path, out, depth + 1)?;
+        } else if file_type.is_file() && is_source_path(&path) && path.starts_with(root) {
             out.push(path);
         }
         if out.len() >= 2_000 {
@@ -699,5 +720,23 @@ mod tests {
     fn word_reference_respects_boundaries() {
         assert!(line_contains_word("let answer = 1", "answer"));
         assert!(!line_contains_word("let answer_count = 1", "answer"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_source_files_does_not_follow_symlink_cycles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let sub = root.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("real.rs"), "fn main() {}").unwrap();
+        // A cycle: sub/loop -> root. Following it would recurse forever.
+        std::os::unix::fs::symlink(root, sub.join("loop")).unwrap();
+
+        let mut out = Vec::new();
+        // Returns instead of overflowing the stack, and still finds real files.
+        collect_source_files(root, root, &mut out).unwrap();
+
+        assert!(out.iter().any(|p| p.ends_with("real.rs")));
     }
 }
