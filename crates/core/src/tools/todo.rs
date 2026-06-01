@@ -23,6 +23,15 @@ struct TodoInput {
     status: String,
     #[serde(alias = "activeForm")]
     active_form: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(
+        default,
+        alias = "blockedBy",
+        alias = "blocked_by_ids",
+        deserialize_with = "super::deserialize_optional_string_vec"
+    )]
+    blocked_by: Option<Vec<String>>,
 }
 
 #[async_trait]
@@ -42,7 +51,9 @@ Each entry has:\n\
 \n\
 For implementation todo lists with three or more items, include a verification task (tests, build, lint, type-check, or an equivalent project-specific check) before final completion.\n\
 \n\
-Returns a short summary of how many items were stored and how many are still pending."
+To express ordering between steps, give an item a short `id` and list the ids it waits on in `blocked_by`. An item is ready to start only once every id in its `blocked_by` is `completed`. Leave both off for a plain flat list.\n\
+\n\
+Returns a short summary of how many items were stored and how many are still pending, and — when dependencies are used — which items are now unblocked."
     }
     fn parameters_schema(&self) -> Value {
         json!({
@@ -56,7 +67,9 @@ Returns a short summary of how many items were stored and how many are still pen
                         "properties": {
                             "content": {"type": "string", "description": "Imperative form of the task."},
                             "activeForm": {"type": "string", "description": "Present-continuous form shown while the task is in progress."},
-                            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Current status."}
+                            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Current status."},
+                            "id": {"type": "string", "description": "Optional stable id so other items can depend on this one."},
+                            "blockedBy": {"type": "array", "items": {"type": "string"}, "description": "Ids of items that must be completed before this one can start."}
                         },
                         "required": ["content", "activeForm", "status"],
                         "additionalProperties": false
@@ -98,6 +111,13 @@ Returns a short summary of how many items were stored and how many are still pen
                 content: t.content,
                 status,
                 active_form: t.active_form,
+                id: t.id.filter(|s| !s.trim().is_empty()),
+                blocked_by: t
+                    .blocked_by
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|s| !s.trim().is_empty())
+                    .collect(),
             });
         }
         if in_progress > 1 {
@@ -131,9 +151,39 @@ Returns a short summary of how many items were stored and how many are still pen
             }
             return Ok(message);
         }
-        Ok(format!(
-            "Stored {total} todo(s) — {pending} pending, {in_progress} in progress"
-        ))
+        let mut message =
+            format!("Stored {total} todo(s) — {pending} pending, {in_progress} in progress");
+        if let Some(ready) = unblocked_summary(&session.todos) {
+            message.push_str(&format!(" · ready now: {ready}"));
+        }
+        Ok(message)
+    }
+}
+
+/// Comma-joined labels of the pending items whose dependencies are all
+/// satisfied (every id in `blocked_by` belongs to a completed item). Returns
+/// `None` when no item declares a dependency, so a plain flat list keeps its
+/// original one-line summary unchanged. Unknown blocker ids are treated as
+/// unsatisfied, so a typo simply leaves the item blocked rather than erroring.
+fn unblocked_summary(items: &[TodoItem]) -> Option<String> {
+    if !items.iter().any(|t| !t.blocked_by.is_empty()) {
+        return None;
+    }
+    let completed: std::collections::HashSet<&str> = items
+        .iter()
+        .filter(|t| matches!(t.status, TodoStatus::Completed))
+        .filter_map(|t| t.id.as_deref())
+        .collect();
+    let ready: Vec<&str> = items
+        .iter()
+        .filter(|t| matches!(t.status, TodoStatus::Pending))
+        .filter(|t| t.blocked_by.iter().all(|b| completed.contains(b.as_str())))
+        .map(|t| t.content.as_str())
+        .collect();
+    if ready.is_empty() {
+        Some("none (all pending items are still blocked)".to_string())
+    } else {
+        Some(ready.join(", "))
     }
 }
 
@@ -193,6 +243,7 @@ mod tests {
             auto_approve_edits: false,
             session: Arc::new(Mutex::new(SessionState::default())),
             config: Config::default(),
+            cwd_override: Arc::new(Mutex::new(None)),
             events: None,
         }
     }
@@ -348,6 +399,8 @@ mod tests {
                 content: "Old item".to_string(),
                 status: TodoStatus::InProgress,
                 active_form: "Working old item".to_string(),
+                id: None,
+                blocked_by: Vec::new(),
             });
         }
 
@@ -451,5 +504,93 @@ mod tests {
             .expect("todo_write succeeds");
 
         assert_eq!(out, "Completed 3 todo(s); cleared the session todo list");
+    }
+
+    #[tokio::test]
+    async fn execute_reports_unblocked_items_when_dependencies_are_used() {
+        let ctx = ctx();
+        let out = TodoWrite
+            .execute(
+                json!({
+                    "todos": [
+                        {
+                            "id": "design",
+                            "content": "Design the schema",
+                            "activeForm": "Designing the schema",
+                            "status": "completed"
+                        },
+                        {
+                            "id": "impl",
+                            "content": "Implement the migration",
+                            "activeForm": "Implementing the migration",
+                            "status": "pending",
+                            "blockedBy": ["design"]
+                        },
+                        {
+                            "id": "test",
+                            "content": "Run the migration tests",
+                            "activeForm": "Running the migration tests",
+                            "status": "pending",
+                            "blockedBy": ["impl"]
+                        }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("todo_write succeeds");
+
+        // `impl`'s blocker (`design`) is done so it is ready; `test` still waits on `impl`.
+        assert_eq!(
+            out,
+            "Stored 3 todo(s) — 2 pending, 0 in progress · ready now: Implement the migration"
+        );
+        let session = ctx.session.lock().await;
+        assert_eq!(session.todos[1].blocked_by, vec!["design".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn execute_keeps_flat_list_summary_when_no_dependencies() {
+        let ctx = ctx();
+        let out = TodoWrite
+            .execute(
+                json!({
+                    "todos": [
+                        {"content": "A", "activeForm": "Doing A", "status": "pending"},
+                        {"content": "B", "activeForm": "Doing B", "status": "pending"}
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("todo_write succeeds");
+
+        // No `blocked_by` anywhere → original one-line summary, no "ready now".
+        assert_eq!(out, "Stored 2 todo(s) — 2 pending, 0 in progress");
+    }
+
+    #[test]
+    fn unblocked_summary_reports_none_when_all_pending_items_are_blocked() {
+        let items = vec![
+            TodoItem {
+                content: "Build".to_string(),
+                status: TodoStatus::InProgress,
+                active_form: "Building".to_string(),
+                id: Some("build".to_string()),
+                blocked_by: Vec::new(),
+            },
+            TodoItem {
+                content: "Ship".to_string(),
+                status: TodoStatus::Pending,
+                active_form: "Shipping".to_string(),
+                id: Some("ship".to_string()),
+                blocked_by: vec!["build".to_string()],
+            },
+        ];
+        // `build` is in_progress (not completed) so `ship` stays blocked.
+        assert_eq!(
+            unblocked_summary(&items).as_deref(),
+            Some("none (all pending items are still blocked)")
+        );
     }
 }

@@ -217,6 +217,11 @@ pub fn slash_commands() -> Vec<PickerItem> {
         item("effort", "/effort", "alias for /thinking"),
         item("verbosity", "/verbosity", "change output verbosity"),
         item("cost", "/cost", "show token usage and estimated cost"),
+        item(
+            "context",
+            "/context",
+            "show context-window usage + composition",
+        ),
         item("config", "/config", "show current configuration"),
         item("hooks", "/hooks", "list configured PreToolUse hooks"),
         item("mcp", "/mcp", "list configured MCP servers"),
@@ -227,6 +232,16 @@ pub fn slash_commands() -> Vec<PickerItem> {
             "review",
             "/review",
             "ask the agent to review uncommitted changes",
+        ),
+        item(
+            "commit",
+            "/commit",
+            "stage & commit with a generated message",
+        ),
+        item(
+            "commit-push-pr",
+            "/commit-push-pr",
+            "commit, push a branch, and open a PR",
         ),
         item("export", "/export", "save conversation as markdown"),
         item(
@@ -242,6 +257,11 @@ pub fn slash_commands() -> Vec<PickerItem> {
         item("status", "/status", "show auth status"),
         item("img", "/img", "attach an image to next message"),
         item("cwd", "/cwd", "show / set working directory"),
+        item(
+            "worktree",
+            "/worktree",
+            "create or exit an isolated git worktree",
+        ),
         item("goal", "/goal", "work until an objective is complete"),
         item("clear", "/clear", "clear the conversation"),
         item("resume", "/resume", "pick a previous session to continue"),

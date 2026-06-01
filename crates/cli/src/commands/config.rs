@@ -28,7 +28,10 @@ pub async fn run(
         println!("✅  Config updated");
     }
     if show || !changed {
-        println!("{}", serde_json::to_string_pretty(&cfg)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&config::redacted_view(&cfg))?
+        );
         println!("\nFile: {}", config::config_file().display());
     }
     Ok(())

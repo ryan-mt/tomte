@@ -2,13 +2,17 @@ pub mod ask;
 pub mod dispatch;
 pub mod fs;
 pub mod goal;
+pub mod lsp;
 pub mod notebook;
 pub mod plan;
 pub mod search;
 pub mod shell;
 pub mod skill;
 pub mod todo;
+pub mod tool_search;
+pub mod wait;
 pub mod web;
+pub mod worktree;
 
 /// Deserialize a tool's `Value` arguments into the tool's typed struct,
 /// prefixing the error with `tool <name>` so the model receives an actionable
@@ -333,6 +337,16 @@ pub struct TodoItem {
     pub content: String,
     pub status: TodoStatus,
     pub active_form: String,
+    /// Optional stable id used to express dependencies between items. `None`
+    /// for a plain flat list. Skipped on the wire when absent so existing
+    /// (idless) session records round-trip unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Ids of items that must reach `completed` before this one can start.
+    /// Empty for an unconstrained item; lets the model plan a DAG instead of a
+    /// flat list. Skipped on the wire when empty for round-trip parity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
 }
 
 /// Status of a background shell command. Returned as part of every
@@ -392,6 +406,15 @@ pub struct UndoEntry {
     pub post_edit_size: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct WorktreeState {
+    pub original_cwd: std::path::PathBuf,
+    pub repo_root: std::path::PathBuf,
+    pub worktree_path: std::path::PathBuf,
+    pub branch: String,
+    pub base_head: String,
+}
+
 #[derive(Debug, Default)]
 pub struct SessionState {
     pub todos: Vec<TodoItem>,
@@ -403,6 +426,21 @@ pub struct SessionState {
     /// to touch, a file that was never read — so the model can't clobber
     /// content it has not seen. A successful write/edit also records the path.
     pub read_files: std::collections::HashSet<std::path::PathBuf>,
+    /// `(mtime, size)` captured for each file when it was last read or written
+    /// this session. Lets `edit_file`/`multi_edit`/`write_file` force a re-read
+    /// when the file changed on disk since the model last saw it (the user's
+    /// editor, another tool, or another process touched it) — editing a stale
+    /// view would either fail to match or apply against bytes the model never
+    /// saw. Refreshed after each successful write/edit so back-to-back edits to
+    /// a file the model itself just changed don't spuriously demand a re-read.
+    /// Runtime only (not part of `SessionRecord`); a resumed session starts
+    /// empty and falls back to the plain read-once check until the file is read
+    /// again.
+    pub read_file_meta:
+        std::collections::HashMap<std::path::PathBuf, (Option<std::time::SystemTime>, Option<u64>)>,
+    /// Worktree created by this session via `enter_worktree`. Exit/remove tools
+    /// are scoped to this state so opencli never cleans up a user-created worktree.
+    pub worktree: Option<WorktreeState>,
 }
 
 impl SessionState {
@@ -505,6 +543,9 @@ pub struct ToolContext {
     pub auto_approve_edits: bool,
     pub session: Arc<Mutex<SessionState>>,
     pub config: crate::config::Config,
+    /// Session cwd requested by a tool such as `enter_worktree`. The Agent owns
+    /// the actual cwd and applies this after each mutating tool completes.
+    pub cwd_override: Arc<Mutex<Option<std::path::PathBuf>>>,
     /// Parent agent's live UI event channel, present only while running inside
     /// an interactive turn. Tools that spawn sub-agents (`dispatch_agent`)
     /// forward sub-agent lifecycle events here so the TUI can render a live
@@ -523,6 +564,7 @@ impl ToolContext {
             auto_approve_edits: false,
             session: Arc::new(Mutex::new(SessionState::default())),
             config: crate::config::Config::default(),
+            cwd_override: Arc::new(Mutex::new(None)),
             events: None,
         }
     }
@@ -545,11 +587,20 @@ pub enum ApprovalMode {
 
 pub struct Registry {
     tools: Vec<Box<dyn BuiltinTool>>,
+    /// Names of tools withheld from `definitions()` until `tool_search` loads
+    /// them. Empty unless `enable_tool_search()` has run (many MCP tools).
+    deferred: std::collections::HashSet<String>,
+    /// Deferred tools the model has loaded via `tool_search`. Shared with the
+    /// `tool_search` tool so its `execute` records activations that
+    /// `definitions()` then reflects on the next turn.
+    activated: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl Registry {
     pub fn standard() -> Self {
         Self {
+            deferred: std::collections::HashSet::new(),
+            activated: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             tools: vec![
                 Box::new(fs::ReadFile),
                 Box::new(fs::WriteFile),
@@ -566,18 +617,33 @@ impl Registry {
                 Box::new(goal::GoalUpdate),
                 Box::new(web::WebFetch),
                 Box::new(web::WebSearch),
+                Box::new(lsp::Lsp),
                 Box::new(notebook::NotebookEdit),
                 Box::new(plan::EnterPlanMode),
                 Box::new(plan::ExitPlanMode),
+                Box::new(worktree::EnterWorktree),
+                Box::new(worktree::ExitWorktree),
                 Box::new(skill::LoadSkill),
                 Box::new(ask::AskUserQuestion),
+                Box::new(wait::Wait),
                 Box::new(dispatch::DispatchAgent),
             ],
         }
     }
 
     pub fn definitions(&self) -> Vec<Tool> {
-        self.tools.iter().map(|t| t.definition()).collect()
+        if self.deferred.is_empty() {
+            return self.tools.iter().map(|t| t.definition()).collect();
+        }
+        let activated = self.activated.lock().unwrap();
+        self.tools
+            .iter()
+            .filter(|t| {
+                let n = t.name();
+                !self.deferred.contains(n) || activated.contains(n)
+            })
+            .map(|t| t.definition())
+            .collect()
     }
 
     pub fn find(&self, name: &str) -> Option<&dyn BuiltinTool> {
@@ -661,22 +727,68 @@ impl Registry {
                 "goal_update" => Box::new(goal::GoalUpdate),
                 "web_fetch" => Box::new(web::WebFetch),
                 "web_search" => Box::new(web::WebSearch),
+                "lsp" => Box::new(lsp::Lsp),
                 "notebook_edit" => Box::new(notebook::NotebookEdit),
                 "enter_plan_mode" => Box::new(plan::EnterPlanMode),
                 "exit_plan_mode" => Box::new(plan::ExitPlanMode),
+                "enter_worktree" => Box::new(worktree::EnterWorktree),
+                "exit_worktree" => Box::new(worktree::ExitWorktree),
                 "skill" => Box::new(skill::LoadSkill),
                 "ask_user_question" => Box::new(ask::AskUserQuestion),
+                "wait" => Box::new(wait::Wait),
                 _ => continue,
             };
             tools.push(tool);
         }
-        Self { tools }
+        Self {
+            tools,
+            deferred: std::collections::HashSet::new(),
+            activated: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+        }
     }
 
     /// Append a tool to the registry. Used by `Agent::load_mcp` to register
     /// tools discovered from MCP servers after the standard built-ins.
     pub fn add(&mut self, tool: Box<dyn BuiltinTool>) {
         self.tools.push(tool);
+    }
+
+    /// Turn on progressive tool disclosure: withhold every MCP tool's schema
+    /// from `definitions()` and register a `tool_search` tool that loads them
+    /// on demand. Called by `Agent::load_mcp` when the MCP tool count crosses
+    /// the defer threshold. The withheld tools are advertised to the model via
+    /// the system-prompt manifest (`deferred_summaries`).
+    pub fn enable_tool_search(&mut self) {
+        let catalog: Vec<tool_search::DeferredToolInfo> = self
+            .tools
+            .iter()
+            .filter(|t| t.name().starts_with("mcp__"))
+            .map(|t| tool_search::DeferredToolInfo {
+                name: t.name().to_string(),
+                description: t.description().to_string(),
+                schema: t.parameters_schema(),
+            })
+            .collect();
+        if catalog.is_empty() {
+            return;
+        }
+        for info in &catalog {
+            self.deferred.insert(info.name.clone());
+        }
+        self.tools.push(Box::new(tool_search::ToolSearch::new(
+            catalog,
+            self.activated.clone(),
+        )));
+    }
+
+    /// `(name, description)` for every deferred tool, for building the
+    /// system-prompt manifest. Empty unless `enable_tool_search()` ran.
+    pub fn deferred_summaries(&self) -> Vec<(&str, &str)> {
+        self.tools
+            .iter()
+            .filter(|t| self.deferred.contains(t.name()))
+            .map(|t| (t.name(), t.description()))
+            .collect()
     }
 }
 
@@ -709,11 +821,19 @@ fn canonical_tool_name(name: &str) -> Option<&'static str> {
         "enter_plan_mode" | "enterplanmode" | "enter_plan" | "enterplan" | "plan_mode"
         | "planmode" => Some("enter_plan_mode"),
         "exit_plan_mode" | "exitplanmode" | "exit_plan" | "exitplan" => Some("exit_plan_mode"),
+        "enter_worktree" | "enterworktree" | "worktree_enter" | "worktreeenter" => {
+            Some("enter_worktree")
+        }
+        "exit_worktree" | "exitworktree" | "worktree_exit" | "worktreeexit" => {
+            Some("exit_worktree")
+        }
         "web_fetch" | "webfetch" => Some("web_fetch"),
         "web_search" | "websearch" => Some("web_search"),
+        "lsp" | "lsptool" => Some("lsp"),
         "notebook_edit" | "notebookedit" => Some("notebook_edit"),
         "skill" | "load_skill" | "loadskill" => Some("skill"),
         "ask_user_question" | "askuserquestion" => Some("ask_user_question"),
+        "wait" | "sleep" => Some("wait"),
         "dispatch_agent" | "dispatchagent" | "agent" | "task" => Some("dispatch_agent"),
         _ => None,
     }
@@ -734,6 +854,84 @@ mod registry_tests {
 
     fn names(reg: &Registry) -> Vec<&'static str> {
         reg.tools.iter().map(|t| t.name()).collect()
+    }
+
+    /// Function names actually advertised to the provider (post-deferral).
+    fn def_names(reg: &Registry) -> Vec<String> {
+        reg.definitions()
+            .into_iter()
+            .filter_map(|t| match t {
+                crate::openai::models::Tool::Function(f) => Some(f.name),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Minimal fake MCP tool so registry tests don't need a live server.
+    struct FakeMcp(&'static str, &'static str);
+    #[async_trait::async_trait]
+    impl BuiltinTool for FakeMcp {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn description(&self) -> &'static str {
+            self.1
+        }
+        fn parameters_schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
+        }
+        async fn execute(&self, _args: Value, _ctx: &ToolContext) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn enable_tool_search_defers_mcp_until_activated() {
+        let mut reg = Registry::standard();
+        reg.add(Box::new(FakeMcp(
+            "mcp__gh__create_issue",
+            "Open a GitHub issue",
+        )));
+        reg.add(Box::new(FakeMcp(
+            "mcp__gh__list_pulls",
+            "List pull requests",
+        )));
+        reg.enable_tool_search();
+
+        let defs = def_names(&reg);
+        // Built-ins still advertised; tool_search added; MCP tools withheld.
+        assert!(defs.contains(&"read_file".to_string()));
+        assert!(defs.contains(&"tool_search".to_string()));
+        assert!(!defs.contains(&"mcp__gh__create_issue".to_string()));
+        assert!(!defs.contains(&"mcp__gh__list_pulls".to_string()));
+        // But they are advertised in the manifest summaries.
+        let summary_names: Vec<&str> = reg
+            .deferred_summaries()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(summary_names.contains(&"mcp__gh__create_issue"));
+
+        // Activating one (as `tool_search` would) surfaces only that one.
+        reg.activated
+            .lock()
+            .unwrap()
+            .insert("mcp__gh__create_issue".to_string());
+        let defs = def_names(&reg);
+        assert!(defs.contains(&"mcp__gh__create_issue".to_string()));
+        assert!(!defs.contains(&"mcp__gh__list_pulls".to_string()));
+    }
+
+    #[test]
+    fn no_deferral_keeps_all_tools_callable() {
+        // Without enable_tool_search, every added MCP tool is directly callable
+        // and no tool_search appears.
+        let mut reg = Registry::standard();
+        reg.add(Box::new(FakeMcp("mcp__x__a", "a")));
+        let defs = def_names(&reg);
+        assert!(defs.contains(&"mcp__x__a".to_string()));
+        assert!(!defs.contains(&"tool_search".to_string()));
+        assert!(reg.deferred_summaries().is_empty());
     }
 
     #[test]
@@ -797,6 +995,8 @@ mod registry_tests {
             ("builtin.Agent", "dispatch_agent"),
             ("WebFetch", "web_fetch"),
             ("WebSearch", "web_search"),
+            ("LSP", "lsp"),
+            ("LspTool", "lsp"),
             ("NotebookEdit", "notebook_edit"),
             ("LoadSkill", "skill"),
             ("AskUserQuestion", "ask_user_question"),

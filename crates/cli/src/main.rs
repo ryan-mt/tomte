@@ -37,9 +37,12 @@ enum Command {
     Status,
     /// Sign out and remove stored credentials
     Logout,
-    /// Run a single chat turn (headless) — output printed to the terminal
+    /// Run a single chat turn (headless) — output printed to the terminal.
+    /// Also the scheduler/cron entry point (alias: `run`): set `--cwd` and read
+    /// the prompt from `--prompt-file` or stdin for an unattended invocation.
+    #[command(visible_alias = "run")]
     Chat {
-        /// Prompt (reads from stdin if empty)
+        /// Prompt (reads from --prompt-file or stdin if empty)
         prompt: Vec<String>,
         /// Model (defaults to the configured model)
         #[arg(long)]
@@ -51,6 +54,14 @@ enum Command {
         /// (one AgentEvent per line, suitable for scripting).
         #[arg(long, default_value = "text")]
         output_format: String,
+        /// Working directory to run in. Defaults to the current directory.
+        /// A scheduler (cron/systemd) runs with a bare environment, so set this
+        /// explicitly for unattended runs.
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+        /// Read the prompt from this file instead of the argument/stdin.
+        #[arg(long)]
+        prompt_file: Option<std::path::PathBuf>,
     },
     /// Open the TUI with the resume-session picker open
     Resume,
@@ -140,6 +151,8 @@ async fn main() -> Result<()> {
             model,
             reasoning,
             output_format,
+            cwd,
+            prompt_file,
         }) => {
             commands::chat::run(
                 prompt.join(" "),
@@ -147,6 +160,8 @@ async fn main() -> Result<()> {
                 reasoning,
                 output_format,
                 cli.plan_mode_required,
+                cwd,
+                prompt_file,
             )
             .await
         }
@@ -193,6 +208,28 @@ mod tests {
             Cli::try_parse_from(["opencli", "chat", "--plan-mode-required", "inspect"]).unwrap();
 
         assert!(cli.plan_mode_required);
+    }
+
+    #[test]
+    fn run_alias_parses_as_chat_with_cwd_and_prompt_file() {
+        let cli = Cli::try_parse_from([
+            "opencli",
+            "run",
+            "--cwd",
+            "/tmp/project",
+            "--prompt-file",
+            "task.md",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Chat {
+                cwd, prompt_file, ..
+            }) => {
+                assert_eq!(cwd, Some(std::path::PathBuf::from("/tmp/project")));
+                assert_eq!(prompt_file, Some(std::path::PathBuf::from("task.md")));
+            }
+            other => panic!("expected chat command via `run` alias, got {other:?}"),
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ Backed by OpenAI and Anthropic model adapters with multiple authentication modes
 - **Anthropic OAuth** — sign in with a Claude Pro/Max account after acknowledging the ToS warning.
 - **Anthropic API key** — set `ANTHROPIC_API_KEY` or store one with `opencli login --api-key --provider anthropic`.
 
-Full **tool calling** surface: `read_file`, `write_file`, `edit_file`, `multi_edit`, `list_dir`, `grep`, `glob`, `run_shell`, `bash_output`, `kill_shell`, `todo_write`, `goal_update`, `enter_plan_mode`, `exit_plan_mode`, `dispatch_agent`, `ask_user_question`, `web_fetch`, `web_search`, `notebook_edit`, and `skill`. Streaming SSE, parallel tool execution, reasoning summary, strict JSON-schema validation, and compatibility aliases for multiple provider tool-call shapes.
+Full **tool calling** surface: `read_file`, `write_file`, `edit_file`, `multi_edit`, `list_dir`, `grep`, `glob`, `run_shell`, `bash_output`, `kill_shell`, `todo_write`, `goal_update`, `enter_plan_mode`, `exit_plan_mode`, `dispatch_agent`, `ask_user_question`, `web_fetch`, `web_search`, `notebook_edit`, `lsp`, `wait`, and `skill`. Streaming SSE, parallel tool execution, reasoning summary, strict JSON-schema validation, and compatibility aliases for multiple provider tool-call shapes.
 
 ## Architecture
 

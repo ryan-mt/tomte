@@ -129,8 +129,16 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         // can refuse to clobber a file the model never looked at. Keyed on the
         // canonical resolved path so later write/edit lookups match regardless
         // of how the path was spelled. Recorded for every read variant (full,
-        // slice, empty, large) since they all pass through here first.
-        ctx.session.lock().await.read_files.insert(path.clone());
+        // slice, empty, large) since they all pass through here first. The
+        // (mtime, size) snapshot lets a later edit detect the file changed on
+        // disk since this read and force a re-read.
+        {
+            let mut session = ctx.session.lock().await;
+            session.read_files.insert(path.clone());
+            session
+                .read_file_meta
+                .insert(path.clone(), (meta.modified().ok(), Some(meta.len())));
+        }
         if a.limit == Some(0) {
             return Err(anyhow!("limit must be greater than 0"));
         }
@@ -406,12 +414,16 @@ Parameters:\n\
         // Read-before-overwrite safety: refuse to replace an EXISTING file the
         // model hasn't read this session, so it can't silently discard content
         // it never saw. Creating a new file (no existing_meta) needs no read.
-        if existing_meta.is_some() && !ctx.session.lock().await.read_files.contains(&path) {
-            return Err(anyhow!(
-                "write_file refuses to overwrite {} because it was not read this session. \
-                 Call read_file on it first so you don't discard unseen content (or use edit_file for a targeted change).",
-                path.display()
-            ));
+        if existing_meta.is_some() {
+            let session = ctx.session.lock().await;
+            if !session.read_files.contains(&path) {
+                return Err(anyhow!(
+                    "write_file refuses to overwrite {} because it was not read this session. \
+                     Call read_file on it first so you don't discard unseen content (or use edit_file for a targeted change).",
+                    path.display()
+                ));
+            }
+            ensure_not_stale(&session, &path, "write_file")?;
         }
         // Snapshot prior contents as RAW BYTES, not UTF-8: a binary file that
         // exists must be restorable on undo. If an existing file cannot be
@@ -437,9 +449,14 @@ Parameters:\n\
         {
             // A freshly written file counts as "read" so a follow-up edit_file
             // doesn't spuriously demand a read_file of bytes the model just
-            // authored. Same lock also records undo.
+            // authored. Refresh the (mtime, size) snapshot to the bytes we just
+            // wrote so the staleness guard doesn't fire on the model's own
+            // write. Same lock also records undo.
             let mut session = ctx.session.lock().await;
             session.read_files.insert(path.clone());
+            session
+                .read_file_meta
+                .insert(path.clone(), (post_edit_mtime, post_edit_size));
             session.push_undo_entry(super::UndoEntry {
                 path: path.clone(),
                 original_content: original,
@@ -548,12 +565,17 @@ Parameters:\n\
         let path = resolve(&ctx.cwd, &a.path)?;
         // Read-before-edit safety: old_string can only be trusted if the model
         // actually read the file this session (write_file/read_file both record
-        // it). Refuse otherwise rather than edit against a guessed match.
-        if !ctx.session.lock().await.read_files.contains(&path) {
-            return Err(anyhow!(
-                "edit_file requires reading {} first so old_string matches the real bytes. Call read_file on it.",
-                path.display()
-            ));
+        // it), AND the file hasn't changed on disk since that read. Refuse
+        // otherwise rather than edit against a guessed or stale match.
+        {
+            let session = ctx.session.lock().await;
+            if !session.read_files.contains(&path) {
+                return Err(anyhow!(
+                    "edit_file requires reading {} first so old_string matches the real bytes. Call read_file on it.",
+                    path.display()
+                ));
+            }
+            ensure_not_stale(&session, &path, "edit_file")?;
         }
         let original = tokio::fs::read_to_string(&path)
             .await
@@ -577,12 +599,20 @@ Parameters:\n\
         let tmp = path.with_extension(format!("edit-{}.tmp", rand_suffix()));
         atomic_write_preserving_permissions(&path, &tmp, new_content.as_bytes()).await?;
         let (post_edit_mtime, post_edit_size) = snapshot_meta(&path);
-        ctx.session.lock().await.push_undo_entry(super::UndoEntry {
-            path: path.clone(),
-            original_content: Some(original.into_bytes()),
-            post_edit_mtime,
-            post_edit_size,
-        });
+        {
+            let mut session = ctx.session.lock().await;
+            // Refresh the snapshot to the bytes we just wrote so a follow-up
+            // edit to the same file isn't flagged as stale by our own change.
+            session
+                .read_file_meta
+                .insert(path.clone(), (post_edit_mtime, post_edit_size));
+            session.push_undo_entry(super::UndoEntry {
+                path: path.clone(),
+                original_content: Some(original.into_bytes()),
+                post_edit_mtime,
+                post_edit_size,
+            });
+        }
         Ok(format!(
             "Replaced {} occurrence(s) in {}",
             count,
@@ -751,12 +781,16 @@ Parameters:\n\
         }
         let path = resolve(&ctx.cwd, &a.path)?;
         // Read-before-edit safety (same as edit_file): refuse to touch a file
-        // the model never read this session.
-        if !ctx.session.lock().await.read_files.contains(&path) {
-            return Err(anyhow!(
-                "multi_edit requires reading {} first so each old_string matches the real bytes. Call read_file on it.",
-                path.display()
-            ));
+        // the model never read this session, or that changed on disk since.
+        {
+            let session = ctx.session.lock().await;
+            if !session.read_files.contains(&path) {
+                return Err(anyhow!(
+                    "multi_edit requires reading {} first so each old_string matches the real bytes. Call read_file on it.",
+                    path.display()
+                ));
+            }
+            ensure_not_stale(&session, &path, "multi_edit")?;
         }
         let mut content = tokio::fs::read_to_string(&path)
             .await
@@ -798,12 +832,18 @@ Parameters:\n\
         let tmp = path.with_extension(format!("medit-{}.tmp", rand_suffix()));
         atomic_write_preserving_permissions(&path, &tmp, content.as_bytes()).await?;
         let (post_edit_mtime, post_edit_size) = snapshot_meta(&path);
-        ctx.session.lock().await.push_undo_entry(super::UndoEntry {
-            path: path.clone(),
-            original_content: Some(original_for_undo.into_bytes()),
-            post_edit_mtime,
-            post_edit_size,
-        });
+        {
+            let mut session = ctx.session.lock().await;
+            session
+                .read_file_meta
+                .insert(path.clone(), (post_edit_mtime, post_edit_size));
+            session.push_undo_entry(super::UndoEntry {
+                path: path.clone(),
+                original_content: Some(original_for_undo.into_bytes()),
+                post_edit_mtime,
+                post_edit_size,
+            });
+        }
         Ok(format!(
             "Applied {} edit(s) ({} total replacement(s)) to {}",
             a.edits.len(),
@@ -886,6 +926,29 @@ pub(super) fn snapshot_meta(
         Ok(m) => (m.modified().ok(), Some(m.len())),
         Err(_) => (None, None),
     }
+}
+
+/// Refuse an edit/overwrite when the file changed on disk since the model last
+/// read it this session, forcing a fresh `read_file` so the edit targets the
+/// current bytes. The caller has already confirmed the path was read this
+/// session; this adds the "still fresh?" half. Best-effort: only fires when a
+/// read-time snapshot exists — a resumed session has none and falls back to the
+/// plain read-once guard. A snapshot recorded after the model's own write/edit
+/// keeps back-to-back edits from tripping the check.
+fn ensure_not_stale(
+    session: &super::SessionState,
+    path: &std::path::Path,
+    tool: &str,
+) -> Result<()> {
+    if let Some(recorded) = session.read_file_meta.get(path) {
+        if snapshot_meta(path) != *recorded {
+            return Err(anyhow!(
+                "{tool}: {} changed on disk since you read it. Call read_file on it again so your edit matches the current bytes (it may contain changes you haven't seen).",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Resolve a model-supplied path against the sandbox `cwd`. Accepts either a
@@ -1010,6 +1073,7 @@ mod tests {
             auto_approve_edits: false,
             session: Arc::new(Mutex::new(SessionState::default())),
             config: crate::config::Config::default(),
+            cwd_override: Arc::new(Mutex::new(None)),
             events: None,
         }
     }
@@ -1623,5 +1687,77 @@ mod tests {
         );
         let mode_after_undo = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode_after_undo, 0o755);
+    }
+
+    #[tokio::test]
+    async fn edit_file_refuses_after_external_modification() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.txt");
+        std::fs::write(&path, "alpha beta\n").unwrap();
+        let ctx = ctx(dir.path().to_path_buf());
+        // Read records the (mtime, size) snapshot.
+        ReadFile
+            .execute(json!({"path": "m.txt"}), &ctx)
+            .await
+            .unwrap();
+        // Something else changes the file on disk after the read. Changing the
+        // length means staleness is caught even when the mtime resolution is
+        // too coarse to distinguish a same-second write.
+        std::fs::write(&path, "alpha beta gamma delta\n").unwrap();
+        let err = EditFile
+            .execute(
+                json!({"path": "m.txt", "old_string": "alpha", "new_string": "ALPHA"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("changed on disk"), "got: {err}");
+        // The refused edit left the on-disk content untouched.
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "alpha beta gamma delta\n"
+        );
+        // Re-reading refreshes the snapshot, so the edit then goes through.
+        ReadFile
+            .execute(json!({"path": "m.txt"}), &ctx)
+            .await
+            .unwrap();
+        EditFile
+            .execute(
+                json!({"path": "m.txt", "old_string": "alpha", "new_string": "ALPHA"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("ALPHA"));
+    }
+
+    #[tokio::test]
+    async fn consecutive_edits_after_one_read_are_allowed() {
+        // The model's own edit changes (mtime, size); the staleness guard must
+        // not fire on that, so a second edit after a single read still works.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.txt");
+        std::fs::write(&path, "one two three").unwrap();
+        let ctx = ctx(dir.path().to_path_buf());
+        ReadFile
+            .execute(json!({"path": "c.txt"}), &ctx)
+            .await
+            .unwrap();
+        EditFile
+            .execute(
+                json!({"path": "c.txt", "old_string": "one", "new_string": "1"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        EditFile
+            .execute(
+                json!({"path": "c.txt", "old_string": "three", "new_string": "3"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "1 two 3");
     }
 }

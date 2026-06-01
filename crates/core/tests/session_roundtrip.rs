@@ -58,6 +58,8 @@ fn session_save_load_list_and_missing_id() {
         content: "Run tests".to_string(),
         status: TodoStatus::InProgress,
         active_form: "Running tests".to_string(),
+        id: None,
+        blocked_by: Vec::new(),
     });
     r.state.read_files.push(cwd_a.join("src/lib.rs"));
     r.state.active_goal = Some(SessionGoalSnapshot {

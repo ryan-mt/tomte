@@ -1118,10 +1118,21 @@ async fn main_loop(
         // Flush the message queue after a turn completes. Deferred while
         // compacting: launch_turn would block on the agent mutex the
         // compaction task holds, re-freezing the UI.
+        //
+        // Also deferred while a Y/N decision is pending (plan approval or goal
+        // replacement): a turn finishing with `exit_plan_mode` leaves `!busy`
+        // with the approval prompt up, but type-ahead messages the user queued
+        // while the agent was planning would otherwise flush here and relaunch a
+        // turn — flipping `busy` back to true. With `pending_plan_exit` set AND
+        // `busy`, the key router swallows the Y keystroke (see handle_key), so
+        // the user can never approve the plan and the UI looks frozen. Hold the
+        // queue until the decision is resolved; approving/rejecting clears the
+        // pending state and queues its own follow-up, which then flushes.
         if !app.busy
             && !app.compacting
             && !app.message_queue.is_empty()
             && app.screen == Screen::Chat
+            && !turn_launch_blocked_by_pending_decision(&app)
         {
             let queued = std::mem::take(&mut app.message_queue);
             app.status_line.clear();
@@ -1555,6 +1566,85 @@ async fn handle_paste(app: &mut App) {
         Err(e) => {
             app.blocks.push(Block::System(format!("paste failed: {e}")));
         }
+    }
+}
+
+/// True while the user owes a Y/N decision that must be resolved before any new
+/// turn launches. Used to hold the message-queue flush so queued type-ahead
+/// can't relaunch a turn under an open approval prompt (which would lock the
+/// user out of pressing Y — see the flush gate in `main_loop`).
+fn turn_launch_blocked_by_pending_decision(app: &App) -> bool {
+    app.pending_plan_exit.is_some() || app.pending_goal_replacement.is_some()
+}
+
+fn handle_worktree_slash(app: &mut App, arg: &str) {
+    let mut parts = arg.split_whitespace();
+    let Some(cmd) = parts.next() else {
+        app.blocks.push(Block::System(
+            "Usage:\n  /worktree create [name]\n  /worktree exit keep\n  /worktree exit remove [--discard]"
+                .into(),
+        ));
+        return;
+    };
+
+    match cmd {
+        "create" | "enter" => {
+            let name = parts.next().map(str::to_string);
+            if parts.next().is_some() {
+                app.blocks
+                    .push(Block::System("Usage: /worktree create [name]".into()));
+                return;
+            }
+            let prompt = match &name {
+                Some(name) => format!(
+                    "Create and enter an isolated git worktree for this session using the enter_worktree tool. Pass name={name:?}, then report the worktree path and branch."
+                ),
+                None => "Create and enter an isolated git worktree for this session using the enter_worktree tool with name=null, then report the worktree path and branch."
+                    .to_string(),
+            };
+            app.message_queue.push(prompt);
+            app.blocks.push(Block::System(
+                "Queued worktree creation; the agent will create it with enter_worktree.".into(),
+            ));
+            app.auto_scroll = true;
+        }
+        "exit" | "leave" => {
+            let Some(action) = parts.next() else {
+                app.blocks.push(Block::System(
+                    "Usage: /worktree exit keep|remove [--discard]".into(),
+                ));
+                return;
+            };
+            if !matches!(action, "keep" | "remove") {
+                app.blocks.push(Block::System(
+                    "Usage: /worktree exit keep|remove [--discard]".into(),
+                ));
+                return;
+            }
+            let mut discard = false;
+            for part in parts {
+                if part == "--discard" {
+                    discard = true;
+                } else {
+                    app.blocks.push(Block::System(format!(
+                        "Unknown worktree flag `{part}`. Usage: /worktree exit keep|remove [--discard]"
+                    )));
+                    return;
+                }
+            }
+            let prompt = format!(
+                "Exit the active session worktree using the exit_worktree tool. Pass action={action:?} and discard_changes={discard}. Report what happened."
+            );
+            app.message_queue.push(prompt);
+            app.blocks.push(Block::System(format!(
+                "Queued worktree exit ({action}); the agent will call exit_worktree."
+            )));
+            app.auto_scroll = true;
+        }
+        _ => app.blocks.push(Block::System(
+            "Usage:\n  /worktree create [name]\n  /worktree exit keep\n  /worktree exit remove [--discard]"
+                .into(),
+        )),
     }
 }
 
@@ -1994,9 +2084,12 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  /clear              clear conversation\n  \
                  /resume             pick a previous session to continue\n  \
                  /cwd [path]         show / set working directory\n  \
+                 /worktree create [name]  create and enter an isolated git worktree\n  \
+                 /worktree exit keep|remove [--discard]\n  \
                  /goal <objective>   keep working until the objective is complete\n  \
                  /status             show auth status\n  \
                  /cost               show token usage and estimated cost\n  \
+                 /context            show context-window usage + composition\n  \
                  /config             show current configuration\n  \
                  /hooks              list configured PreToolUse hooks\n  \
                  /mcp                list configured MCP servers\n  \
@@ -2004,6 +2097,8 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  /memory             show CLAUDE.md\n  \
                  /diff               show `git diff` for the working tree\n  \
                  /review             ask the agent to review uncommitted changes\n  \
+                 /commit             stage & commit with a generated message\n  \
+                 /commit-push-pr     commit, push a branch, and open a PR\n  \
                  /export [path]      save conversation as markdown\n  \
                  /compact            ask the agent to compact the conversation\n  \
                  /todos              show the session todo list\n  \
@@ -2218,6 +2313,9 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 app.blocks.push(Block::System("Invalid path.".into()));
             }
         }
+        "worktree" => {
+            handle_worktree_slash(app, arg);
+        }
         "goal" => {
             let trimmed = arg.trim();
             if trimmed.is_empty() {
@@ -2358,6 +2456,9 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 "  Pricing assumed: ${in_per_m:.2}/M input, ${out_per_m:.2}/M output"
             ));
             app.blocks.push(Block::System(msg));
+        }
+        "context" | "ctx" => {
+            app.blocks.push(Block::System(render_context_report(app)));
         }
         "config" => {
             let auth = match app.auth_mode {
@@ -2516,6 +2617,18 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             app.message_queue.push(prompt.to_string());
             app.blocks.push(Block::System(
                 "Queued: agent will review the uncommitted changes.".into(),
+            ));
+        }
+        "commit" => {
+            app.message_queue.push(commit_prompt(arg));
+            app.blocks.push(Block::System(
+                "Queued: agent will stage and commit the changes.".into(),
+            ));
+        }
+        "commit-push-pr" | "commitpushpr" | "pr" => {
+            app.message_queue.push(commit_push_pr_prompt(arg));
+            app.blocks.push(Block::System(
+                "Queued: agent will commit, push a branch, and open a PR.".into(),
             ));
         }
         "export" => {
@@ -2731,6 +2844,124 @@ fn split_slash_command(cmd: &str) -> (&str, &str) {
     let head = &trimmed[..idx];
     let arg = trimmed[idx + ch.len_utf8()..].trim();
     (head, arg)
+}
+
+/// `/context` report: the real provider-reported occupancy as the headline,
+/// plus a chars/4 estimate of where the *visible conversation* is spending
+/// context (tool I/O is usually the bulk — and the prime microcompaction
+/// target). The system prompt and tool schemas live in the agent layer and are
+/// not counted here, so the headline total is the source of truth.
+fn render_context_report(app: &App) -> String {
+    fn est(s: &str) -> u64 {
+        (s.chars().count() as u64).div_ceil(4)
+    }
+    let limit = app.config.effective_context_limit();
+    let used = app.tokens_used;
+    let pct = used.saturating_mul(100).checked_div(limit).unwrap_or(0);
+
+    let (mut user, mut assistant, mut reasoning, mut tool_io, mut system) = (0u64, 0, 0, 0, 0);
+    for b in &app.blocks {
+        match b {
+            Block::User(t) => user += est(t),
+            Block::Assistant {
+                text, reasoning: r, ..
+            } => {
+                assistant += est(text);
+                reasoning += est(r);
+            }
+            Block::Tool { args, output, .. } => {
+                tool_io += est(args) + output.as_deref().map(est).unwrap_or(0);
+            }
+            Block::System(t) => system += est(t),
+            Block::Welcome => {}
+        }
+    }
+    let visible = user + assistant + reasoning + tool_io + system;
+
+    let mut msg = String::new();
+    msg.push_str(&format!("Context window — model: {}\n", app.config.model));
+    msg.push_str(&format!(
+        "  Used: {used} / {limit} tokens ({pct}%)  {}\n",
+        ratio_bar(pct)
+    ));
+    msg.push_str("  Microcompaction sheds old tool output above 75%; auto-compact at 85%.\n");
+    if used == 0 {
+        msg.push_str(
+            "  (No turn has run yet — the real occupancy appears after the first response.)\n",
+        );
+    }
+    msg.push('\n');
+    msg.push_str("Estimated composition of the visible conversation (chars/4):\n");
+    let rows = [
+        ("Tool calls + output", tool_io),
+        ("Assistant text", assistant),
+        ("Reasoning", reasoning),
+        ("User messages", user),
+        ("System notes", system),
+    ];
+    for (label, toks) in rows {
+        let share = toks.saturating_mul(100).checked_div(visible).unwrap_or(0);
+        msg.push_str(&format!("  {label:<22} {toks:>8} tok  ({share:>2}%)\n"));
+    }
+    msg.push_str(&format!("  {:-<22} {visible:>8} tok\n", ""));
+    msg.push_str(
+        "  Note: estimates exclude the system prompt + tool schemas; the headline total above is the real provider-reported occupancy.",
+    );
+    msg
+}
+
+/// Shared git safety protocol injected into the `/commit` family so the agent
+/// can't freelance into a destructive operation. Mirrors Claude Code's commit
+/// guardrails.
+const GIT_SAFETY_PROTOCOL: &str = "Git safety protocol — follow exactly:\n\
+- NEVER `git commit --amend`, `git rebase`, or `git reset --hard` unless the user explicitly asked.\n\
+- NEVER pass `--no-verify` (do not skip hooks).\n\
+- NEVER force-push, and never push to the `main`/`master` branch directly.\n\
+- Do not commit unrelated changes; if the working tree mixes concerns, stage only the relevant files.\n\
+- Do not add `git add -A` blindly — review `git status` first and stage deliberately.\n\
+- Write the commit message yourself from the actual diff; do not invent changes you didn't make.";
+
+fn commit_prompt(extra: &str) -> String {
+    let extra = if extra.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nAdditional instructions from the user: {extra}")
+    };
+    format!(
+        "Commit the current changes.\n\
+Steps:\n\
+1. Run `git status` and `git diff` (use the run_shell tool) to see exactly what changed.\n\
+2. Stage the appropriate files.\n\
+3. Commit with a concise Conventional-Commits message (e.g. `fix:`, `feat:`, `refactor:`) whose subject summarizes the change and whose body explains the why when non-obvious.\n\
+4. Show the resulting `git log -1 --stat` so the user can confirm.\n\n\
+{GIT_SAFETY_PROTOCOL}{extra}"
+    )
+}
+
+fn commit_push_pr_prompt(extra: &str) -> String {
+    let extra = if extra.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nAdditional instructions from the user: {extra}")
+    };
+    format!(
+        "Commit the current changes, push a branch, and open a pull request.\n\
+Steps:\n\
+1. Run `git status` and `git diff` to see what changed; determine the current branch.\n\
+2. If on `main`/`master`, create a new descriptively-named branch first.\n\
+3. Stage the appropriate files and commit with a concise Conventional-Commits message.\n\
+4. Push the branch with `git push -u origin <branch>`.\n\
+5. Open a PR with `gh pr create` (fill in a clear title and body summarizing the change). If `gh` is not installed, stop after pushing and print the branch name plus the URL the user can use to open the PR manually.\n\n\
+{GIT_SAFETY_PROTOCOL}{extra}"
+    )
+}
+
+/// Fixed-width `[████░░░░]` bar for a 0–100 percentage.
+fn ratio_bar(pct: u64) -> String {
+    const WIDTH: u64 = 20;
+    let filled = (pct.min(100) * WIDTH / 100) as usize;
+    let empty = WIDTH as usize - filled;
+    format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
 }
 
 fn goal_start_prompt(objective: &str) -> String {
@@ -3281,6 +3512,12 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             // replay the stale lines where the tool still looked pending.
             app.chat_render_cache = None;
         }
+        AgentEvent::CwdChanged { cwd } => {
+            app.cwd = std::path::PathBuf::from(&cwd);
+            app.blocks.push(Block::System(format!("cwd → {cwd}")));
+            app.chat_render_cache = None;
+            app.auto_scroll = true;
+        }
         AgentEvent::TurnComplete => {
             collapse_reasoning_into_thought(app);
             app.is_thinking = false;
@@ -3674,6 +3911,8 @@ mod tests {
             content: content.to_string(),
             status,
             active_form: format!("Doing {content}"),
+            id: None,
+            blocked_by: Vec::new(),
         }
     }
 
@@ -3794,6 +4033,51 @@ mod tests {
         assert!(app.message_queue[0].contains("stabilize the release flow"));
         assert!(app.message_queue[0].contains("goal_update"));
         assert!(app.pending_session_save);
+    }
+
+    #[tokio::test]
+    async fn context_slash_renders_window_report() {
+        let mut app = App::new();
+        handle_slash(&mut app, "context").await;
+        let Some(Block::System(text)) = app.blocks.last() else {
+            panic!("expected a system block from /context");
+        };
+        assert!(text.contains("Context window"));
+        assert!(text.contains(&app.config.model));
+        assert!(text.contains("composition"));
+    }
+
+    #[tokio::test]
+    async fn commit_slash_queues_prompt_with_git_safety_protocol() {
+        let mut app = App::new();
+        handle_slash(&mut app, "commit").await;
+        assert_eq!(app.message_queue.len(), 1);
+        let p = &app.message_queue[0];
+        assert!(p.contains("Conventional-Commits"));
+        assert!(p.contains("NEVER force-push"));
+        assert!(p.contains("--no-verify"));
+    }
+
+    #[tokio::test]
+    async fn commit_push_pr_slash_queues_prompt_with_pr_step_and_user_arg() {
+        let mut app = App::new();
+        handle_slash(&mut app, "commit-push-pr fixes #42").await;
+        assert_eq!(app.message_queue.len(), 1);
+        let p = &app.message_queue[0];
+        assert!(p.contains("gh pr create"));
+        assert!(p.contains("fixes #42"));
+        assert!(p.contains("force-push"));
+    }
+
+    #[test]
+    fn ratio_bar_fills_proportionally_and_clamps() {
+        assert_eq!(ratio_bar(0), format!("[{}]", "░".repeat(20)));
+        assert_eq!(ratio_bar(100), format!("[{}]", "█".repeat(20)));
+        assert_eq!(ratio_bar(150), format!("[{}]", "█".repeat(20)));
+        assert_eq!(
+            ratio_bar(50),
+            format!("[{}{}]", "█".repeat(10), "░".repeat(10))
+        );
     }
 
     #[tokio::test]
@@ -4175,6 +4459,46 @@ mod tests {
         assert!(!goal.waiting_for_user);
         assert_eq!(goal.last_summary.as_deref(), Some("plan approved"));
         assert!(app.pending_session_save);
+    }
+
+    #[test]
+    fn pending_plan_exit_holds_queued_type_ahead_until_approved() {
+        // Repro: user types a follow-up while the agent is planning (it queues),
+        // then the turn ends with exit_plan_mode. The queued message must NOT
+        // flush a new turn while the approval prompt is up — otherwise `busy`
+        // flips true and the Y keystroke is swallowed, locking the user out.
+        let mut app = App::new();
+        app.set_permission_mode(PermissionMode::Plan);
+        app.message_queue
+            .push("also handle the edge case".to_string());
+
+        apply_agent_event(
+            &mut app,
+            AgentEvent::PlanExitRequested {
+                plan: "1. Patch\n2. Test".to_string(),
+            },
+        );
+        apply_agent_event(&mut app, AgentEvent::TurnComplete);
+
+        assert!(!app.busy);
+        assert!(app.pending_plan_exit.is_some());
+        // The flush gate must refuse to launch while the decision is pending.
+        assert!(turn_launch_blocked_by_pending_decision(&app));
+        assert_eq!(app.message_queue.len(), 1);
+
+        // Approving clears the gate and queues the implementation prompt, so the
+        // next flush is allowed (now with both the approval and the type-ahead).
+        handle_plan_exit_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+
+        assert!(!turn_launch_blocked_by_pending_decision(&app));
+        assert!(app.pending_plan_exit.is_none());
+        assert!(app
+            .message_queue
+            .iter()
+            .any(|m| m.starts_with(PLAN_APPROVED_PREFIX)));
     }
 
     #[test]

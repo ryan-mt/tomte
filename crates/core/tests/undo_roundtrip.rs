@@ -18,6 +18,7 @@ fn ctx(cwd: std::path::PathBuf) -> ToolContext {
         auto_approve_edits: false,
         session: Arc::new(Mutex::new(SessionState::default())),
         config: opencli_core::config::Config::default(),
+        cwd_override: Arc::new(Mutex::new(None)),
         events: None,
     }
 }

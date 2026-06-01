@@ -14,8 +14,25 @@ pub async fn run(
     reasoning: Option<String>,
     output_format: String,
     plan_mode_required: bool,
+    cwd: Option<std::path::PathBuf>,
+    prompt_file: Option<std::path::PathBuf>,
 ) -> Result<()> {
+    // Apply the working directory FIRST so config/project-memory/skill discovery
+    // and the agent's relative-path tools all resolve against it. A scheduler
+    // (cron/systemd) starts with a bare cwd, so unattended runs must set --cwd.
+    if let Some(dir) = &cwd {
+        std::env::set_current_dir(dir)
+            .map_err(|e| anyhow::anyhow!("--cwd {}: {e}", dir.display()))?;
+    }
+
     let mut prompt = prompt;
+    // Prompt precedence: positional argument → --prompt-file → stdin.
+    if prompt.trim().is_empty() {
+        if let Some(path) = &prompt_file {
+            prompt = std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("--prompt-file {}: {e}", path.display()))?;
+        }
+    }
     if prompt.trim().is_empty() {
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;

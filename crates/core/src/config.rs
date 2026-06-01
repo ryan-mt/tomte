@@ -225,16 +225,50 @@ pub fn load() -> Config {
 }
 
 pub fn save(cfg: &Config) -> std::io::Result<()> {
-    let dir = config_dir();
-    std::fs::create_dir_all(&dir)?;
+    save_to_path(&config_file(), cfg)
+}
+
+fn save_to_path(path: &Path, cfg: &Config) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     let persistable = persist_view(cfg);
     let text = serde_json::to_string_pretty(&persistable).unwrap();
     // Atomic write: a SIGKILL between truncate and write previously left
     // config.json empty, silently resetting all settings on next launch.
-    let path = config_file();
-    let tmp = unique_tmp_path(&path);
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, &path)
+    let tmp = unique_tmp_path(path);
+    write_config_file(&tmp, text.as_bytes())?;
+    std::fs::rename(&tmp, path)
+}
+
+#[cfg(unix)]
+fn write_config_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut f = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_config_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
+}
+
+pub fn redacted_view(cfg: &Config) -> Config {
+    let mut out = cfg.clone();
+    for provider in out.providers.values_mut() {
+        if provider.api_key.as_ref().is_some_and(|key| !key.is_empty()) {
+            provider.api_key = Some("<redacted>".to_string());
+        }
+    }
+    out
 }
 
 pub fn normalize_reasoning_effort(value: &str) -> Option<String> {
@@ -391,5 +425,65 @@ mod tests {
         let pc = cfg.providers.get("groq").expect("groq provider present");
         assert_eq!(pc.base_url, "https://api.groq.com/openai/v1");
         assert_eq!(pc.resolve_api_key(), "sk-literal");
+    }
+
+    #[test]
+    fn redacted_view_hides_literal_provider_keys() {
+        let mut cfg = Config::default();
+        cfg.providers.insert(
+            "groq".into(),
+            ProviderConfig {
+                base_url: "https://api.groq.com/openai/v1".into(),
+                api_key: Some("sk-literal-secret".into()),
+                api_key_env: Some("GROQ_API_KEY".into()),
+                context_limit: None,
+                forward_reasoning_effort: false,
+            },
+        );
+
+        let redacted = redacted_view(&cfg);
+        let json = serde_json::to_string(&redacted).unwrap();
+
+        assert_eq!(
+            cfg.providers.get("groq").unwrap().api_key.as_deref(),
+            Some("sk-literal-secret")
+        );
+        assert_eq!(
+            redacted.providers.get("groq").unwrap().api_key.as_deref(),
+            Some("<redacted>")
+        );
+        assert!(!json.contains("sk-literal-secret"), "{json}");
+        assert!(json.contains("<redacted>"), "{json}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_to_path_writes_private_config_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut cfg = Config::default();
+        cfg.providers.insert(
+            "groq".into(),
+            ProviderConfig {
+                base_url: "https://api.groq.com/openai/v1".into(),
+                api_key: Some("sk-literal-secret".into()),
+                api_key_env: None,
+                context_limit: None,
+                forward_reasoning_effort: false,
+            },
+        );
+
+        save_to_path(&path, &cfg).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("sk-literal-secret"));
     }
 }

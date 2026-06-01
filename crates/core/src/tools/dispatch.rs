@@ -114,6 +114,64 @@ mod tests {
     }
 
     #[test]
+    fn child_cwd_accepts_paths_inside_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        let args = DispatchArgs {
+            subagent_type: None,
+            prompt: "inspect".into(),
+            description: None,
+            model: None,
+            cwd: Some("child".into()),
+            mode: None,
+            plan_mode_required: false,
+        };
+
+        assert_eq!(
+            args.child_cwd(dir.path()).unwrap(),
+            child.canonicalize().unwrap()
+        );
+
+        let args = DispatchArgs {
+            cwd: Some(child.to_string_lossy().to_string()),
+            ..args
+        };
+        assert_eq!(
+            args.child_cwd(dir.path()).unwrap(),
+            child.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn child_cwd_rejects_paths_outside_parent() {
+        let parent = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_path = outside.path().canonicalize().unwrap();
+        let base = DispatchArgs {
+            subagent_type: None,
+            prompt: "inspect".into(),
+            description: None,
+            model: None,
+            cwd: Some(outside_path.to_string_lossy().to_string()),
+            mode: None,
+            plan_mode_required: false,
+        };
+
+        let err = base.child_cwd(parent.path()).unwrap_err().to_string();
+        assert!(err.contains("escapes the parent cwd"), "got: {err}");
+
+        let err = DispatchArgs {
+            cwd: Some("..".into()),
+            ..base
+        }
+        .child_cwd(parent.path())
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("escapes the parent cwd"), "got: {err}");
+    }
+
+    #[test]
     fn child_policy_forces_plan_when_parent_would_need_approval() {
         let mut ctx = ToolContext::new(std::env::temp_dir(), ApprovalMode::OnRequest);
         ctx.require_approval = true;
@@ -203,14 +261,27 @@ impl DispatchArgs {
     }
 
     fn child_cwd(&self, parent: &Path) -> Result<PathBuf> {
+        let parent = std::fs::canonicalize(parent).map_err(|e| {
+            anyhow!(
+                "dispatch_agent parent cwd `{}` could not be resolved: {e}",
+                parent.display()
+            )
+        })?;
+        if !parent.is_dir() {
+            return Err(anyhow!(
+                "dispatch_agent parent cwd `{}` is not a directory",
+                parent.display()
+            ));
+        }
+
         let Some(raw) = self.cwd.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
-            return Ok(parent.to_path_buf());
+            return Ok(parent);
         };
-        let path = PathBuf::from(raw);
-        let path = if path.is_absolute() {
-            path
+        let requested = PathBuf::from(raw);
+        let path = if requested.is_absolute() {
+            requested
         } else {
-            parent.join(path)
+            parent.join(requested)
         };
         let canonical = std::fs::canonicalize(&path).map_err(|e| {
             anyhow!(
@@ -222,6 +293,13 @@ impl DispatchArgs {
             return Err(anyhow!(
                 "dispatch_agent cwd `{}` is not a directory",
                 canonical.display()
+            ));
+        }
+        if !canonical.starts_with(&parent) {
+            return Err(anyhow!(
+                "dispatch_agent cwd `{}` escapes the parent cwd `{}`",
+                canonical.display(),
+                parent.display()
             ));
         }
         Ok(canonical)

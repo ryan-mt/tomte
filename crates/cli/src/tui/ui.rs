@@ -3,6 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -299,8 +300,21 @@ fn render_todos(f: &mut Frame, area: Rect, app: &App) {
     let label_width = (area.width as usize).saturating_sub(4);
     let recent_completed = recent_completed_todo_indices(app);
     let visible = visible_todo_indices(&app.session_todos, &recent_completed);
+    let completed_ids: HashSet<&str> = app
+        .session_todos
+        .iter()
+        .filter(|t| matches!(t.status, TodoStatus::Completed))
+        .filter_map(|t| t.id.as_deref())
+        .collect();
     for idx in &visible {
-        lines.push(render_todo_line(&app.session_todos[*idx], label_width));
+        let todo = &app.session_todos[*idx];
+        let blocked = matches!(todo.status, TodoStatus::Pending)
+            && !todo.blocked_by.is_empty()
+            && !todo
+                .blocked_by
+                .iter()
+                .all(|b| completed_ids.contains(b.as_str()));
+        lines.push(render_todo_line(todo, label_width, blocked));
     }
     if let Some(summary) = hidden_todos_summary(&app.session_todos, &visible) {
         lines.push(Line::from(Span::styled(format!("  {summary}"), dim)));
@@ -309,7 +323,7 @@ fn render_todos(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_todo_line(todo: &TodoItem, label_width: usize) -> Line<'static> {
+fn render_todo_line(todo: &TodoItem, label_width: usize, blocked: bool) -> Line<'static> {
     let active_style = Style::default()
         .fg(Color::Rgb(255, 184, 108))
         .add_modifier(Modifier::BOLD);
@@ -319,10 +333,14 @@ fn render_todo_line(todo: &TodoItem, label_width: usize) -> Line<'static> {
         .add_modifier(Modifier::CROSSED_OUT);
     let done_mark = Style::default().fg(Color::Rgb(120, 200, 120));
     let pending_mark = Style::default().fg(Color::Rgb(145, 150, 160));
+    // A pending item still waiting on an unfinished dependency: dimmer body and
+    // a distinct marker so it reads as "not yet startable".
+    let blocked_style = Style::default().fg(Color::Rgb(120, 124, 134));
 
     let (icon, mark_style, body_style) = match todo.status {
         TodoStatus::Completed => ("✓", done_mark, done_style),
         TodoStatus::InProgress => ("▪", active_style, active_style),
+        TodoStatus::Pending if blocked => ("⊘", blocked_style, blocked_style),
         TodoStatus::Pending => ("□", pending_mark, pending_style),
     };
     let label = todo_label(todo);
@@ -1409,8 +1427,12 @@ fn highlight_code_lines(
         .unwrap_or_else(|| ss.find_syntax_plain_text());
     let mut hl = HighlightLines::new(syntax, theme);
 
+    // Sanitize once up front (preserving newlines) so embedded tabs/escapes in a
+    // model-echoed code block can't desync the terminal; syntect then highlights
+    // the cleaned text.
+    let code = sanitize_display(code);
     let mut out: Vec<Vec<Span<'static>>> = Vec::new();
-    for line in LinesWithEndings::from(code) {
+    for line in LinesWithEndings::from(code.as_ref()) {
         let ranges = hl.highlight_line(line, ss).unwrap_or_default();
         let mut spans: Vec<Span<'static>> = Vec::new();
         for (style, piece) in ranges {
@@ -2207,14 +2229,23 @@ fn friendly_body<'a>(
             // Output format: "exit_code: N\n--- stdout ---\n…\n--- stderr ---\n…"
             let (code, stdout, stderr) = parse_shell_output(text);
             let success = code == 0;
+            // A failed command's output is the whole point, so when collapsed we
+            // show a bigger slice than the 3-line success preview — enough to
+            // read the error inline, still bounded with a "Ctrl+O for more" hint.
+            const FAILED_SHELL_PREVIEW: usize = 15;
+            let (stdout_budget, stderr_budget) = if !success && !expanded {
+                (FAILED_SHELL_PREVIEW, FAILED_SHELL_PREVIEW)
+            } else {
+                (limits.shell_stdout, limits.shell_stderr)
+            };
             if !stdout.is_empty() {
                 let total = stdout.lines().count();
-                for raw in stdout.lines().take(limits.shell_stdout) {
+                for raw in stdout.lines().take(stdout_budget) {
                     for w in wrap(raw, avail) {
                         out.push(Line::from(Span::styled(w, style_code)));
                     }
                 }
-                let extra = total.saturating_sub(limits.shell_stdout);
+                let extra = total.saturating_sub(stdout_budget);
                 if extra > 0 {
                     out.push(Line::from(Span::styled(
                         format!("… +{extra} more line{} (Ctrl+O for more)", plural(extra)),
@@ -2225,28 +2256,21 @@ fn friendly_body<'a>(
             let stderr_trim = stderr.trim();
             if !stderr_trim.is_empty() {
                 if !success || expanded {
-                    // Show stderr in full when the command failed, or when in
-                    // expanded mode for diagnostic context.
-                    out.push(Line::from(Span::styled(
-                        "─ stderr ─",
-                        Style::default().fg(Color::Yellow),
-                    )));
+                    // Claude Code style: stderr rendered in red, with no
+                    // separator box — the colour alone sets it apart from stdout.
+                    let err_style = Style::default().fg(Color::Red);
                     let total_err = stderr.lines().count();
-                    let max_err = limits.shell_stderr;
-                    for raw in stderr.lines().take(max_err) {
+                    for raw in stderr.lines().take(stderr_budget) {
                         for w in wrap(raw, avail) {
-                            out.push(Line::from(Span::styled(
-                                w,
-                                Style::default().fg(Color::Yellow),
-                            )));
+                            out.push(Line::from(Span::styled(w, err_style)));
                         }
                     }
-                    if total_err > max_err {
+                    if total_err > stderr_budget {
                         out.push(Line::from(Span::styled(
                             format!(
-                                "… +{} stderr line{}",
-                                total_err - max_err,
-                                plural(total_err - max_err)
+                                "… +{} stderr line{} (Ctrl+O for more)",
+                                total_err - stderr_budget,
+                                plural(total_err - stderr_budget)
                             ),
                             style_meta,
                         )));
@@ -2264,13 +2288,13 @@ fn friendly_body<'a>(
                     )));
                 }
             }
-            if !success || expanded {
-                let code_style = if success {
-                    style_meta
-                } else {
-                    Style::default().fg(Color::Red)
-                };
-                out.push(Line::from(Span::styled(format!("exit {code}"), code_style)));
+            // Claude Code shows no "exit 0" on success; only a compact red
+            // footer when the command failed.
+            if !success {
+                out.push(Line::from(Span::styled(
+                    format!("Error (exit {code})"),
+                    Style::default().fg(Color::Red),
+                )));
             }
         }
         "grep" => {
@@ -2446,6 +2470,7 @@ fn diff_line<'a>(
     body_style: Style,
     width: usize,
 ) -> Line<'a> {
+    let text = sanitize_display(text);
     let body_width = width.saturating_sub(7);
     let truncated: String = if body_width > 0 && text.chars().count() > body_width {
         format!(
@@ -2572,6 +2597,7 @@ fn display_path(path: &Path) -> String {
 }
 
 fn wrap(text: &str, width: usize) -> Vec<String> {
+    let text = sanitize_display(text);
     if width == 0 {
         return text.lines().map(|s| s.to_string()).collect();
     }
@@ -2586,6 +2612,87 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
         }
     }
     out
+}
+
+/// Strip terminal control sequences and other non-printable bytes that would
+/// corrupt the display. Tool output (notably colorized `cargo`/`rustc`) embeds
+/// ANSI escape sequences; rendered verbatim, those bytes reach the terminal,
+/// move the real cursor, and desync ratatui's incremental buffer diff — leaving
+/// persistent on-screen garbage that piles up over a long session (the
+/// `\x1b(B\x1b[m` resets show up as stray `(B` / `m` fragments). Tabs and
+/// carriage returns break layout the same way, so expand tabs to spaces and drop
+/// CR / other C0 / DEL controls. Newlines are preserved so multi-line callers
+/// can still split on them.
+fn sanitize_display(s: &str) -> Cow<'_, str> {
+    // Fast path: ESC, tab, CR, and other C0/DEL bytes are exactly the ones
+    // `< 0x20` (minus newline) or `0x7f`. Clean text borrows with no allocation.
+    if !s.bytes().any(|b| (b < 0x20 && b != b'\n') || b == 0x7f) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut col = 0usize; // visible column since line start, for tab-stop expansion
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.peek() {
+                Some('[') => {
+                    // CSI: consume params/intermediates up to the final byte.
+                    chars.next();
+                    while let Some(&p) = chars.peek() {
+                        chars.next();
+                        if ('\u{40}'..='\u{7e}').contains(&p) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    // OSC: consume up to BEL or the ST terminator (ESC \).
+                    chars.next();
+                    while let Some(p) = chars.next() {
+                        if p == '\u{07}' {
+                            break;
+                        }
+                        if p == '\u{1b}' {
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {
+                    // Shorter forms like `ESC ( B`: optional intermediate bytes
+                    // (0x20..=0x2f) then a single final byte.
+                    while let Some(&p) = chars.peek() {
+                        if ('\u{20}'..='\u{2f}').contains(&p) {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    chars.next();
+                }
+                None => {}
+            },
+            '\t' => {
+                let n = 4 - (col % 4);
+                for _ in 0..n {
+                    out.push(' ');
+                }
+                col += n;
+            }
+            '\n' => {
+                out.push('\n');
+                col = 0;
+            }
+            c if (c as u32) < 0x20 || c == '\u{7f}' => {}
+            c => {
+                out.push(c);
+                col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            }
+        }
+    }
+    Cow::Owned(out)
 }
 
 fn compact_args(s: &str) -> String {
@@ -2664,6 +2771,8 @@ mod todo_panel_tests {
             content: content.to_string(),
             status,
             active_form: format!("Doing {content}"),
+            id: None,
+            blocked_by: Vec::new(),
         }
     }
 
@@ -2790,6 +2899,98 @@ mod todo_tool_render_tests {
 }
 
 #[cfg(test)]
+mod shell_tool_render_tests {
+    use super::friendly_body;
+    use serde_json::json;
+
+    fn text(lines: &[ratatui::text::Line<'_>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn shell_output(code: i32, stdout: &str, stderr: &str) -> String {
+        format!("exit_code: {code}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}")
+    }
+
+    #[test]
+    fn failed_command_shows_red_stderr_and_error_footer_no_box() {
+        let out = shell_output(101, "", "error: no such command: audit");
+        // A non-zero exit is NOT a tool error — run_shell returns Ok with the
+        // exit code embedded, so `error` is false and the run_shell formatter runs.
+        let lines = friendly_body(
+            "run_shell",
+            &json!({"command": "cargo audit"}),
+            Some(&out),
+            false,
+            80,
+            false,
+        );
+        let rendered = text(&lines);
+        assert!(
+            rendered.contains("error: no such command: audit"),
+            "got: {rendered}"
+        );
+        assert!(rendered.contains("Error (exit 101)"), "got: {rendered}");
+        // Claude Code style: no yellow "─ stderr ─" separator box.
+        assert!(!rendered.contains("─ stderr ─"), "got: {rendered}");
+    }
+
+    #[test]
+    fn successful_command_has_no_exit_footer() {
+        let out = shell_output(0, "all good", "");
+        let lines = friendly_body(
+            "run_shell",
+            &json!({"command": "echo hi"}),
+            Some(&out),
+            false,
+            80,
+            false,
+        );
+        let rendered = text(&lines);
+        assert!(rendered.contains("all good"), "got: {rendered}");
+        assert!(
+            !rendered.contains("exit"),
+            "success must not show an exit line: {rendered}"
+        );
+        assert!(!rendered.contains("Error"), "got: {rendered}");
+    }
+
+    #[test]
+    fn failed_command_shows_more_than_the_success_preview() {
+        // 20 stdout lines: the collapsed failure budget (15) shows far more than
+        // the 3-line success preview, still bounded with a "more" hint.
+        let body: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        let out = shell_output(1, body.trim_end(), "");
+        let lines = friendly_body(
+            "run_shell",
+            &json!({"command": "cargo fmt --check"}),
+            Some(&out),
+            false,
+            80,
+            false,
+        );
+        let rendered = text(&lines);
+        assert!(
+            rendered.contains("line 15"),
+            "should show ~15 lines on failure: {rendered}"
+        );
+        assert!(
+            !rendered.contains("line 16"),
+            "should cap at the failure budget: {rendered}"
+        );
+        assert!(rendered.contains("+5 more line"), "got: {rendered}");
+    }
+}
+
+#[cfg(test)]
 mod status_footer_tests {
     use super::status_left_text_for_parts;
 
@@ -2828,6 +3029,45 @@ mod path_display_tests {
             shorten_path_with_home(Path::new("/home/ryan2/project"), home),
             "/home/ryan2/project"
         );
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_display;
+
+    #[test]
+    fn strips_ansi_color_and_reset_sequences() {
+        // Colorized cargo/rustc output: SGR color + the `\x1b(B\x1b[m` reset that
+        // leaked as stray `(B` / `m` fragments and desynced the terminal.
+        let input = "\x1b[1m\x1b[31merror\x1b[0m\x1b(B\x1b[m: boom";
+        assert_eq!(sanitize_display(input), "error: boom");
+    }
+
+    #[test]
+    fn strips_osc_and_drops_cr() {
+        // OSC title sequence (ESC ] ... BEL) plus a CRLF carriage return.
+        let input = "\x1b]0;title\x07line\r";
+        assert_eq!(sanitize_display(input), "line");
+    }
+
+    #[test]
+    fn expands_tabs_to_tab_stops() {
+        assert_eq!(sanitize_display("a\tb"), "a   b"); // col 1 -> next stop at 4
+        assert_eq!(sanitize_display("\tx"), "    x"); // col 0 -> stop at 4
+    }
+
+    #[test]
+    fn preserves_newlines_and_resets_tab_column() {
+        assert_eq!(sanitize_display("a\tb\n\tc"), "a   b\n    c");
+    }
+
+    #[test]
+    fn clean_text_borrows_without_allocating() {
+        assert!(matches!(
+            sanitize_display("plain ascii"),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 }
 

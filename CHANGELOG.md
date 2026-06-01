@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.0.1-beta.4
+
+Daemon-free code intelligence, isolated git worktrees, progressive MCP tool disclosure, a stale-file edit guard, a non-blocking `wait` tool, task dependencies, a context-window inspector, git/PR slash commands, a headless scheduler entry point, and several TUI and credential fixes.
+
+- Added the `wait` tool: a non-blocking sleep (1–120s, capped under the tool hard timeout) the model can use for poll-and-wait loops instead of `run_shell {command: "sleep N"}`, so a pause no longer ties up a shell slot. It is read-only and joins the parallel batch.
+- Added task dependencies to `todo_write`: each item may carry an `id` and a `blockedBy` list, and the tool reports which items are unblocked now (all blockers completed). The live todo panel dims blocked items. Plain flat lists are unchanged and old session records round-trip as before.
+- Added a `/context` (alias `/ctx`) inspector: the real provider-reported context occupancy as the headline plus a chars/4 estimate of where the visible conversation is spending context (tool I/O, assistant text, reasoning, user, system), so you can see *why* a session is about to microcompact.
+- Added `/commit` and `/commit-push-pr` slash commands: they queue a templated agent task carrying a git safety protocol (never `--amend`/`--no-verify`/force-push/push-to-main without being asked, stage deliberately, write a Conventional-Commits message from the real diff). `/commit-push-pr` also branches off `main`, pushes, and opens a PR via `gh`.
+- Added a headless scheduler entry point: `opencli run` (alias of `chat`) plus `--cwd` and `--prompt-file`, so a cron/systemd job can fire the agent once in a chosen directory with the prompt read from a file — the foundation for scheduled runs.
+- Added the `lsp` tool for daemon-free code intelligence — document and workspace symbols, go-to-definition, references, and hover — language-aware for Rust, TypeScript/JavaScript, Python, and Go, so the model can navigate code more precisely than with grep.
+- Added isolated git worktrees via the `enter_worktree`/`exit_worktree` tools and a `/worktree` slash command (`/worktree create [name]`, `/worktree exit keep|remove [--discard]`), so a session can branch into its own worktree and clean up safely afterward.
+- Added `tool_search` for progressive MCP tool disclosure: when more than 12 MCP tools are connected, their schemas are deferred and the model loads only the ones a task needs on demand, saving tens of thousands of tokens per request. Built-in tools and small MCP setups are unchanged.
+- Added stale-file detection to `edit_file`, `multi_edit`, and `write_file`: if a file changed on disk since it was last read, the edit is refused until you re-read it, so an edit never lands on bytes the model never saw.
+- Improved `run_shell` output to match Claude Code: stderr in red with no separator box, a compact `Error (exit N)` footer on failure, and more output kept inline when a command fails.
+- Improved credential safety: `config.json` is now written with owner-only (`0600`) permissions on Unix, and `config --show` redacts provider API keys so they never reach the terminal or scrollback.
+- Hardened `run_shell` destructive-command detection: absolute-path command invocations such as `/bin/rm`, `/usr/bin/git`, `/sbin/mkfs.*`, and `/usr/bin/curl | /bin/sh` are now normalized before classification, closing bypasses around the dangerous-command confirmation gate.
+- Hardened `dispatch_agent` cwd handling: sub-agent `cwd` overrides are now canonicalized and must stay under the parent session cwd, preventing an absolute or `..` path from expanding a child agent's filesystem sandbox.
+- Fixed the TUI getting progressively garbled over long sessions: ANSI color codes, tabs, and carriage returns in tool output (e.g. colorized `cargo`/`rustc`) were leaking into the terminal and corrupting the display. Rendered text is now sanitized.
+- Fixed deferred MCP tools disappearing after a working-directory change mid-session; they stay advertised and callable now.
+- Fixed a plan-approval lockout where typing a follow-up message while the agent was planning could make the `Y` approval key stop responding.
+
 ## 0.0.1-beta.3
 
 Stability beta adding proactive context management and hardening streamed tool calls, reasoning portability, and `/goal` limits.
