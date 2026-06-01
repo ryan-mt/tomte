@@ -74,6 +74,15 @@ pub struct ProviderConfig {
     /// [`DEFAULT_PROVIDER_CONTEXT_LIMIT`] when unset.
     #[serde(default)]
     pub context_limit: Option<u64>,
+    /// Forward the selected reasoning effort to this provider as the Chat
+    /// Completions `reasoning_effort` field. Off by default because many
+    /// OpenAI-compatible endpoints reject unknown fields with a 400; enable it
+    /// only for reasoning models that accept `reasoning_effort` (OpenAI, Groq,
+    /// DeepSeek, Together, …). `minimal`/`low`/`medium`/`high` pass through;
+    /// `xhigh`/`max`/`ultracode` clamp to `high`; `none` and unknown levels have
+    /// no standard value and are simply not forwarded.
+    #[serde(default)]
+    pub forward_reasoning_effort: bool,
 }
 
 /// Conservative input-window assumed for a configured provider that does not

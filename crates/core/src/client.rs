@@ -52,6 +52,7 @@ impl LlmClient {
                     prefix.to_string(),
                     pc.base_url.clone(),
                     pc.resolve_api_key(),
+                    pc.forward_reasoning_effort,
                 )?;
                 return Ok(Self {
                     inner: Box::new(client),
@@ -94,6 +95,7 @@ mod tests {
                     api_key: Some("sk-test".to_string()),
                     api_key_env: None,
                     context_limit: None,
+                    forward_reasoning_effort: false,
                 },
             )]),
             ..Config::default()

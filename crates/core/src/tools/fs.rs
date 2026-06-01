@@ -116,9 +116,15 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         // blow out the context. Mirrors Claude Code's 2000-char-per-line cap.
         const MAX_LINE_CHARS: usize = 2000;
 
-        let meta = tokio::fs::metadata(&path)
-            .await
-            .with_context(|| format!("stat {}", path.display()))?;
+        let meta = match tokio::fs::metadata(&path).await {
+            Ok(meta) => meta,
+            // A clear "not found" beats leaking the `stat` syscall name, and
+            // tells the model the path is wrong rather than the tool being broken.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(anyhow!("file not found: {}", a.path));
+            }
+            Err(e) => return Err(e).with_context(|| format!("read {}", a.path)),
+        };
         // Record that this file was read this session so write_file/edit_file
         // can refuse to clobber a file the model never looked at. Keyed on the
         // canonical resolved path so later write/edit lookups match regardless
@@ -1010,6 +1016,25 @@ mod tests {
 
     fn read_args(path: &str, offset: Option<usize>, limit: Option<usize>) -> Value {
         json!({"path": path, "offset": offset, "limit": limit})
+    }
+
+    #[tokio::test]
+    async fn read_file_missing_path_gives_clear_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = ReadFile
+            .execute(
+                read_args("nope.py", None, None),
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("file not found"), "got: {err}");
+        assert!(err.contains("nope.py"), "got: {err}");
+        assert!(
+            !err.contains("stat "),
+            "must not leak the syscall name: {err}"
+        );
     }
 
     #[tokio::test]
