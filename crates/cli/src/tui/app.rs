@@ -492,6 +492,9 @@ fn goal_exceeds_limit(objective: &str) -> bool {
 const PLAN_APPROVED_PREFIX: &str = "[opencli:/plan approved]";
 const PLAN_REJECTED_PREFIX: &str = "[opencli:/plan rejected]";
 pub const TODO_RECENT_COMPLETED_TTL: Duration = Duration::from_secs(30);
+/// Cap on in-memory composer recall history so a multi-day session can't grow
+/// it without bound. Oldest entries are dropped past this.
+const MAX_INPUT_HISTORY: usize = 1000;
 
 pub fn todo_completion_key(todo: &TodoItem) -> String {
     format!("{}\n{}", todo.content, todo.active_form)
@@ -798,6 +801,13 @@ impl App {
     fn record_history(&mut self, text: &str) {
         if self.input_history.last().map(String::as_str) != Some(text) {
             self.input_history.push(text.to_string());
+            // Drop the oldest entries once past the cap. Safe here because
+            // `history_pos` is reset to `None` right below, so no live cursor
+            // can be left pointing at a shifted index.
+            if self.input_history.len() > MAX_INPUT_HISTORY {
+                let overflow = self.input_history.len() - MAX_INPUT_HISTORY;
+                self.input_history.drain(0..overflow);
+            }
         }
         self.history_pos = None;
     }
@@ -4120,6 +4130,21 @@ mod tests {
         };
         assert!(text.contains("Plan: pro"), "{text}");
         assert!(text.contains("5-hour: 12.5% used"), "{text}");
+    }
+
+    #[test]
+    fn record_history_is_bounded() {
+        let mut app = App::new();
+        for i in 0..(MAX_INPUT_HISTORY + 50) {
+            app.record_history(&format!("msg {i}"));
+        }
+        assert_eq!(app.input_history.len(), MAX_INPUT_HISTORY);
+        // Oldest dropped, newest kept.
+        assert_eq!(app.input_history.first().unwrap(), "msg 50");
+        assert_eq!(
+            app.input_history.last().unwrap(),
+            &format!("msg {}", MAX_INPUT_HISTORY + 49)
+        );
     }
 
     #[tokio::test]
