@@ -5340,7 +5340,12 @@ mod function_call_id_tests {
         let mut attempts = 0usize;
 
         let switched = agent
-            .try_fail_over("HTTP 429 rate limit exceeded", &mut tried, &mut attempts, &tx)
+            .try_fail_over(
+                "HTTP 429 rate limit exceeded",
+                &mut tried,
+                &mut attempts,
+                &tx,
+            )
             .await;
         assert!(switched, "overload + buildable fallback should fail over");
         assert_eq!(agent.config.model, "local/backup");
@@ -5372,13 +5377,23 @@ mod function_call_id_tests {
         // A fatal auth error must not switch models.
         assert!(
             !agent
-                .try_fail_over("401 Unauthorized: invalid api key", &mut tried, &mut attempts, &tx)
+                .try_fail_over(
+                    "401 Unauthorized: invalid api key",
+                    &mut tried,
+                    &mut attempts,
+                    &tx
+                )
                 .await
         );
         // A context overflow must not switch models (a different model won't help).
         assert!(
             !agent
-                .try_fail_over("prompt is too long: 250000 tokens", &mut tried, &mut attempts, &tx)
+                .try_fail_over(
+                    "prompt is too long: 250000 tokens",
+                    &mut tried,
+                    &mut attempts,
+                    &tx
+                )
                 .await
         );
         assert_eq!(agent.config.model, "local/primary", "model unchanged");
@@ -5401,12 +5416,24 @@ mod function_call_id_tests {
         let mut attempts = 0usize;
         let err = "503 service unavailable: overloaded";
 
-        assert!(agent.try_fail_over(err, &mut tried, &mut attempts, &tx).await);
+        assert!(
+            agent
+                .try_fail_over(err, &mut tried, &mut attempts, &tx)
+                .await
+        );
         assert_eq!(agent.config.model, "local/a");
-        assert!(agent.try_fail_over(err, &mut tried, &mut attempts, &tx).await);
+        assert!(
+            agent
+                .try_fail_over(err, &mut tried, &mut attempts, &tx)
+                .await
+        );
         assert_eq!(agent.config.model, "local/b");
         // Bound reached: a further overload surfaces instead of spinning.
-        assert!(!agent.try_fail_over(err, &mut tried, &mut attempts, &tx).await);
+        assert!(
+            !agent
+                .try_fail_over(err, &mut tried, &mut attempts, &tx)
+                .await
+        );
         assert_eq!(attempts, super::MAX_FALLBACK_ATTEMPTS);
     }
 
