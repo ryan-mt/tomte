@@ -101,7 +101,7 @@ enum MatchMode {
 /// Matching compensates asymmetrically (deny is broad, allow is narrow) so the
 /// gaps degrade to a prompt, never to a silent auto-run.
 fn shell_segments(cmd: &str) -> Vec<&str> {
-    cmd.split(|c| matches!(c, ';' | '|' | '&' | '\n'))
+    cmd.split([';', '|', '&', '\n'])
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect()
