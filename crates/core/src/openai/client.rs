@@ -77,7 +77,11 @@ fn normalize_openai_reasoning_effort(
     effort: &str,
     is_chatgpt_subscription: bool,
 ) -> String {
-    if model == "gpt-5-pro" {
+    // Any `-pro` variant deliberates at the top tier. Match the `-pro` family
+    // rather than one exact id, so a current `gpt-5.5-pro` and any future pro
+    // model are pinned to `high` instead of silently dropping to the generic
+    // effort mapping (the old `== "gpt-5-pro"` check missed `gpt-5.5-pro`).
+    if model.contains("-pro") {
         return "high".to_string();
     }
 
@@ -378,11 +382,28 @@ mod tests {
 
     #[test]
     fn openai_pro_clamps_every_effort_to_high() {
-        for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
-            assert_eq!(
-                normalize_openai_reasoning_effort("gpt-5-pro", effort, false),
-                "high"
-            );
+        // Matched by the `-pro` family, so both the catalogued `gpt-5-pro` and a
+        // real current `gpt-5.5-pro` (and any future pro tier) pin to `high`.
+        for model in ["gpt-5-pro", "gpt-5.5-pro"] {
+            for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+                assert_eq!(
+                    normalize_openai_reasoning_effort(model, effort, false),
+                    "high"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn openai_non_pro_keeps_normal_effort_mapping() {
+        // The `-pro` guard must not catch a non-pro model.
+        assert_eq!(
+            normalize_openai_reasoning_effort("gpt-5.5", "low", true),
+            "low"
+        );
+        assert_eq!(
+            normalize_openai_reasoning_effort("gpt-5.5", "medium", false),
+            "medium"
+        );
     }
 }
