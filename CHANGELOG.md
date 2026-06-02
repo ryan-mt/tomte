@@ -10,6 +10,7 @@
 - `@<path>` mentions are now confined to the workspace: an absolute path, a `..` escape, or a symlink resolving outside `cwd` is ignored instead of attaching out-of-tree file contents to the prompt.
 - `@`-expansion now scans only the user's own prompt, not the prepended output of a prior `!`-command, so a `@token` printed by a shell command no longer attaches an unrelated file.
 - The `@`-file picker streams `rg --files` and stops after 5000 entries (killing rg early) so opening the picker in a huge monorepo can't stall the UI.
+- A `#<note>` added to an existing `CLAUDE.md` that didn't end in a newline now starts on its own line instead of being glued onto the last line.
 
 ## 0.0.1-beta.4
 

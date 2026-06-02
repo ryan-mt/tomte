@@ -3564,6 +3564,20 @@ async fn run_bang_command(cmd: &str, cwd: &std::path::Path, timeout: Duration) -
     }
 }
 
+/// Build the text to append to a project `CLAUDE.md` for a `#`-note. Writes a
+/// header for a brand-new file, and guarantees the note starts on its own line
+/// even when the existing file doesn't end in a newline (otherwise the bullet
+/// would be glued onto the last line, e.g. `...last line- note`).
+fn claude_md_note_block(existed: bool, ends_with_newline: bool, note: &str) -> String {
+    if !existed {
+        format!("# CLAUDE.md\n\n- {note}\n")
+    } else if ends_with_newline {
+        format!("- {note}\n")
+    } else {
+        format!("\n- {note}\n")
+    }
+}
+
 /// Append a `#`-prefixed note to the project `CLAUDE.md` and re-apply memory to
 /// the live agent so it takes effect immediately (Claude Code's `#` quick-add).
 async fn handle_hash_memory(
@@ -3578,17 +3592,16 @@ async fn handle_hash_memory(
     }
     let path = app.cwd.join("CLAUDE.md");
     let existed = path.exists();
+    let ends_with_newline = std::fs::read_to_string(&path)
+        .map(|c| c.is_empty() || c.ends_with('\n'))
+        .unwrap_or(true);
+    let block = claude_md_note_block(existed, ends_with_newline, note);
     use std::io::Write;
     let res = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .and_then(|mut f| {
-            if !existed {
-                writeln!(f, "# CLAUDE.md\n")?;
-            }
-            writeln!(f, "- {note}")
-        });
+        .and_then(|mut f| f.write_all(block.as_bytes()));
     match res {
         Ok(()) => {
             app.blocks
@@ -4511,6 +4524,20 @@ mod tests {
         assert!(r.display.contains("hi"));
         assert!(r.context.contains("$ echo hi"));
         assert!(r.context.contains("Exit code: 0"));
+    }
+
+    #[test]
+    fn claude_md_note_block_keeps_note_on_its_own_line() {
+        // New file gets a header.
+        assert_eq!(
+            claude_md_note_block(false, true, "x"),
+            "# CLAUDE.md\n\n- x\n"
+        );
+        // Existing file ending in newline: plain append.
+        assert_eq!(claude_md_note_block(true, true, "x"), "- x\n");
+        // Existing file WITHOUT a trailing newline: prepend one so the bullet
+        // doesn't glue onto the last line.
+        assert_eq!(claude_md_note_block(true, false, "x"), "\n- x\n");
     }
 
     // Regression: a non-terminating `!`-command must be killed at the deadline,
