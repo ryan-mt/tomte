@@ -100,6 +100,20 @@ Parameters:\n\
             return Err(anyhow!("notebook_path must point to a .ipynb file"));
         }
         let path = resolve(&ctx.cwd, &a.notebook_path)?;
+        // Read-before-edit safety, same as edit_file/write_file: the edit may
+        // only proceed if the model actually read this notebook this session and
+        // it hasn't changed on disk since — otherwise an edit/delete could clobber
+        // cells the model never saw.
+        {
+            let session = ctx.session.lock().await;
+            if !session.read_files.contains(&path) {
+                return Err(anyhow!(
+                    "notebook_edit requires reading {} first so the edit targets cells you've seen. Call read_file on it.",
+                    path.display()
+                ));
+            }
+            super::fs::ensure_not_stale(&session, &path, "notebook_edit")?;
+        }
         let original = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("read {}", path.display()))?;
@@ -173,12 +187,16 @@ Parameters:\n\
                     .ok_or_else(|| anyhow!("edit_mode `delete` requires cell_id"))?;
                 let (idx, by_id) = find_cell_index(cells, cid)
                     .ok_or_else(|| anyhow!("cell `{cid}` not found in notebook"))?;
+                // Delete is destructive and irreversible within the notebook, so
+                // never fall back to treating a numeric `cell_id` as a position —
+                // that could remove a cell the model didn't mean. Require a real id.
+                if !by_id {
+                    return Err(anyhow!(
+                        "refusing to delete cell `{cid}` by positional index — no cell has that id. Pass the cell's real `id`."
+                    ));
+                }
                 cells.remove(idx);
-                format!(
-                    "Deleted cell `{cid}` (index {idx}){} from {}",
-                    index_fallback_note(by_id),
-                    a.notebook_path
-                )
+                format!("Deleted cell `{cid}` (index {idx}) from {}", a.notebook_path)
             }
             other => {
                 return Err(anyhow!(
@@ -195,12 +213,22 @@ Parameters:\n\
         super::fs::atomic_write_preserving_permissions(&path, &tmp, new_content.as_bytes()).await?;
 
         let (post_edit_mtime, post_edit_size) = super::fs::snapshot_meta(&path);
-        ctx.session.lock().await.push_undo_entry(UndoEntry {
-            path: path.clone(),
-            original_content: Some(original.into_bytes()),
-            post_edit_mtime,
-            post_edit_size,
-        });
+        {
+            let mut session = ctx.session.lock().await;
+            // Refresh the read snapshot to the bytes we just wrote so a follow-up
+            // notebook_edit isn't flagged stale by our own change, and record the
+            // path as read so the read-before-edit guard above passes next time.
+            session
+                .read_file_meta
+                .insert(path.clone(), (post_edit_mtime, post_edit_size));
+            session.read_files.insert(path.clone());
+            session.push_undo_entry(UndoEntry {
+                path: path.clone(),
+                original_content: Some(original.into_bytes()),
+                post_edit_mtime,
+                post_edit_size,
+            });
+        }
         Ok(msg)
     }
 }
@@ -371,6 +399,16 @@ mod tests {
         p
     }
 
+    /// A `ctx` with the sample notebook already registered as read, so the
+    /// read-before-edit guard passes (mirrors the model having read it first).
+    async fn nb_ctx(dir: &std::path::Path) -> ToolContext {
+        let c = ctx(dir.to_path_buf());
+        if let Ok(p) = resolve(&c.cwd, "nb.ipynb") {
+            c.session.lock().await.read_files.insert(p);
+        }
+        c
+    }
+
     #[tokio::test]
     async fn replace_updates_source_and_clears_outputs() {
         let dir = tempfile::tempdir().unwrap();
@@ -378,7 +416,7 @@ mod tests {
         let out = NotebookEdit
             .execute(
                 json!({"notebook_path": "nb.ipynb", "new_source": "print(42)\n", "cell_id": "aaa", "cell_type": null, "edit_mode": "replace"}),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();
@@ -400,7 +438,7 @@ mod tests {
         NotebookEdit
             .execute(
                 json!({"notebook_path": "nb.ipynb", "new_source": "x = 5\n", "cell_id": "aaa", "cell_type": "code", "edit_mode": "insert"}),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();
@@ -419,7 +457,7 @@ mod tests {
         NotebookEdit
             .execute(
                 json!({"notebook_path": "nb.ipynb", "new_source": "# Intro\n", "cell_id": null, "cell_type": "markdown", "edit_mode": "insert"}),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();
@@ -437,7 +475,7 @@ mod tests {
         NotebookEdit
             .execute(
                 json!({"notebook_path": "nb.ipynb", "new_source": "", "cell_id": "aaa", "cell_type": null, "edit_mode": "delete"}),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();
@@ -449,13 +487,51 @@ mod tests {
         assert_eq!(cells[0]["id"], "bbb");
     }
 
+    // Regression: notebook_edit must refuse to run if the notebook wasn't read
+    // this session, so it can't clobber cells the model never saw.
+    #[tokio::test]
+    async fn notebook_edit_requires_prior_read() {
+        let dir = tempfile::tempdir().unwrap();
+        write_nb(dir.path()).await;
+        let err = NotebookEdit
+            .execute(
+                json!({"notebook_path": "nb.ipynb", "new_source": "x", "cell_id": "aaa", "cell_type": null, "edit_mode": "replace"}),
+                // plain ctx — the notebook is NOT registered as read.
+                &ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("requires reading"), "got: {err}");
+    }
+
+    // Regression: delete is destructive, so a numeric cell_id that isn't a real
+    // cell id must be refused rather than removing a cell by position.
+    #[tokio::test]
+    async fn delete_refuses_numeric_index_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        write_nb(dir.path()).await;
+        let err = NotebookEdit
+            .execute(
+                json!({"notebook_path": "nb.ipynb", "new_source": "", "cell_id": "0", "cell_type": null, "edit_mode": "delete"}),
+                &nb_ctx(dir.path()).await,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("positional index"), "got: {err}");
+        // Both cells survive.
+        let nb: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("nb.ipynb")).unwrap())
+                .unwrap();
+        assert_eq!(nb["cells"].as_array().unwrap().len(), 2);
+    }
+
     #[tokio::test]
     async fn rejects_non_ipynb_path() {
         let dir = tempfile::tempdir().unwrap();
         let err = NotebookEdit
             .execute(
                 json!({"notebook_path": "nb.txt", "new_source": "x", "cell_id": "0", "cell_type": null, "edit_mode": "replace"}),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap_err();
@@ -470,7 +546,7 @@ mod tests {
         let out = NotebookEdit
             .execute(
                 json!({"path": "nb.ipynb", "new_source": "print(42)\n", "cell_id": "aaa", "cell_type": null, "edit_mode": "replace"}),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();
@@ -492,7 +568,7 @@ mod tests {
                     "cellType": null,
                     "editMode": "replace"
                 }),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();
@@ -514,7 +590,7 @@ mod tests {
                     "type": null,
                     "mode": "replace"
                 }),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();
@@ -538,7 +614,7 @@ mod tests {
                     "id": "aaa",
                     "action": "delete"
                 }),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();
@@ -557,7 +633,7 @@ mod tests {
         NotebookEdit
             .execute(
                 json!({"notebook_path": "nb.ipynb", "new_source": "y = 2\n", "cell_id": "0", "cell_type": null, "edit_mode": "replace"}),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();
@@ -574,7 +650,7 @@ mod tests {
         let err = NotebookEdit
             .execute(
                 json!({"notebook_path": "nb.ipynb", "new_source": "text\n", "cell_id": "aaa", "cell_type": "raw", "edit_mode": "replace"}),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap_err();
@@ -596,7 +672,7 @@ mod tests {
         let out = NotebookEdit
             .execute(
                 json!({"notebook_path": "nb.ipynb", "new_source": "y = 2\n", "cell_id": "0", "cell_type": null, "edit_mode": "replace"}),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();
@@ -610,7 +686,7 @@ mod tests {
         let out = NotebookEdit
             .execute(
                 json!({"notebook_path": "nb.ipynb", "new_source": "z\n", "cell_id": "aaa", "cell_type": null, "edit_mode": "replace"}),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();
@@ -629,7 +705,7 @@ mod tests {
         NotebookEdit
             .execute(
                 json!({"notebook_path": "nb.ipynb", "new_source": "print(42)\n", "cell_id": "aaa", "cell_type": null, "edit_mode": "replace"}),
-                &ctx(dir.path().to_path_buf()),
+                &nb_ctx(dir.path()).await,
             )
             .await
             .unwrap();

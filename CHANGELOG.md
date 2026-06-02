@@ -18,6 +18,7 @@
 - Fixed a hang where a hook that printed output before reading its stdin could deadlock the agent (the PostToolUse payload can exceed the OS pipe buffer). Hook stdout/stderr are now drained before the payload is written, and the write runs on its own task bounded by the timeout.
 - A foreground `run_shell` whose command leaves a backgrounded process holding the stdout pipe open (`cmd &`, `( sleep 999 & )`) is now bounded by its timeout instead of hanging until the descendant exits; on timeout the whole process group is killed.
 - Background shells (`run_shell` with `run_in_background`) are now killed when the session ends, instead of leaking as orphaned processes after the CLI exits.
+- `notebook_edit` now requires the notebook to have been read this session and unchanged on disk (matching `edit_file`), so it can't clobber cells the model never saw; and `delete` no longer falls back to treating a numeric `cell_id` as a position, which could delete the wrong cell.
 
 ## 0.0.1-beta.4
 

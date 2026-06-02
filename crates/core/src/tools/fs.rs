@@ -951,7 +951,7 @@ pub(super) fn snapshot_meta(
 /// read-time snapshot exists — a resumed session has none and falls back to the
 /// plain read-once guard. A snapshot recorded after the model's own write/edit
 /// keeps back-to-back edits from tripping the check.
-fn ensure_not_stale(
+pub(super) fn ensure_not_stale(
     session: &super::SessionState,
     path: &std::path::Path,
     tool: &str,
