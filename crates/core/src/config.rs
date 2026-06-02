@@ -51,6 +51,16 @@ pub struct Config {
     /// by default, so existing configs are unaffected.
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
+    /// Ordered models to fall back to when the active model is rate-limited or
+    /// its provider is overloaded. Each entry is a spec in the same form as
+    /// [`model`](Config::model) (`gpt-5.5`, `claude-opus-4-8`, or
+    /// `<provider-id>/<model>` for a configured endpoint). Empty by default, so
+    /// existing and single-model setups are unaffected. The list is
+    /// provider-agnostic: a fallback may target a different provider or a local
+    /// endpoint. (Consumed by [`crate::fallback`]; not yet wired into the turn
+    /// loop — see that module.)
+    #[serde(default)]
+    pub fallback_models: Vec<String>,
 }
 
 /// Configuration for one OpenAI-compatible (`/v1/chat/completions`) provider.
@@ -175,6 +185,7 @@ impl Default for Config {
             auto_approve_write: false,
             default_permission_mode: default_permission_mode(),
             providers: HashMap::new(),
+            fallback_models: Vec::new(),
         }
     }
 }
