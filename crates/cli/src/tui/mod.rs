@@ -1,6 +1,7 @@
 mod app;
 mod buddy;
 mod clipboard;
+mod composer;
 mod input;
 mod login;
 mod picker;
