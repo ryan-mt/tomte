@@ -3788,13 +3788,18 @@ async fn launch_turn(
     // `!` shell output (prepended) and `@file` references (file contents appended).
     // The hook above and the visible Block::User both see only the raw prompt;
     // this enrichment is invisible plumbing sent to the model.
+    //
+    // `@`-expansion runs over the user's prompt ONLY — not the prepended shell
+    // output — so a `@token` that merely appears in a command's stdout doesn't
+    // get its file attached unexpectedly.
     let text = {
+        let attached = expand_at_mentions(&text, &app.cwd);
         let mut t = text;
         if !app.pending_shell_context.is_empty() {
             let ctx = std::mem::take(&mut app.pending_shell_context).join("\n\n");
             t = format!("{ctx}\n\n{t}");
         }
-        if let Some(attached) = expand_at_mentions(&t, &app.cwd) {
+        if let Some(attached) = attached {
             t = format!("{t}\n\n{attached}");
         }
         t
