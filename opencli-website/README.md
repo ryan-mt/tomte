@@ -1,3 +1,12 @@
+# opencli-website
+
+Marketing & docs site for [OpenCLI](https://github.com/ryan-mt/opencli), built with Next.js (App Router).
+
+- **Live:** https://opencli-website.vercel.app
+- **Deploys:** auto-deployed to Vercel on every push to `main`. The site lives in the `opencli-website/` subdirectory of the monorepo, so the Vercel project's **Root Directory** is set to `opencli-website` (otherwise the build would run against the repo root, which is the Rust crate).
+
+---
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
