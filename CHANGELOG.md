@@ -26,6 +26,7 @@
 - Retry backoff now adds random jitter so several concurrent requests (e.g. sub-agents) hitting an overload don't all retry in lockstep.
 - Non-streaming model calls (e.g. the compaction summary) now have a 300s total timeout, so a server that connects then never responds can no longer hang a turn forever (streaming keeps its idle-watchdog instead).
 - The config directory holding `auth.json`/`config.json` is now created `0o700` (and an existing looser one is tightened), so other local users can't list it or stat login timestamps.
+- Pasting a large block into the composer no longer freezes briefly: the text is inserted in one operation instead of character-by-character (which was O(n²)).
 
 ## 0.0.1-beta.4
 

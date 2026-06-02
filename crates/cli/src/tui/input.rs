@@ -19,6 +19,14 @@ impl TextInput {
         self.cursor += c.len_utf8();
     }
 
+    /// Insert a whole string at the cursor in one shift. Use this for paste:
+    /// inserting char-by-char is O(n) per char (each shifts the tail), so a
+    /// large paste was O(n²) and visibly froze the composer.
+    pub fn insert_str(&mut self, s: &str) {
+        self.buffer.insert_str(self.cursor, s);
+        self.cursor += s.len();
+    }
+
     pub fn insert_newline(&mut self) {
         self.insert_char('\n');
     }
@@ -239,6 +247,20 @@ mod tests {
             buffer: buffer.to_string(),
             cursor,
         }
+    }
+
+    #[test]
+    fn insert_str_inserts_at_cursor_and_advances() {
+        let mut i = at("ac", 1);
+        i.insert_str("bbb");
+        assert_eq!(i.buffer, "abbbc");
+        assert_eq!(i.cursor, 4);
+        // Multi-byte content keeps the cursor on a char boundary.
+        let mut j = at("", 0);
+        j.insert_str("café→");
+        assert_eq!(j.buffer, "café→");
+        assert_eq!(j.cursor, j.buffer.len());
+        assert!(j.buffer.is_char_boundary(j.cursor));
     }
 
     #[test]

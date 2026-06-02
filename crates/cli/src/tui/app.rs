@@ -1334,12 +1334,10 @@ async fn main_loop(
                     Ok(Event::Paste(text))
                         if app.screen == Screen::Chat && app.pending_approval.is_none() =>
                     {
-                        for c in text.chars() {
-                            if c == '\r' {
-                                continue;
-                            }
-                            app.input.insert_char(c);
-                        }
+                        // Insert in one shift (not char-by-char) so a large paste
+                        // isn't O(n²); strip CR so CRLF clipboards don't double up.
+                        let cleaned: String = text.chars().filter(|&c| c != '\r').collect();
+                        app.input.insert_str(&cleaned);
                         app.history_pos = None;
                     }
                     Ok(Event::Mouse(m)) => {
@@ -1669,18 +1667,12 @@ async fn handle_paste(app: &mut App) {
             let n = app.next_image_num;
             app.pending_images.push(path);
             app.next_image_num += 1;
-            let marker = format!("[Image #{n}] ");
-            for c in marker.chars() {
-                app.input.insert_char(c);
-            }
+            app.input.insert_str(&format!("[Image #{n}] "));
         }
         Ok(PasteResult::Text(t)) => {
-            for c in t.chars() {
-                if c == '\r' {
-                    continue;
-                }
-                app.input.insert_char(c);
-            }
+            // One shift, not char-by-char (avoids O(n²) on a large paste).
+            let cleaned: String = t.chars().filter(|&c| c != '\r').collect();
+            app.input.insert_str(&cleaned);
         }
         Ok(PasteResult::Empty) => {}
         Err(e) => {
