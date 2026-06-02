@@ -36,6 +36,34 @@ impl EffortPlan {
             max_tokens: DEFAULT_MAX_TOKENS,
         }
     }
+
+    /// The forward-compatible adaptive-thinking shape (`thinking:{type:adaptive}`
+    /// with the level in `output_config.effort`). Used for every adaptive-capable
+    /// Claude model, and as the safe default for an uncatalogued Claude-family id
+    /// whose version can't be parsed — sending such a frontier model no-thinking
+    /// would silently disable reasoning, and the legacy `type:enabled` shape is
+    /// rejected (400) by Opus 4.7+.
+    fn adaptive(model: &str, raw: &str) -> Self {
+        let eff = match raw {
+            "low" | "medium" | "high" | "max" => raw,
+            "xhigh" | "ultracode" if crate::catalog::supports_xhigh(model) => "xhigh",
+            "xhigh" | "ultracode" => "high",
+            _ => "high",
+        };
+        Self {
+            thinking: Some(ThinkingConfig::Adaptive),
+            output_config: Some(OutputConfig {
+                effort: eff.to_string(),
+            }),
+            // `xhigh`/`max` are the top deliberation tiers; give them the lifted
+            // ceiling so thinking tokens don't eat the 32k budget and truncate.
+            max_tokens: if eff == "max" || eff == "xhigh" {
+                MAX_EFFORT_MAX_TOKENS
+            } else {
+                DEFAULT_MAX_TOKENS
+            },
+        }
+    }
 }
 
 /// Map a reasoning-effort label onto the Anthropic request shape.
@@ -62,25 +90,7 @@ fn map_effort(model: &str, effort: Option<&str>) -> EffortPlan {
     }
 
     if crate::catalog::supports_adaptive_thinking(model) {
-        let eff = match raw {
-            "low" | "medium" | "high" | "max" => raw,
-            "xhigh" | "ultracode" if crate::catalog::supports_xhigh(model) => "xhigh",
-            "xhigh" | "ultracode" => "high",
-            _ => "high",
-        };
-        return EffortPlan {
-            thinking: Some(ThinkingConfig::Adaptive),
-            output_config: Some(OutputConfig {
-                effort: eff.to_string(),
-            }),
-            // `xhigh`/`max` are the top deliberation tiers; give them the lifted
-            // ceiling so thinking tokens don't eat the 32k budget and truncate.
-            max_tokens: if eff == "max" || eff == "xhigh" {
-                MAX_EFFORT_MAX_TOKENS
-            } else {
-                DEFAULT_MAX_TOKENS
-            },
-        };
+        return EffortPlan::adaptive(model, raw);
     }
 
     if crate::catalog::supports_extended_thinking(model) {
@@ -99,6 +109,17 @@ fn map_effort(model: &str, effort: Option<&str>) -> EffortPlan {
             output_config: None,
             max_tokens: DEFAULT_MAX_TOKENS,
         };
+    }
+
+    // Neither catalog shape matched. For a Claude-family id this only happens
+    // when `claude_version()` can't parse the id (an alias, or a future/reshaped
+    // naming we don't recognize yet) — it does NOT mean thinking is unwanted, so
+    // default to the forward-compatible adaptive shape rather than silently
+    // disabling reasoning on what may be a frontier model. (Opus 4.7+ reject the
+    // legacy `type:"enabled"` form, so adaptive is the safe default for anything
+    // newer than the catalog knows.) Non-Claude providers keep no-thinking.
+    if model.to_ascii_lowercase().starts_with("claude") {
+        return EffortPlan::adaptive(model, raw);
     }
 
     EffortPlan::no_thinking()
@@ -383,6 +404,37 @@ mod tests {
         assert_eq!(out.model, "claude-opus-4-5");
         assert_eq!(out.messages.len(), 1);
         assert_eq!(out.messages[0].role, "user");
+    }
+
+    #[test]
+    fn unrecognized_claude_id_defaults_to_adaptive_not_no_thinking() {
+        // A Claude-family id whose version `claude_version()` can't parse (an
+        // alias or a future naming shape) must still get a thinking block —
+        // sending a frontier Claude model no-thinking would silently disable
+        // reasoning. `claude-opus-experimental` is a synthetic stand-in for any
+        // such unrecognized id (it is not a real model).
+        let plan = map_effort("claude-opus-experimental", Some("high"));
+        assert!(
+            matches!(plan.thinking, Some(ThinkingConfig::Adaptive)),
+            "unrecognized Claude id should default to adaptive thinking"
+        );
+        assert_eq!(
+            plan.output_config
+                .expect("adaptive carries output_config")
+                .effort,
+            "high"
+        );
+    }
+
+    #[test]
+    fn unrecognized_non_claude_id_stays_no_thinking() {
+        // The Claude-family default must not leak to other providers: a non-Claude
+        // id with no catalog thinking support stays no-thinking.
+        let plan = map_effort("some-unknown-model", Some("high"));
+        assert!(
+            plan.thinking.is_none(),
+            "a non-Claude id must stay no-thinking"
+        );
     }
 
     #[test]
