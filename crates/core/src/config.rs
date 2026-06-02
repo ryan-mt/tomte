@@ -320,7 +320,9 @@ fn overlay_project_config(mut cfg: Config, cwd: &Path) -> Config {
     if let Some(obj) = value.as_object() {
         for key in PROJECT_PROTECTED_KEYS {
             if obj.contains_key(*key) {
-                tracing::warn!("ignoring project config override of `{key}` (global-only for safety)");
+                tracing::warn!(
+                    "ignoring project config override of `{key}` (global-only for safety)"
+                );
             }
         }
     }

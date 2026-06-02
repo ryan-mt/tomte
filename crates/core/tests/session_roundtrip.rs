@@ -85,7 +85,11 @@ fn session_save_load_list_and_missing_id() {
     assert_eq!(loaded.state.todos.len(), 1);
     assert_eq!(loaded.state.todos[0].active_form, "Running tests");
     assert_eq!(loaded.state.read_files, vec![cwd_a.join("src/lib.rs")]);
-    assert_eq!(loaded.state.usage.len(), 1, "per-model usage should roundtrip");
+    assert_eq!(
+        loaded.state.usage.len(),
+        1,
+        "per-model usage should roundtrip"
+    );
     assert_eq!(loaded.state.usage[0].model, "claude-opus-4-8");
     assert_eq!(loaded.state.usage[0].input_tokens, 1_000);
     assert_eq!(loaded.state.usage[0].cache_read_tokens, 2_000);

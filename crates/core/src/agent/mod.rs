@@ -460,9 +460,7 @@ impl Agent {
                     model: model.to_string(),
                     ..Default::default()
                 });
-                self.cost_usage
-                    .last_mut()
-                    .expect("just pushed an entry")
+                self.cost_usage.last_mut().expect("just pushed an entry")
             }
         };
         entry.input_tokens = entry.input_tokens.saturating_add(u.uncached_input);
