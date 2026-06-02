@@ -42,6 +42,7 @@
 - Removed the unused `keyring` dependency (it had no code references). It pulled in a vendored C library and the secret-service/D-Bus stack for no benefit; credentials remain stored in `auth.json` with `0o600` permissions and atomic writes, matching what `gh`/`aws`/`gcloud` do. Smaller build and attack surface.
 - A Claude-family model whose id can't be parsed (an alias, or a future/reshaped name the catalog doesn't recognize yet) is no longer silently sent with thinking disabled: the Anthropic effort mapping now defaults such an id to the forward-compatible adaptive shape instead of no-thinking, so reasoning isn't quietly turned off on an unrecognized frontier model. Non-Claude providers are unaffected.
 - OpenAI reasoning-effort normalization now pins every `-pro` model to `high`, not just the exact id `gpt-5-pro`: the current `gpt-5.5-pro` (and any future pro tier) was missing the clamp and falling through to the generic effort mapping.
+- The OpenAI model list now matches the current API (verified against the model docs): `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.2`, `gpt-5`. The ids opencli used to surface that no longer resolve (`gpt-5.3`, `gpt-5-pro`, `gpt-5-mini`, `gpt-5-nano`) are removed from the picker and auto-migrate to their closest current equivalent on startup, so selecting one can't 404. Crucially, `gpt-5` and `gpt-5.2` — real, currently-available models — are no longer force-migrated to the default, so they're actually selectable.
 
 ## 0.0.1-beta.4
 

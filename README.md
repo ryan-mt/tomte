@@ -157,14 +157,14 @@ opencli config --set-model gpt-5-pro --set-reasoning high
 | Model | Notes |
 | --- | --- |
 | `gpt-5.5` | Default — largest OpenAI context window |
+| `gpt-5.5-pro` | Extended reasoning for hard agent tasks |
 | `gpt-5.4` | Previous frontier, stable |
-| `gpt-5.3` | Older frontier |
-| `gpt-5-pro` | Extended reasoning for hard agent tasks |
-| `gpt-5-mini` | Fast and cheaper, still strong for routine code |
-| `gpt-5-nano` | Latency-sensitive, cheapest |
+| `gpt-5.4-mini` | Fast and cheaper, still strong for routine code |
+| `gpt-5.4-nano` | Latency-sensitive, cheapest |
+| `gpt-5.2` · `gpt-5` | Earlier frontier generations, still selectable |
 
-Legacy base names (`gpt-5`, `gpt-5.1`, `gpt-5.2`) auto-migrate to the current default on
-startup, so an existing `config.json` keeps working.
+Retired ids (`gpt-5.1`, `gpt-5.3`, `gpt-5-pro`, `gpt-5-mini`, `gpt-5-nano`) auto-migrate to
+their current equivalent on startup, so an existing `config.json` keeps working.
 
 ## How it's built
 

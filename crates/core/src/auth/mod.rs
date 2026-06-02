@@ -424,7 +424,7 @@ mod tests {
             .expect("openai catalog");
 
         assert_eq!(openai.models, crate::catalog::openai_chatgpt_oauth_models());
-        assert!(!openai.models.contains(&"gpt-5-mini"));
+        assert!(!openai.models.contains(&"gpt-5.4-mini"));
     }
 
     #[test]
@@ -446,7 +446,7 @@ mod tests {
             openai.models,
             crate::catalog::available_models(Provider::OpenAi)
         );
-        assert!(openai.models.contains(&"gpt-5-mini"));
+        assert!(openai.models.contains(&"gpt-5.4-mini"));
     }
 
     #[test]
@@ -465,7 +465,7 @@ mod tests {
             .expect("openai catalog");
 
         assert_eq!(openai.models, crate::catalog::openai_chatgpt_oauth_models());
-        assert!(!openai.models.contains(&"gpt-5-mini"));
+        assert!(!openai.models.contains(&"gpt-5.4-mini"));
     }
 
     #[test]
@@ -486,7 +486,7 @@ mod tests {
             openai.models,
             crate::catalog::available_models(Provider::OpenAi)
         );
-        assert!(openai.models.contains(&"gpt-5-mini"));
+        assert!(openai.models.contains(&"gpt-5.4-mini"));
     }
 
     #[test]

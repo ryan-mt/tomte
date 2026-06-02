@@ -151,16 +151,23 @@ fn default_permission_mode() -> String {
     "default".to_string()
 }
 
-/// Map legacy model names from earlier opencli versions to the real OpenAI
-/// Responses API model IDs. Older `config.json`s shipped with placeholder
-/// names like `gpt-5.5` that don't resolve at the API, so without this
-/// migration the first turn after upgrade would 404. Idempotent.
+/// Map model ids that opencli once surfaced but that don't resolve at the
+/// OpenAI API onto the closest current model, so a returning user keeps a
+/// working model after a catalog change. Idempotent.
+///
+/// NOTE: `gpt-5` and `gpt-5.2` are NOT remapped — they are real, currently
+/// available OpenAI models (verified against the model docs, June 2026), so a
+/// user who selects them keeps them rather than being silently forced onto the
+/// default.
 pub fn migrate_legacy_model_name(name: &str) -> String {
-    // gpt-5 / gpt-5.1 / gpt-5.2 were removed from the catalogue in favour
-    // of gpt-5.3 / 5.4 / 5.5. Map old base ids onto the current default so
-    // a returning user keeps a working model after the picker change.
     match name {
-        "gpt-5" | "gpt-5.1" | "gpt-5.2" => "gpt-5.5".to_string(),
+        // gpt-5.1 / gpt-5.3 never resolved at the API; gpt-5-{pro,mini,nano}
+        // were superseded by the gpt-5.4/5.5 generation. Map each onto its
+        // closest current equivalent.
+        "gpt-5.1" | "gpt-5.3" => "gpt-5.5".to_string(),
+        "gpt-5-pro" => "gpt-5.5-pro".to_string(),
+        "gpt-5-mini" => "gpt-5.4-mini".to_string(),
+        "gpt-5-nano" => "gpt-5.4-nano".to_string(),
         other => other.to_string(),
     }
 }
@@ -346,10 +353,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migrate_legacy_model_name_maps_all_legacy_aliases() {
-        assert_eq!(migrate_legacy_model_name("gpt-5"), "gpt-5.5");
+    fn migrate_legacy_model_name_maps_dead_ids_to_current() {
+        // Ids opencli once surfaced that don't resolve at the API map onto a
+        // working current model.
         assert_eq!(migrate_legacy_model_name("gpt-5.1"), "gpt-5.5");
-        assert_eq!(migrate_legacy_model_name("gpt-5.2"), "gpt-5.5");
+        assert_eq!(migrate_legacy_model_name("gpt-5.3"), "gpt-5.5");
+        assert_eq!(migrate_legacy_model_name("gpt-5-pro"), "gpt-5.5-pro");
+        assert_eq!(migrate_legacy_model_name("gpt-5-mini"), "gpt-5.4-mini");
+        assert_eq!(migrate_legacy_model_name("gpt-5-nano"), "gpt-5.4-nano");
+        // gpt-5 and gpt-5.2 are REAL current models — never remapped.
+        assert_eq!(migrate_legacy_model_name("gpt-5"), "gpt-5");
+        assert_eq!(migrate_legacy_model_name("gpt-5.2"), "gpt-5.2");
     }
 
     #[test]
@@ -396,14 +410,15 @@ mod tests {
     }
 
     #[test]
-    fn migrate_legacy_model_name_passes_through_new_names() {
+    fn migrate_legacy_model_name_passes_through_current_names() {
         for name in [
             "gpt-5.5",
+            "gpt-5.5-pro",
             "gpt-5.4",
-            "gpt-5.3",
-            "gpt-5-pro",
-            "gpt-5-mini",
-            "gpt-5-nano",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.2",
+            "gpt-5",
             "o3",
         ] {
             assert_eq!(migrate_legacy_model_name(name), name);
@@ -416,7 +431,7 @@ mod tests {
             normalize_model_name("anthropic/claude-opus-4-8"),
             "claude-opus-4-8"
         );
-        assert_eq!(normalize_model_name("openai/gpt-5"), "gpt-5.5");
+        assert_eq!(normalize_model_name("openai/gpt-5-pro"), "gpt-5.5-pro");
         assert_eq!(
             normalize_model_name("groq/gpt-oss-120b"),
             "groq/gpt-oss-120b"

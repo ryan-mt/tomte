@@ -62,15 +62,16 @@ const fn anthropic(
 
 /// Every model opencli surfaces after sign-in, in display order (best general
 /// default first) within each provider. Facts verified against the published
-/// model docs (May 2026); ids not listed here fall back to the `family_*` rules.
+/// model docs (June 2026); ids not listed here fall back to the `family_*` rules.
 const MODELS: &[ModelInfo] = &[
     // ---- OpenAI ----
     openai("gpt-5.5", 1_050_000),
+    openai("gpt-5.5-pro", 1_050_000),
     openai("gpt-5.4", 1_000_000),
-    openai("gpt-5.3", 400_000),
-    openai("gpt-5-pro", 400_000),
-    openai("gpt-5-mini", 400_000),
-    openai("gpt-5-nano", 200_000),
+    openai("gpt-5.4-mini", 400_000),
+    openai("gpt-5.4-nano", 200_000),
+    openai("gpt-5.2", 400_000),
+    openai("gpt-5", 400_000),
     // ---- Anthropic ----
     anthropic("claude-opus-4-8", 1_000_000, true, true),
     anthropic("claude-opus-4-7", 1_000_000, true, true),
@@ -320,7 +321,13 @@ mod tests {
     fn chatgpt_oauth_models_exclude_api_key_only_openai_models() {
         let models = openai_chatgpt_oauth_models();
         assert_eq!(models, ["gpt-5.5", "gpt-5.4"]);
-        for unsupported in ["gpt-5-pro", "gpt-5-mini", "gpt-5-nano", "gpt-5.3"] {
+        for unsupported in [
+            "gpt-5.5-pro",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.2",
+            "gpt-5",
+        ] {
             assert!(
                 !models.contains(&unsupported),
                 "{unsupported} should not be suggested for ChatGPT OAuth"

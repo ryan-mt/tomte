@@ -304,11 +304,12 @@ pub fn models() -> Vec<PickerItem> {
         for model in catalog.models {
             let description = match (catalog.provider, *model) {
                 (Provider::OpenAi, "gpt-5.5") => "frontier · default",
+                (Provider::OpenAi, "gpt-5.5-pro") => "more compute for hard problems",
                 (Provider::OpenAi, "gpt-5.4") => "previous frontier · stable",
-                (Provider::OpenAi, "gpt-5.3") => "older frontier",
-                (Provider::OpenAi, "gpt-5-pro") => "more compute for hard problems",
-                (Provider::OpenAi, "gpt-5-mini") => "fast · cheaper",
-                (Provider::OpenAi, "gpt-5-nano") => "latency-sensitive",
+                (Provider::OpenAi, "gpt-5.4-mini") => "fast · cheaper",
+                (Provider::OpenAi, "gpt-5.4-nano") => "latency-sensitive",
+                (Provider::OpenAi, "gpt-5.2") => "older frontier",
+                (Provider::OpenAi, "gpt-5") => "oldest GPT-5-class",
                 (Provider::Anthropic, "claude-opus-4-8") => "frontier · most capable",
                 (Provider::Anthropic, "claude-opus-4-7") => {
                     "previous frontier · long-running agents"
