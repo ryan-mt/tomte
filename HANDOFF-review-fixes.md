@@ -83,7 +83,7 @@ Every audit item below is now fixed, each its own commit + CHANGELOG bullet + re
 `agent/mod.rs` had no panic/lock-across-await/infinite-loop issues; PKCE/S256/RNG in auth are correct; retry never re-sends a consumed stream; `tools/fs.rs` symlink/`..` guards are sound; MCP id-matching & process-group kill are correct; session id uniqueness + atomic write are correct; `lsp.rs` is a text-scanner (no real LSP/JSON-RPC); tool dispatch/`tool_args` parsing is well-guarded. (Full reasoning is in the session transcript.)
 
 ## How to continue
-The audit backlog is **cleared**. Branch `fix/review-findings` is ready to merge into `main` (33 commits ahead). Open follow-ups, if desired:
+The audit backlog is **cleared**. Branch `fix/review-findings` is ready to merge into `main` (38 commits ahead). Open follow-ups, if desired:
 - The 3 "low value / latent" notes above (UI-cosmetic / Windows-only / latent) — only if a real symptom shows up.
 - Merge this branch to `main` (the beta4 work already lives in `main`).
 - New work resumes from the `project_opencli_100_goal` track (UI polish, restored-src mining).
