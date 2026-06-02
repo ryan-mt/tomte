@@ -57,63 +57,48 @@ struct MemoryEntry {
 }
 
 fn collect_entries_with_globals(cwd: &Path, global_dirs: Vec<PathBuf>) -> Vec<MemoryEntry> {
-    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut out: Vec<MemoryEntry> = Vec::new();
-    let mut used_bytes = 0usize;
-
+    // Candidate directories in display order: least-specific (global) first,
+    // most-specific (cwd) last, so the most task-relevant memory appears last in
+    // the prompt.
+    let mut candidates: Vec<(PathBuf, bool)> = Vec::new();
     for dir in global_dirs {
-        push_entry(
-            &mut out,
-            &mut seen,
-            &mut used_bytes,
-            dir,
-            true,
-            PROJECT_DOC_MAX_BYTES,
-        );
+        candidates.push((dir, true));
     }
-
     for dir in project_memory_dirs(cwd) {
-        push_entry(
-            &mut out,
-            &mut seen,
-            &mut used_bytes,
-            dir,
-            false,
-            PROJECT_DOC_MAX_BYTES,
-        );
+        candidates.push((dir, false));
     }
 
-    out
-}
+    // Resolve to entries, deduping by canonical path, preserving display order.
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut entries: Vec<MemoryEntry> = Vec::new();
+    for (dir, global) in candidates {
+        let Some((path, text)) = pick_memory_file(&dir) else {
+            continue;
+        };
+        if !seen.insert(canonical_memory_path(&path)) {
+            continue;
+        }
+        entries.push(MemoryEntry { path, text, global });
+    }
 
-fn push_entry(
-    out: &mut Vec<MemoryEntry>,
-    seen: &mut BTreeSet<PathBuf>,
-    used_bytes: &mut usize,
-    dir: PathBuf,
-    global: bool,
-    max_bytes: usize,
-) {
-    let Some((path, text)) = pick_memory_file(&dir) else {
-        return;
-    };
-    let key = canonical_memory_path(&path);
-    if !seen.insert(key) {
-        return;
+    // Enforce the combined byte budget, but prioritize the most-specific
+    // entries: walk from cwd-level (end) back toward global (start) and keep an
+    // entry only while it fits. This drops the least-specific overflow first,
+    // so a large global file can never starve the project's own memory.
+    let mut used = 0usize;
+    let mut keep = vec![false; entries.len()];
+    for (i, entry) in entries.iter().enumerate().rev() {
+        let next = used.saturating_add(entry.text.len());
+        if next <= PROJECT_DOC_MAX_BYTES {
+            used = next;
+            keep[i] = true;
+        }
     }
-    if *used_bytes >= max_bytes {
-        return;
-    }
-    let remaining = max_bytes.saturating_sub(*used_bytes);
-    if text.len() > remaining {
-        return;
-    }
-    *used_bytes += text.len();
-    out.push(MemoryEntry {
-        path,
-        text,
-        global,
-    });
+    entries
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(entry, keep)| keep.then_some(entry))
+        .collect()
 }
 
 fn format_memory_block(entries: &[MemoryEntry]) -> String {
@@ -299,7 +284,9 @@ mod tests {
     }
 
     #[test]
-    fn collect_skips_files_beyond_byte_cap() {
+    fn byte_cap_drops_least_specific_first_keeping_cwd_memory() {
+        // A huge ancestor (git-root) file must not starve the most-specific
+        // (cwd-level) memory: the cap drops the least-specific overflow first.
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
         init_git_repo(repo);
@@ -311,7 +298,30 @@ mod tests {
 
         let entries = collect_entries_with_globals(&sub, vec![]);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].text, big);
+        assert_eq!(entries[0].text, "SMALL", "cwd memory must survive the cap");
+    }
+
+    #[test]
+    fn large_global_memory_does_not_starve_project_memory() {
+        // A ≥32 KiB global file must not crowd out the project's own memory.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_git_repo(repo);
+        std::fs::write(repo.join("AGENTS.md"), "PROJECT RULES").unwrap();
+
+        let global = tmp.path().join("global");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(
+            global.join("AGENTS.md"),
+            "g".repeat(PROJECT_DOC_MAX_BYTES),
+        )
+        .unwrap();
+
+        let entries = collect_entries_with_globals(repo, vec![global]);
+        assert!(
+            entries.iter().any(|e| e.text == "PROJECT RULES"),
+            "project memory must be retained even with a huge global file"
+        );
     }
 
     #[test]

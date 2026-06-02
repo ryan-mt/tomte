@@ -296,8 +296,10 @@ pub trait BuiltinTool: Send + Sync {
     }
     /// Outer hard timeout for this tool. Most tools share the agent default;
     /// long-running orchestration tools such as `dispatch_agent` can opt into a
-    /// larger cap without making every file/search/shell call wait longer.
-    fn timeout(&self) -> std::time::Duration {
+    /// larger cap, and `run_shell` derives it from the caller's `timeout_ms` so
+    /// a legitimately long build isn't aborted at the default. `args` are the
+    /// raw call arguments, available so a tool can size its cap accordingly.
+    fn timeout(&self, _args: &Value) -> std::time::Duration {
         std::time::Duration::from_secs(180)
     }
     async fn compute_preview(&self, _args: &Value, _ctx: &ToolContext) -> Option<String> {

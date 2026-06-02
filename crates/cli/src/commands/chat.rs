@@ -17,23 +17,37 @@ pub async fn run(
     cwd: Option<std::path::PathBuf>,
     prompt_file: Option<std::path::PathBuf>,
 ) -> Result<()> {
-    // Apply the working directory FIRST so config/project-memory/skill discovery
-    // and the agent's relative-path tools all resolve against it. A scheduler
-    // (cron/systemd) starts with a bare cwd, so unattended runs must set --cwd.
-    if let Some(dir) = &cwd {
-        std::env::set_current_dir(dir)
-            .map_err(|e| anyhow::anyhow!("--cwd {}: {e}", dir.display()))?;
-    }
-
     let mut prompt = prompt;
     // Prompt precedence: positional argument → --prompt-file → stdin.
+    // Resolve --prompt-file BEFORE changing the working directory so a relative
+    // path is read from the directory the command was invoked in (the usual
+    // file-argument convention), not from --cwd.
     if prompt.trim().is_empty() {
         if let Some(path) = &prompt_file {
             prompt = std::fs::read_to_string(path)
                 .map_err(|e| anyhow::anyhow!("--prompt-file {}: {e}", path.display()))?;
         }
     }
+
+    // Apply the working directory so config/project-memory/skill discovery and
+    // the agent's relative-path tools all resolve against it. A scheduler
+    // (cron/systemd) starts with a bare cwd, so unattended runs must set --cwd.
+    if let Some(dir) = &cwd {
+        std::env::set_current_dir(dir)
+            .map_err(|e| anyhow::anyhow!("--cwd {}: {e}", dir.display()))?;
+    }
+
     if prompt.trim().is_empty() {
+        // Only read stdin when it's piped/redirected. Blocking on an interactive
+        // terminal (or an unattended run with no stdin) would hang forever with
+        // no prompt; bail with guidance instead. A redirected /dev/null returns
+        // EOF immediately and falls through to the "no prompt provided" error.
+        use std::io::IsTerminal;
+        if std::io::stdin().is_terminal() {
+            anyhow::bail!(
+                "no prompt provided (pass a prompt argument, --prompt-file, or pipe one on stdin)"
+            );
+        }
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
         prompt = buf;

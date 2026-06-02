@@ -56,10 +56,13 @@ fn is_stream_truncation_error(message: &str) -> bool {
 }
 
 /// A transport-level failure surfaced by a stream pump (TCP reset, decode error)
-/// rather than a model/usage error. Safe to retry only when nothing was produced
-/// yet — see `MAX_STREAM_RECOVERIES`.
+/// rather than a model/usage error. Anchored to the pumps' shared `SSE transport:`
+/// prefix (openai/stream.rs, anthropic/stream.rs, openai/chat.rs) rather than a
+/// bare `transport` substring, so an unrelated error whose text merely contains
+/// the word "transport" isn't misclassified as retryable. Safe to retry only
+/// when nothing was produced yet — see `MAX_STREAM_RECOVERIES`.
 fn is_stream_transport_error(message: &str) -> bool {
-    message.contains("transport")
+    message.contains("SSE transport:")
 }
 
 #[cfg(test)]
@@ -933,9 +936,16 @@ impl Agent {
                         // never finished — so it doesn't count and the turn is retried.
                         let have_output =
                             produced_output || pending_calls.iter().any(|pc| pc.args_done_emitted);
-                        // The SSE feed ended before its terminal event. This is a
-                        // transport truncation, not a model/usage error.
-                        if is_stream_truncation_error(&msg) && have_output {
+                        // A recoverable stream failure — the SSE feed ended before
+                        // its terminal event, OR a transport drop (TCP reset/decode
+                        // error) — after we already received usable answer content.
+                        // Finalize it (a soft completion) rather than discarding a
+                        // good turn: a transport drop right after a tool call's
+                        // arguments fully streamed must still execute that call, not
+                        // hard-fail the turn.
+                        if (is_stream_truncation_error(&msg) || is_stream_transport_error(&msg))
+                            && have_output
+                        {
                             // We already received usable answer content this attempt;
                             // finalize it (a soft completion) rather than discarding a
                             // good turn just because the trailing terminator was lost.
@@ -1656,7 +1666,7 @@ async fn execute_builtin_tool_call(
         "tool.start"
     );
     let post_args = args.clone();
-    let timeout = tool.timeout();
+    let timeout = tool.timeout(&args);
     let res = tokio::time::timeout(timeout, tool.execute(args, &ctx)).await;
     let (output, is_err) = match res {
         Ok(Ok(s)) => (s, false),

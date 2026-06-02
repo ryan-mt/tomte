@@ -3259,28 +3259,40 @@ fn pricing_for(model: &str) -> (f64, f64) {
 /// weekly for subscriptions, token/request budgets for API keys), captured from
 /// the last turn's response. Falls back to a hint when no turn has run yet.
 fn render_usage_report(app: &App) -> String {
-    let provider = Provider::from_model(&app.config.model);
-    let mut msg = format!(
-        "Usage — provider: {}, model: {}\n",
-        provider.display_name(),
-        app.config.model
-    );
+    let current = Provider::from_model(&app.config.model);
     match &app.last_quota {
         Some(snapshot) => {
+            // Label the report with the snapshot's OWN provider, not the active
+            // model's: after a mid-session `/model` switch the cached quota can
+            // belong to a different provider, and labeling it "current" would
+            // print one provider's name over another's windows.
+            let snap_provider = snapshot.provider.unwrap_or(current);
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
-            msg.push_str(&snapshot.render(now));
-        }
-        None => {
-            msg.push_str(
-                "  No live quota data yet — send a message, then run /usage.\n  \
-                 (quota is read from the provider's response to your turns)",
+            let mut msg = format!(
+                "Usage — provider: {}, model: {}\n",
+                snap_provider.display_name(),
+                app.config.model
             );
+            if snap_provider != current {
+                msg.push_str(&format!(
+                    "  (last captured {} quota; the active model now uses {} — send a message to refresh)\n",
+                    snap_provider.display_name(),
+                    current.display_name()
+                ));
+            }
+            msg.push_str(&snapshot.render(now));
+            msg
         }
+        None => format!(
+            "Usage — provider: {}, model: {}\n  No live quota data yet — send a message, then run /usage.\n  \
+             (quota is read from the provider's response to your turns)",
+            current.display_name(),
+            app.config.model
+        ),
     }
-    msg
 }
 
 /// Render the visible chat blocks as a portable Markdown transcript for

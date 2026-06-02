@@ -325,7 +325,7 @@ impl BuiltinTool for DispatchAgent {
         "dispatch_agent"
     }
 
-    fn timeout(&self) -> std::time::Duration {
+    fn timeout(&self, _args: &Value) -> std::time::Duration {
         DISPATCH_AGENT_TIMEOUT
     }
 

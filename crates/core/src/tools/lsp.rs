@@ -115,6 +115,7 @@ async fn document_symbols(
     }
     Ok(format_symbols(
         "Document symbols",
+        &ctx.cwd,
         symbols.into_iter().take(limit),
         limit,
     ))
@@ -132,6 +133,7 @@ async fn workspace_symbols(ctx: &ToolContext, query: Option<&str>, limit: usize)
     }
     Ok(format_symbols(
         "Workspace symbols",
+        &ctx.cwd,
         symbols.into_iter().take(limit),
         limit,
     ))
@@ -152,6 +154,7 @@ async fn definition(ctx: &ToolContext, args: &LspArgs, limit: usize) -> Result<S
     }
     Ok(format_symbols(
         &format!("Likely definitions for `{token}`"),
+        &ctx.cwd,
         matches.into_iter().take(limit),
         limit,
     ))
@@ -182,7 +185,7 @@ async fn hover(ctx: &ToolContext, args: &LspArgs, limit: usize) -> Result<String
     let lines: Vec<&str> = text.lines().collect();
     let token = token_at_position(&text, line, character).unwrap_or_default();
     let start = line.saturating_sub(3).max(1);
-    let end = (line + 2).min(lines.len());
+    let end = line.saturating_add(2).min(lines.len());
     let mut out = format!(
         "Hover context for `{}` at {display}:{line}:{character}:\n",
         if token.is_empty() {
@@ -206,7 +209,12 @@ async fn hover(ctx: &ToolContext, args: &LspArgs, limit: usize) -> Result<String
             .collect();
         if !defs.is_empty() {
             out.push('\n');
-            out.push_str(&format_symbols("Likely declarations", defs, limit.min(10)));
+            out.push_str(&format_symbols(
+                "Likely declarations",
+                &ctx.cwd,
+                defs,
+                limit.min(10),
+            ));
         }
     }
     Ok(out)
@@ -309,6 +317,22 @@ fn collect_source_files_at(
             collect_source_files_at(root, &path, out, depth + 1)?;
         } else if file_type.is_file() && is_source_path(&path) && path.starts_with(root) {
             out.push(path);
+        } else if file_type.is_symlink() && is_source_path(&path) {
+            // A symlinked *file* can't form a cycle (only directories can, and
+            // those are skipped above), so include it — but only when it points
+            // at a regular file that still resolves inside the workspace root,
+            // so a symlink can't pull source content in from outside the sandbox.
+            // Canonicalize BOTH sides: `root` (== cwd) may itself contain a
+            // symlink component (e.g. macOS `/tmp` → `/private/tmp`), which would
+            // otherwise make a legitimately in-tree target fail `starts_with`.
+            let target_ok = std::fs::metadata(&path).map(|m| m.is_file()).unwrap_or(false)
+                && match (path.canonicalize(), root.canonicalize()) {
+                    (Ok(target), Ok(root)) => target.starts_with(root),
+                    _ => false,
+                };
+            if target_ok {
+                out.push(path);
+            }
         }
         if out.len() >= 2_000 {
             break;
@@ -576,9 +600,15 @@ fn token_at_position(text: &str, line: usize, character: usize) -> Option<String
     if chars.is_empty() {
         return None;
     }
-    let mut idx = character
-        .saturating_sub(1)
-        .min(chars.len().saturating_sub(1));
+    let idx0 = character.saturating_sub(1);
+    // A position more than one past the last character points at nothing; don't
+    // clamp it onto the trailing identifier and return a confidently-wrong
+    // token. (idx0 == chars.len() — the cursor resting just after the last
+    // char — still resolves to that char, the usual editor convention.)
+    if idx0 > chars.len() {
+        return None;
+    }
+    let mut idx = idx0.min(chars.len().saturating_sub(1));
     if !is_ident_char(chars[idx]) && idx > 0 && is_ident_char(chars[idx - 1]) {
         idx -= 1;
     }
@@ -655,7 +685,7 @@ fn idx_byte_to_char_boundary(s: &str, mut idx: usize) -> usize {
     idx
 }
 
-fn format_symbols<I>(title: &str, symbols: I, limit: usize) -> String
+fn format_symbols<I>(title: &str, cwd: &Path, symbols: I, limit: usize) -> String
 where
     I: IntoIterator<Item = Symbol>,
 {
@@ -665,7 +695,7 @@ where
         count += 1;
         out.push_str(&format!(
             "{}:{}:{}  {}  {} — {}\n",
-            rel_display(Path::new("."), &s.path),
+            rel_display(cwd, &s.path),
             s.line,
             s.column,
             s.kind,
@@ -738,5 +768,33 @@ mod tests {
         collect_source_files(root, root, &mut out).unwrap();
 
         assert!(out.iter().any(|p| p.ends_with("real.rs")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_source_files_includes_in_root_symlinked_files_but_not_escapes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("target.rs"), "fn t() {}").unwrap();
+        // A symlink to a source file that lives inside the workspace: include it.
+        std::os::unix::fs::symlink(root.join("target.rs"), root.join("linked.rs")).unwrap();
+        // A symlink to a source file OUTSIDE the workspace: must be excluded so a
+        // symlink can't pull content in from outside the sandbox.
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.rs"), "fn s() {}").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.rs"), root.join("escape.rs"))
+            .unwrap();
+
+        let mut out = Vec::new();
+        collect_source_files(root, root, &mut out).unwrap();
+
+        assert!(
+            out.iter().any(|p| p.ends_with("linked.rs")),
+            "in-root symlinked source file should be collected"
+        );
+        assert!(
+            !out.iter().any(|p| p.ends_with("escape.rs")),
+            "symlink escaping the workspace root must be excluded"
+        );
     }
 }

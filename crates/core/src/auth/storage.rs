@@ -96,6 +96,15 @@ pub fn save_auth(record: &AuthRecord) -> Result<()> {
         std::fs::write(&tmp, text.as_bytes())?;
     }
     std::fs::rename(&tmp, &path)?;
+    // fsync the parent directory so the rename is durable: a crash right after
+    // rename can otherwise lose the new directory entry and revert auth.json to
+    // the previous (stale/expired) credentials, forcing a spurious re-login.
+    #[cfg(unix)]
+    {
+        if let Ok(f) = std::fs::File::open(&dir) {
+            let _ = f.sync_all();
+        }
+    }
     Ok(())
 }
 

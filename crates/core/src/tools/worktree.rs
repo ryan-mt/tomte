@@ -130,7 +130,12 @@ pub async fn enter_worktree(ctx: &ToolContext, name: Option<&str>) -> Result<Str
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let worktree_path = worktree_path.canonicalize()?;
+    // `git worktree add` already created the directory and branch on disk. If
+    // canonicalize fails (symlink/permission/race), fall back to the path we
+    // constructed (already absolute, under the canonical repo root) rather than
+    // erroring out — erroring would orphan the worktree+branch with no session
+    // state for cleanup to reach.
+    let worktree_path = worktree_path.canonicalize().unwrap_or(worktree_path);
 
     {
         let mut session = ctx.session.lock().await;
@@ -178,10 +183,10 @@ pub async fn exit_worktree(
         }
         "remove" => {
             let dirty = changed_file_count(&state.worktree_path).await?;
-            let ahead = ahead_commit_count(&state.worktree_path, &state.base_head).await?;
-            if (dirty > 0 || ahead > 0) && !discard_changes {
+            let diverged = diverged_commit_count(&state.worktree_path, &state.base_head).await?;
+            if (dirty > 0 || diverged > 0) && !discard_changes {
                 return Err(anyhow!(
-                    "worktree has {dirty} changed file(s) and {ahead} commit(s) after the base; refusing to remove without discard_changes=true"
+                    "worktree has {dirty} changed file(s) and {diverged} commit(s) diverging from the base; refusing to remove without discard_changes=true"
                 ));
             }
             let remove = Command::new("git")
@@ -197,25 +202,33 @@ pub async fn exit_worktree(
                     String::from_utf8_lossy(&remove.stderr).trim()
                 ));
             }
-            let delete_branch = Command::new("git")
+            // The worktree directory is gone now, so the session MUST leave it
+            // before anything else can fail — otherwise a branch-cleanup error
+            // would wedge the session pointing at a deleted path. Branch
+            // deletion is therefore best-effort and only reported.
+            clear_worktree(ctx).await;
+            set_cwd(ctx, state.original_cwd.clone()).await;
+            let branch_note = match Command::new("git")
                 .args(["branch", "-D", &state.branch])
                 .current_dir(&state.repo_root)
                 .output()
                 .await
-                .context("run git branch -D")?;
-            if !delete_branch.status.success() {
-                return Err(anyhow!(
-                    "removed worktree but failed to delete branch `{}`: {}",
+            {
+                Ok(o) if o.status.success() => format!("and branch `{}`", state.branch),
+                Ok(o) => format!(
+                    "but could not delete branch `{}` ({}); delete it manually with `git branch -D {}`",
                     state.branch,
-                    String::from_utf8_lossy(&delete_branch.stderr).trim()
-                ));
-            }
-            clear_worktree(ctx).await;
-            set_cwd(ctx, state.original_cwd.clone()).await;
+                    String::from_utf8_lossy(&o.stderr).trim(),
+                    state.branch
+                ),
+                Err(e) => format!(
+                    "but could not run branch cleanup for `{}` ({e}); delete it manually with `git branch -D {}`",
+                    state.branch, state.branch
+                ),
+            };
             Ok(format!(
-                "Removed worktree {} and branch `{}`. Session cwd restored to {}. Discarded {dirty} changed file(s) and {ahead} commit(s).",
+                "Removed worktree {} {branch_note}. Session cwd restored to {}. Discarded {dirty} changed file(s) and {diverged} commit(s).",
                 state.worktree_path.display(),
-                state.branch,
                 state.original_cwd.display()
             ))
         }
@@ -338,8 +351,13 @@ async fn changed_file_count(worktree_path: &Path) -> Result<usize> {
         .count())
 }
 
-async fn ahead_commit_count(worktree_path: &Path, base_head: &str) -> Result<usize> {
-    let range = format!("{base_head}..HEAD");
+/// Number of commits by which the worktree HEAD has *diverged* from the base it
+/// was created at, in either direction. Uses the symmetric-difference range
+/// (`base...HEAD`, three dots) so a history rewind (e.g. `reset --hard base~1`)
+/// is also counted as divergence — a plain `base..HEAD` would report 0 and let
+/// the remove guard silently destroy rewound work.
+async fn diverged_commit_count(worktree_path: &Path, base_head: &str) -> Result<usize> {
+    let range = format!("{base_head}...HEAD");
     let out = git_output(worktree_path, ["rev-list", "--count", &range]).await?;
     if !out.status.success() {
         return Err(anyhow!(
@@ -347,10 +365,15 @@ async fn ahead_commit_count(worktree_path: &Path, base_head: &str) -> Result<usi
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse::<usize>()
-        .unwrap_or(0))
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // A successful rev-list with unparseable output is unexpected; treat it as
+    // an error so the remove guard errs on the side of NOT destroying work.
+    stdout.trim().parse::<usize>().map_err(|_| {
+        anyhow!(
+            "could not parse git rev-list count: {:?}",
+            stdout.trim()
+        )
+    })
 }
 
 async fn git_stdout<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<String> {

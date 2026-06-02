@@ -210,11 +210,13 @@ async fn execute_grep_with_commands(
     }
     cmd.current_dir(&ctx.cwd);
     let out = run_capped(cmd, SEARCH_OUTPUT_CAP_BYTES).await;
-    if let Ok(out) = out {
+    if let Ok((out, overran)) = out {
         // rg exits 0 on matches and 1 on "no matches" (both fine); exit 2+
         // is a real error (invalid regex, bad glob). Surface that instead of
         // returning empty stdout, which the model reads as "no matches".
-        if !out.status.success() && out.status.code() != Some(1) {
+        // When `overran`, we killed the child at the output cap ourselves, so
+        // its non-success/signal status is expected — keep the capped matches.
+        if !overran && !out.status.success() && out.status.code() != Some(1) {
             let stderr = String::from_utf8_lossy(&out.stderr);
             let msg = stderr.trim();
             return Err(anyhow::anyhow!(
@@ -265,8 +267,8 @@ async fn execute_grep_with_commands(
         None => grep.arg("."),
     };
     grep.current_dir(&ctx.cwd);
-    let out = run_capped(grep, SEARCH_OUTPUT_CAP_BYTES).await?;
-    if !out.status.success() && out.status.code() != Some(1) {
+    let (out, overran) = run_capped(grep, SEARCH_OUTPUT_CAP_BYTES).await?;
+    if !overran && !out.status.success() && out.status.code() != Some(1) {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let msg = stderr.trim();
         return Err(anyhow::anyhow!(
@@ -291,14 +293,28 @@ const SEARCH_OUTPUT_CAP_BYTES: usize = 4 * 1024 * 1024;
 
 /// Like [`Command::output`], but stops capturing stdout at `cap` bytes and
 /// kills the child if it overruns, so it can neither balloon memory nor block
-/// forever writing to a full pipe once we stop reading.
-async fn run_capped(mut cmd: Command, cap: usize) -> std::io::Result<std::process::Output> {
+/// forever writing to a full pipe once we stop reading. Returns the output
+/// alongside a flag that is `true` when the stdout cap was hit (and the child
+/// was therefore killed) — callers use it to tell our own cap-kill apart from a
+/// genuine non-zero exit.
+async fn run_capped(mut cmd: Command, cap: usize) -> std::io::Result<(std::process::Output, bool)> {
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     let mut child = cmd.spawn()?;
     let mut stdout = child.stdout.take().expect("stdout piped");
     let mut stderr = child.stderr.take().expect("stderr piped");
+
+    // Drain stderr concurrently and all the way to EOF (retaining only the
+    // first 64 KiB) in its own task. A child that floods stderr — e.g. `grep`
+    // emitting one "Permission denied" line per directory over a large tree —
+    // would otherwise block on a full stderr pipe and never close stdout,
+    // hanging the stdout read below until the outer tool timeout.
+    let stderr_task = tokio::spawn(async move {
+        let mut err = Vec::new();
+        let _ = drain_capped(&mut stderr, &mut err, 64 * 1024).await;
+        err
+    });
 
     let mut out = Vec::new();
     let overran = read_to_cap(&mut stdout, &mut out, cap).await?;
@@ -307,14 +323,16 @@ async fn run_capped(mut cmd: Command, cap: usize) -> std::io::Result<std::proces
         // full pipe while we wait for it to exit.
         let _ = child.start_kill();
     }
-    let mut err = Vec::new();
-    let _ = read_to_cap(&mut stderr, &mut err, 64 * 1024).await;
     let status = child.wait().await?;
-    Ok(std::process::Output {
-        status,
-        stdout: out,
-        stderr: err,
-    })
+    let err = stderr_task.await.unwrap_or_default();
+    Ok((
+        std::process::Output {
+            status,
+            stdout: out,
+            stderr: err,
+        },
+        overran,
+    ))
 }
 
 /// Read from `r` into `buf` until EOF or `cap` bytes. Returns `true` when the
@@ -337,6 +355,28 @@ where
         }
     }
     Ok(true)
+}
+
+/// Read from `r` all the way to EOF, retaining at most `cap` bytes in `buf` and
+/// discarding the rest. Unlike [`read_to_cap`], this never stops early, so the
+/// child can never block on a full pipe — used for stderr, which we keep only a
+/// bounded prefix of but must fully drain to avoid deadlocking the stdout read.
+async fn drain_capped<R>(r: &mut R, buf: &mut Vec<u8>, cap: usize) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = r.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        if buf.len() < cap {
+            let room = cap - buf.len();
+            buf.extend_from_slice(&chunk[..n.min(room)]);
+        }
+    }
 }
 
 fn normalize_grep_output_mode(mode: Option<&str>) -> Option<&'static str> {
@@ -1291,8 +1331,31 @@ mod tests {
     #[tokio::test]
     async fn run_capped_bounds_and_kills_a_stdout_flood() {
         // `yes` writes to stdout forever; run_capped must bound it and return
-        // instead of hanging or growing without limit.
-        let out = run_capped(Command::new("yes"), 8192).await.unwrap();
+        // instead of hanging or growing without limit, and report the overrun.
+        let (out, overran) = run_capped(Command::new("yes"), 8192).await.unwrap();
         assert!(out.stdout.len() <= 8192 + 8192);
+        assert!(overran, "a stdout flood must report overran=true");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_capped_does_not_deadlock_on_a_stderr_flood() {
+        // A child that floods stderr while writing little/no stdout must not
+        // hang run_capped: stderr is drained concurrently to EOF. We bound the
+        // test with our own timeout so a regression fails fast instead of
+        // hanging the suite.
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            // ~512 KiB to stderr (well past the 64 KiB stderr cap and the OS
+            // pipe buffer), a tiny bit to stdout.
+            .arg("yes ERR | head -c 524288 1>&2; echo ok");
+        let fut = run_capped(cmd, 4 * 1024 * 1024);
+        let (out, overran) = tokio::time::timeout(std::time::Duration::from_secs(10), fut)
+            .await
+            .expect("run_capped must not deadlock on a stderr flood")
+            .unwrap();
+        assert!(!overran, "stdout stayed under cap");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ok");
+        assert!(out.stderr.len() <= 64 * 1024, "stderr retained is capped");
     }
 }

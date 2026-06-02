@@ -154,7 +154,27 @@ pub fn save(record: &SessionRecord) -> std::io::Result<()> {
     let text = serde_json::to_string(record)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     write_session_file(&tmp, text.as_bytes())?;
-    std::fs::rename(&tmp, &path)
+    std::fs::rename(&tmp, &path)?;
+    // fsync the parent directory so the rename itself is durable. Without this,
+    // a crash/power-loss right after rename returns can lose the new directory
+    // entry and drop the just-saved session even though its bytes were flushed.
+    fsync_dir(&dir);
+    Ok(())
+}
+
+/// Best-effort fsync of a directory so a preceding rename is durable across a
+/// crash. A no-op on platforms where directory fsync isn't supported.
+fn fsync_dir(dir: &Path) {
+    #[cfg(unix)]
+    {
+        if let Ok(f) = std::fs::File::open(dir) {
+            let _ = f.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
 }
 
 fn write_session_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {

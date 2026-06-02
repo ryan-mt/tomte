@@ -332,7 +332,14 @@ fn header_i64(h: &HeaderMap, name: &str) -> Option<i64> {
 }
 
 fn header_f64(h: &HeaderMap, name: &str) -> Option<f64> {
-    header_str(h, name)?.trim().parse().ok()
+    // Reject non-finite values: `"NaN"`/`"inf"` parse fine as f64 but survive a
+    // later `.clamp(0.0, 100.0)` (NaN comparisons are false), rendering garbage
+    // like `NaN% used`. A hostile/MITM provider could send exactly that.
+    header_str(h, name)?
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
 }
 
 fn rfc3339_to_epoch(s: &str) -> Option<i64> {
@@ -561,6 +568,20 @@ mod tests {
             captured_at_epoch: 0,
         };
         let _ = extreme.render(i64::MAX);
+    }
+
+    #[test]
+    fn non_finite_percent_headers_are_ignored() {
+        for bad in ["NaN", "nan", "inf", "-inf", "infinity"] {
+            let h = headers(&[("x-codex-primary-used-percent", bad)]);
+            assert_eq!(
+                header_f64(&h, "x-codex-primary-used-percent"),
+                None,
+                "{bad} must not survive as a percent"
+            );
+        }
+        let h = headers(&[("x-codex-primary-used-percent", "42.5")]);
+        assert_eq!(header_f64(&h, "x-codex-primary-used-percent"), Some(42.5));
     }
 
     #[test]
