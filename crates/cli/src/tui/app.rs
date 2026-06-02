@@ -2316,11 +2316,13 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  !<command>          run a shell command now (!! to force past the guard)\n  \
                  #<note>             save a note to this project's CLAUDE.md\n\n\
                  Keyboard shortcuts:\n  \
+                 ↑ / ↓               recall older / newer messages (on the first / last composer line)\n  \
                  Esc                 cancel the running turn (while busy)\n  \
                  Ctrl+O              toggle tool-call detail view\n  \
                  Ctrl+T              show / hide the live todo panel\n  \
                  Ctrl+L              clear the screen\n  \
                  Ctrl+V              paste text or image\n  \
+                 Left-drag           select text and copy it to the clipboard\n  \
                  Ctrl+C              quit"
                     .to_string(),
             ));
@@ -4501,6 +4503,32 @@ mod tests {
             app.input_history.last().unwrap(),
             &format!("msg {}", MAX_INPUT_HISTORY + 49)
         );
+    }
+
+    #[test]
+    fn up_down_recalls_submitted_messages() {
+        let mut app = App::new();
+        for m in ["first", "second", "third"] {
+            app.record_history(m);
+        }
+        // An in-progress draft is stashed; Up recalls newest → oldest.
+        app.input.set_text("draft".into());
+        app.history_prev();
+        assert_eq!(app.input.buffer, "third");
+        app.history_prev();
+        assert_eq!(app.input.buffer, "second");
+        app.history_prev();
+        assert_eq!(app.input.buffer, "first");
+        // Clamps at the oldest entry.
+        app.history_prev();
+        assert_eq!(app.input.buffer, "first");
+        // Down walks back toward newer, then restores the draft past the newest.
+        app.history_next();
+        assert_eq!(app.input.buffer, "second");
+        app.history_next();
+        assert_eq!(app.input.buffer, "third");
+        app.history_next();
+        assert_eq!(app.input.buffer, "draft");
     }
 
     #[tokio::test]
