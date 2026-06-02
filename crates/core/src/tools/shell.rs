@@ -394,6 +394,21 @@ fn kill_process_group(pid: Option<u32>) {
 #[cfg(not(unix))]
 fn kill_process_group(_pid: Option<u32>) {}
 
+impl BackgroundShellState {
+    /// Synchronously SIGKILL the shell's process group. Used by `SessionState`'s
+    /// `Drop` so background children (and their descendants) don't leak when the
+    /// session ends — the async `kill_tx` path can't be driven during teardown.
+    /// Skips a shell already known to have finished, to avoid a pid-reuse race.
+    pub(crate) fn kill_now(&self) {
+        if let Ok(status) = self.status.try_lock() {
+            if !matches!(*status, BgStatus::Running) {
+                return;
+            }
+        }
+        kill_process_group(self.pid);
+    }
+}
+
 /// Env vars whose names contain any of these substrings are scrubbed from the
 /// child's environment. Prevents the LLM from exfiltrating tokens via
 /// `env | curl …`. Substring match (case-insensitive) catches the long tail
@@ -621,6 +636,7 @@ async fn spawn_background(
         stdout_cursor: tokio::sync::Mutex::new(0),
         stderr_cursor: tokio::sync::Mutex::new(0),
         kill_tx: tokio::sync::Mutex::new(Some(kill_tx)),
+        pid: child_pid,
     });
 
     // stdout reader.
@@ -1250,6 +1266,35 @@ mod tests {
         assert!(
             start.elapsed() < std::time::Duration::from_secs(10),
             "call must be bounded by the timeout, not the descendant's lifetime"
+        );
+    }
+
+    // Regression: a background shell must be killed when the session ends, not
+    // leaked as an orphan (nothing else fires its kill switch on shutdown).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_session_kills_background_shells() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("survived");
+        let ctx = ctx_at(tmp.path().to_path_buf());
+        RunShell
+            .execute(
+                json!({
+                    "command": format!("sleep 0.5; printf x > {}", sh_quote(&marker)),
+                    "run_in_background": true,
+                    "dangerous_override": null,
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        // Dropping the only Arc<Mutex<SessionState>> ends the session, which must
+        // SIGKILL the background shell's process group before the sleep elapses.
+        drop(ctx);
+        tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+        assert!(
+            !marker.exists(),
+            "background shell survived the session ending"
         );
     }
 

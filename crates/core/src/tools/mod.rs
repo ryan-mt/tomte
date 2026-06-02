@@ -396,6 +396,9 @@ pub struct BackgroundShellState {
     pub stderr_cursor: Mutex<usize>,
     /// `Some` while the child is alive; `None` after termination or kill.
     pub kill_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Process-group leader pid, so the group can be killed synchronously (e.g.
+    /// from `SessionState`'s `Drop`) without going through the async kill_tx.
+    pub pid: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -449,6 +452,17 @@ pub struct SessionState {
     /// Worktree created by this session via `enter_worktree`. Exit/remove tools
     /// are scoped to this state so opencli never cleans up a user-created worktree.
     pub worktree: Option<WorktreeState>,
+}
+
+impl Drop for SessionState {
+    /// Kill any still-running background shells when the session ends so their
+    /// processes (and descendants) don't outlive the CLI as orphans. Nothing
+    /// else fires their kill switch on shutdown.
+    fn drop(&mut self) {
+        for shell in self.background_shells.values() {
+            shell.kill_now();
+        }
+    }
 }
 
 impl SessionState {
