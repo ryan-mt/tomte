@@ -51,25 +51,26 @@ Whole-codebase audit fixes:
 
 ---
 
-## REMAINING (not yet fixed — pick up here)
+## REMAINING — ALL DONE ✅ (completed 2026-06-01, session 2)
 
-### Needs a product decision
-- **A13 — `keyring` dependency declared but unused.** `grep -rn keyring --include=*.rs` = 0 hits; tokens are stored plaintext in `~/.config/<app>/auth.json` (mode 0o600, atomic write — sound). Declared in workspace `Cargo.toml` and `crates/core/Cargo.toml` with `features = ["sync-secret-service","vendored"]`.
-  - **Decide:** (a) **remove** the unused dep (surgical; less attack surface/build cost; 0o600 file storage is already fine — what `gh`/`aws`/`gcloud` do), or (b) **implement** keyring-backed storage with a 0o600 file fallback (feature work, platform-dependent). Ask the user before doing either.
+Every audit item below is now fixed, each its own commit + CHANGELOG bullet + regression test where feasible. Workspace stays green: **648 tests, 0 fail, `clippy -D warnings` clean, release build OK**.
 
-### Should fix (MEDIUM)
-- **A15 — `crates/core/src/anthropic/stream.rs` two stream gaps:**
-  1. **`redacted_thinking` block dropped** (~`stream.rs:293-313`). A `redacted_thinking` `content_block_start` carries an encrypted `data` payload (not via deltas); the code stores only `kind` and emits `ReasoningDone` only if signature/text is non-empty → both empty → block lost. `ContentBlock::Thinking` (`models.rs:~48`) has no field for redacted data. **Fix:** capture `content_block.data` at block-start; add a `RedactedThinking { data }` content block (or carry `data` through `ReasoningDone`) so a redacted-thinking-then-tool turn replays verbatim instead of breaking continuity.
-  2. **`message_delta.stop_reason` dropped** (~`stream.rs:430-454`). Handler reads only `usage`; the `Completed` response carries no `stop_reason`, so `max_tokens` truncation / `refusal` is indistinguishable from `end_turn`. Latent (no consumer today). **Fix:** thread `stop_reason` into the `Completed` JSON so the agent can detect truncation/refusal.
+| item | commit | what shipped |
+|---|---|---|
+| (clippy) | `33a94bd` | `permissions.rs` char-array split (silence clippy 1.95 `manual_pattern_char_comparison`). |
+| **A15.1** | `4b6fbf4` | redacted_thinking blocks captured (`data` at block-start) + replayed via new `RedactedThinking` event → `InputItem::Reasoning.redacted_thinking` → `ContentBlock::RedactedThinking`. Stream + translate tests. |
+| **A15.2** | `022c0cf` | `message_delta.stop_reason` captured; a `refusal` stop now surfaces as an error (like OpenAI content_filter) instead of a silent empty turn. Test. |
+| **A18+A19** | `960066d` | `prompt_secret`: `KeyEventKind::Press` filter + RAII guard restoring cooked mode on panic. |
+| **A20** | `7dfee31` | SSRF: block IPv6 literals embedding internal IPv4 via IPv4-compatible (`::127.0.0.1`) + NAT64 (`64:ff9b::/96`); reads (`cat /dev/sda`) still allowed. Test. |
+| **A22** | `c8f437b` | `/buddy roll_weighted` empty-tier underflow → pure `pick_from_tier` helper falling back to pet 0. Test (distribution unchanged). |
+| **A23** | `d35609e` | ChatGPT OAuth callback race: per-flow generation counter (bumped on Esc/Ctrl+C/new flow); `finish_chatgpt` drops a stale result. Tests. |
+| **A24** | `746b912` | Orphan tool-arg buffers bounded by aggregate bytes (16 MiB), not just count; gate covers the args-`done` path too. Pure-helper test. |
+| **A25** | `b5e0cbe` | `classify_danger` flags `>`/`>>` glued to a block device (`echo x >/dev/sda`). Tests. |
+| **A13** | `1dd34be` | **Decision: REMOVE** (user chose, 2026-06-01). Dropped the unused `keyring` dep (0 code refs); auth.json 0o600 + atomic write is retained (gh/aws/gcloud-style). Smaller build + attack surface; whole subtree leaves Cargo.lock. |
 
-### Should fix (LOW, but stability/correctness)
-- **A18 — `crates/cli/src/commands/login.rs:151` `prompt_secret` missing `KeyEventKind::Press` filter.** On terminals that emit Press+Release/Repeat (Windows console; kitty enhancement) a typed key can double, corrupting a pasted/typed API key. The TUI filters this everywhere; this fn doesn't. **Fix:** in the `event::read()` loop, `if k.kind != KeyEventKind::Press { continue; }`.
-- **A19 — `crates/cli/src/commands/login.rs:147-166` `prompt_secret` leaves the terminal in raw mode on panic.** No RAII guard / panic hook (unlike the TUI) between `enable_raw_mode()` and `disable_raw_mode()`. A panic in `event::read()` returns the shell raw (no echo). **Fix:** a small RAII guard struct whose `Drop` calls `disable_raw_mode()`. (Can share one commit with A18 since same fn, or split.)
-- **A20 — `crates/core/src/tools/web.rs:319-355` `is_blocked_ip` SSRF gap.** Only IPv4-mapped (`::ffff:x.x.x.x`) is re-checked against v4 rules; **IPv4-compatible** (`::127.0.0.1`) and **NAT64** (`64:ff9b::7f00:1`) embedding internal IPv4 are NOT blocked. **Fix:** also handle `v6.to_ipv4_compatible()` (or decode the last 2 segments when `seg[0..6]==0`) and block the `64:ff9b::/96` prefix. (Known separate caveat: DNS-rebinding — only the first host is checked.)
-- **A22 — `crates/cli/src/tui/buddy.rs:359-365` `roll_weighted` panics if a rarity tier is empty** (`tier.len()-1` underflows `usize` → `tier[huge]`). Not currently reachable (`roll_rarity` always returns a non-empty tier; guarded by a test), but fragile if a rarity is added without a pet. **Fix:** `tier.get(pick).copied().unwrap_or(0)` or early-return.
-- **A23 — `crates/cli/src/tui/login.rs:118-122` + `289-303` OAuth callback race.** Esc in `WaitingForBrowser` sets stage=`PickMode`, but the spawned `start_chatgpt` task keeps running; if it completes after Esc it overwrites the stage (unexpected `Success`, or shows an abandoned-flow error). **Fix:** only apply the task result if the stage is still `WaitingForBrowser` (a generation counter / cancel flag).
-- **A24 — `crates/core/src/agent/mod.rs:~1126` orphan arg-buffer cap is by count, not bytes.** `MAX_ORPHAN_ARG_BUFFERS = 256` bounds the number of distinct item-id buffers, each up to `MAX_TOOL_ARGUMENT_BYTES` (2 MiB) → ~512 MiB theoretical on a malformed stream. **Fix:** track total bytes across orphan buffers and stop accumulating past ~8–16 MiB.
-- **A25 — `crates/core/src/tools/shell.rs:~95` `classify_danger` redirect-to-device gap** (this also backs the composer `!!` guard, B7). The redirect check matches only whitespace-separated `>`, so `echo x >/dev/sda` (no space) isn't flagged. **Fix:** strip a leading `>`/`>>` from each token (or regex `>>?\s*/dev/(sd|nvme|hd)\S*`) before matching. It's defense-in-depth, not a sandbox.
+### Also shipped this session (user feature requests, not from the audit)
+- `b288ad9` **feat** — left-drag text selection + clipboard copy, no Shift needed (new `tui/selection.rs`, `clipboard::copy_text`, mouse Down/Drag/Up wiring, highlight overlay). Pure geometry unit-tested.
+- `f360041` **docs** — composer ↑/↓ history recall already existed & works (verified by a new test); added it + left-drag selection to the `/help` keyboard-shortcuts list so they're discoverable.
 
 ### Noted by the audit, low value / latent (decide whether to bother)
 - `agent/mod.rs` — on a `Failed` stream event, `emit_usage` may fire `AutoCompactSuggested`/`ContextWarning` from a failed response (UI-cosmetic only).
@@ -82,7 +83,9 @@ Whole-codebase audit fixes:
 `agent/mod.rs` had no panic/lock-across-await/infinite-loop issues; PKCE/S256/RNG in auth are correct; retry never re-sends a consumed stream; `tools/fs.rs` symlink/`..` guards are sound; MCP id-matching & process-group kill are correct; session id uniqueness + atomic write are correct; `lsp.rs` is a text-scanner (no real LSP/JSON-RPC); tool dispatch/`tool_args` parsing is well-guarded. (Full reasoning is in the session transcript.)
 
 ## How to continue
-1. `git checkout fix/review-findings`
-2. Pick the next item above; read the cited `file:line` with full context first.
-3. Fix → add a regression test → `cargo test --workspace` (or `-p` the crate) → CHANGELOG bullet → one focused commit.
-4. Keep new code in focused modules; verify model/API facts against current docs.
+The audit backlog is **cleared**. Branch `fix/review-findings` is ready to merge into `main` (33 commits ahead). Open follow-ups, if desired:
+- The 3 "low value / latent" notes above (UI-cosmetic / Windows-only / latent) — only if a real symptom shows up.
+- Merge this branch to `main` (the beta4 work already lives in `main`).
+- New work resumes from the `project_opencli_100_goal` track (UI polish, restored-src mining).
+
+Conventions if you reopen: read the cited `file:line` with full context first; fix → regression test → `cargo test --workspace` → CHANGELOG bullet → one focused commit; keep new code in focused modules; verify model/API facts against current docs.
