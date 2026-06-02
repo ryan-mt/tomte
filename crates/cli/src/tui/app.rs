@@ -1519,18 +1519,19 @@ async fn handle_key(
                 .take()
                 .expect("pending_approval present");
             let granted = choice != 2;
-            // Option 1 = "allow in this project": persist a rule to
-            // .opencli/permissions.json so this tool/command never prompts again
-            // in this project (the agent re-reads the file on its next gate
-            // check). Unlike a session-wide bypass, it is scoped and durable.
+            // Option 1 = "allow in this project": persist a rule to the
+            // owner-only user-level store (outside the repo, keyed by project
+            // path) so this tool/command never prompts again in this project,
+            // and a cloned repo can't pre-grant it. Unlike a session-wide
+            // bypass, it is scoped and durable.
             if choice == 1 {
                 let args_val: serde_json::Value =
                     serde_json::from_str(&p.args_json).unwrap_or(serde_json::Value::Null);
                 match opencli_core::permissions::allow_in_project(&app.cwd, &p.tool_name, &args_val)
                 {
-                    Ok(rule) => app.blocks.push(Block::System(format!(
-                        "✓ allowed in this project: {rule} — saved to .opencli/permissions.json"
-                    ))),
+                    Ok(rule) => app
+                        .blocks
+                        .push(Block::System(format!("✓ allowed in this project: {rule}"))),
                     Err(e) => app.blocks.push(Block::System(format!(
                         "could not save project permission: {e}"
                     ))),

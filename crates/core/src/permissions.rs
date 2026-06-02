@@ -1,7 +1,10 @@
-//! Per-project tool-permission allow-list, mirroring Claude Code's
-//! `permissions.allow`. Persisted at `<cwd>/.opencli/permissions.json` so that
-//! choosing "allow in this project" on an approval prompt survives across
-//! sessions and the agent stops re-asking for that tool or command.
+//! Per-project tool-permission rules, mirroring Claude Code's `permissions`.
+//! Two sources are merged (see [`load`]): the in-repo
+//! `<cwd>/.opencli/permissions.json` is honored for `deny` ONLY — a cloned repo
+//! may *tighten* what the agent can do but must never silently *grant* it —
+//! while the user's own "allow in this project" choices persist in an
+//! owner-only user-level store outside the repo (keyed by project path), so they
+//! survive across sessions without letting a cloned repo pre-grant them.
 //!
 //! Rules use a `Tool(specifier)` shape, a deliberately small subset of Claude
 //! Code's rule syntax:
@@ -39,7 +42,8 @@ pub enum Decision {
     Ask,
 }
 
-/// `<cwd>/.opencli/permissions.json` — the project-local allow-list file.
+/// `<cwd>/.opencli/permissions.json` — the in-repo project file. Honored for
+/// `deny` only (see [`load`]); `allow` lives in the user-level store.
 pub fn permissions_path(cwd: &Path) -> PathBuf {
     cwd.join(".opencli").join("permissions.json")
 }
@@ -88,41 +92,6 @@ fn validate_existing_permissions_path(cwd: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn ensure_project_permissions_dir(cwd: &Path) -> io::Result<()> {
-    let dir = cwd.join(".opencli");
-    match std::fs::symlink_metadata(&dir) {
-        Ok(meta) => {
-            if meta.file_type().is_symlink() {
-                return Err(invalid_project_permissions_path(
-                    "project permissions directory must not be a symlink",
-                ));
-            }
-            if !meta.is_dir() {
-                return Err(invalid_project_permissions_path(
-                    "project permissions path must be a directory",
-                ));
-            }
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            std::fs::create_dir_all(&dir)?;
-        }
-        Err(e) => return Err(e),
-    }
-
-    let meta = std::fs::symlink_metadata(&dir)?;
-    if meta.file_type().is_symlink() {
-        return Err(invalid_project_permissions_path(
-            "project permissions directory must not be a symlink",
-        ));
-    }
-    if !meta.is_dir() {
-        return Err(invalid_project_permissions_path(
-            "project permissions path must be a directory",
-        ));
-    }
-    Ok(())
-}
-
 fn write_permissions_file(path: &Path, text: &str) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -146,16 +115,69 @@ fn write_permissions_file(path: &Path, text: &str) -> io::Result<()> {
     }
 }
 
-/// Load the project allow-list, treating a missing or malformed file as empty
-/// so a bad edit never blocks the agent (it just falls back to prompting).
-pub fn load(cwd: &Path) -> ProjectPermissions {
-    if validate_existing_permissions_path(cwd).is_err() {
-        return ProjectPermissions::default();
+/// Stable per-project filename for the user-level allow store. Canonicalizes so
+/// different spellings of the same directory map to one file; falls back to the
+/// path as given when it doesn't exist yet. FNV-1a keeps the mapping stable
+/// across runs without pulling in a hashing dependency.
+fn project_key(cwd: &Path) -> String {
+    let canon = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in canon.as_os_str().as_encoded_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    match std::fs::read_to_string(permissions_path(cwd)) {
+    format!("{hash:016x}")
+}
+
+/// Directory holding the user-level (out-of-repo) allow grants, one file per
+/// project, under the owner-only config dir so a cloned repo can't seed it.
+fn user_permissions_dir() -> PathBuf {
+    crate::config::config_dir().join("project-permissions")
+}
+
+fn user_permissions_path(cwd: &Path) -> PathBuf {
+    user_permissions_dir().join(format!("{}.json", project_key(cwd)))
+}
+
+/// Read and parse one permissions file; a missing or malformed file is empty.
+fn read_permissions_at(path: &Path) -> ProjectPermissions {
+    match std::fs::read_to_string(path) {
         Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
         Err(_) => ProjectPermissions::default(),
     }
+}
+
+/// The in-repo `<cwd>/.opencli/permissions.json`. Symlinked dir/file is treated
+/// as empty so a project link can't redirect the read.
+fn load_project_file(cwd: &Path) -> ProjectPermissions {
+    if validate_existing_permissions_path(cwd).is_err() {
+        return ProjectPermissions::default();
+    }
+    read_permissions_at(&permissions_path(cwd))
+}
+
+/// Merge in-repo project rules with the user's own grants. The repo file is
+/// honored for `deny` ONLY (an untrusted clone may tighten, never grant); the
+/// user-level store is the sole source of `allow`. Deny rules are unioned.
+fn merge_permissions(project: ProjectPermissions, user: ProjectPermissions) -> ProjectPermissions {
+    let mut deny = project.deny;
+    for d in user.deny {
+        if !deny.contains(&d) {
+            deny.push(d);
+        }
+    }
+    ProjectPermissions {
+        allow: user.allow,
+        deny,
+    }
+}
+
+/// Load the effective rules for `cwd`: the repo file's `deny` plus the
+/// user-level store's `allow`/`deny`. A missing or malformed file on either side
+/// is treated as empty so a bad edit never blocks the agent.
+pub fn load(cwd: &Path) -> ProjectPermissions {
+    let user = read_permissions_at(&user_permissions_path(cwd));
+    merge_permissions(load_project_file(cwd), user)
 }
 
 /// The allow-rule that "allow in this project" should persist for a tool call.
@@ -555,19 +577,40 @@ fn glob_inner(p: &[u8], t: &[u8]) -> bool {
     }
 }
 
-/// Add a rule for this tool call to `<cwd>/.opencli/permissions.json`
-/// (idempotent), creating the directory and file as needed. Returns the rule
-/// that was recorded so the caller can report it.
-pub fn allow_in_project(cwd: &Path, tool_name: &str, args: &Value) -> std::io::Result<String> {
-    let rule = rule_for(tool_name, args);
-    let mut perms = load(cwd);
-    if !perms.allow.iter().any(|r| r == &rule) {
-        perms.allow.push(rule.clone());
+/// Append `rule` to the allow-list file at `path` (idempotent), creating its
+/// parent directory owner-only and refusing a symlinked directory or file (the
+/// `O_NOFOLLOW` open in [`write_permissions_file`] rejects a symlinked file).
+fn add_allow_rule_at(path: &Path, rule: String) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        match std::fs::symlink_metadata(dir) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(invalid_project_permissions_path(
+                    "user permissions directory must not be a symlink",
+                ));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                crate::config::create_dir_secure(dir)?;
+            }
+            Err(e) => return Err(e),
+        }
     }
-    ensure_project_permissions_dir(cwd)?;
-    validate_existing_permissions_path(cwd)?;
+    let mut perms = read_permissions_at(path);
+    if !perms.allow.iter().any(|r| r == &rule) {
+        perms.allow.push(rule);
+    }
     let text = serde_json::to_string_pretty(&perms).unwrap_or_default();
-    write_permissions_file(&permissions_path(cwd), &text)?;
+    write_permissions_file(path, &text)
+}
+
+/// Persist an "allow in this project" grant to the user-level store (outside the
+/// repo, under the owner-only config dir, keyed by project path). The in-repo
+/// `.opencli/permissions.json` is intentionally NOT used for `allow` — a cloned
+/// repo could otherwise pre-grant silent execution — only for `deny`. Returns
+/// the rule that was recorded so the caller can report it.
+pub fn allow_in_project(cwd: &Path, tool_name: &str, args: &Value) -> io::Result<String> {
+    let rule = rule_for(tool_name, args);
+    add_allow_rule_at(&user_permissions_path(cwd), rule.clone())?;
     Ok(rule)
 }
 
@@ -940,16 +983,18 @@ mod tests {
     }
 
     #[test]
-    fn allow_in_project_persists_and_is_idempotent() {
-        let tmp = std::env::temp_dir().join(format!("opencli-perm-test-{}", std::process::id()));
+    fn user_allow_store_persists_and_is_idempotent() {
+        let tmp = std::env::temp_dir().join(format!(
+            "opencli-perm-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
         let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let args = json!({"command": "cargo build"});
-        let rule = allow_in_project(&tmp, "run_shell", &args).unwrap();
-        assert_eq!(rule, "run_shell(cargo:*)");
-        // Re-adding the same call does not duplicate the rule.
-        allow_in_project(&tmp, "run_shell", &json!({"command": "cargo test"})).unwrap();
-        let perms = load(&tmp);
+        let path = tmp.join("store").join("proj.json");
+        add_allow_rule_at(&path, "run_shell(cargo:*)".to_string()).unwrap();
+        // Re-adding the same rule does not duplicate it.
+        add_allow_rule_at(&path, "run_shell(cargo:*)".to_string()).unwrap();
+        let perms = read_permissions_at(&path);
         assert_eq!(perms.allow, vec!["run_shell(cargo:*)".to_string()]);
         assert!(is_allowed(
             &perms,
@@ -959,60 +1004,111 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[test]
+    fn project_file_allow_is_ignored_but_deny_is_honored() {
+        // A cloned repo's `.opencli/permissions.json` may tighten (deny) but must
+        // not silently grant (allow) — that is the whole point of the user store.
+        let tmp = std::env::temp_dir().join(format!(
+            "opencli-perm-trust-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".opencli")).unwrap();
+        std::fs::write(
+            permissions_path(&tmp),
+            r#"{"allow":["write_file","run_shell(curl:*)"],"deny":["run_shell(rm:*)"]}"#,
+        )
+        .unwrap();
+        let perms = load(&tmp);
+        // allow from the repo file is dropped...
+        assert!(perms.allow.is_empty(), "repo allow must be ignored");
+        assert_eq!(
+            decide(&perms, "write_file", &json!({"path": "x"})),
+            Decision::Ask
+        );
+        // ...but deny is still honored.
+        assert_eq!(
+            decide(&perms, "run_shell", &json!({"command": "rm -rf /"})),
+            Decision::Deny
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn merge_takes_user_allow_and_unions_deny() {
+        let project = ProjectPermissions {
+            allow: vec!["write_file".into()],
+            deny: vec!["run_shell(rm:*)".into()],
+        };
+        let user = ProjectPermissions {
+            allow: vec!["run_shell(cargo:*)".into()],
+            deny: vec!["run_shell(rm:*)".into(), "edit_file".into()],
+        };
+        let merged = merge_permissions(project, user);
+        assert_eq!(merged.allow, vec!["run_shell(cargo:*)".to_string()]);
+        assert_eq!(
+            merged.deny,
+            vec!["run_shell(rm:*)".to_string(), "edit_file".to_string()]
+        );
+    }
+
     #[cfg(unix)]
     #[test]
-    fn allow_in_project_rejects_symlinked_opencli_dir() {
+    fn add_allow_rule_rejects_symlinked_store_dir() {
         use std::os::unix::fs::symlink;
 
-        let tmp =
+        let base =
             std::env::temp_dir().join(format!("opencli-perm-dir-link-{}", rand::random::<u64>()));
         let outside =
             std::env::temp_dir().join(format!("opencli-perm-dir-target-{}", rand::random::<u64>()));
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&outside);
-        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::create_dir_all(&base).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
-        symlink(&outside, tmp.join(".opencli")).unwrap();
+        let linked = base.join("store");
+        symlink(&outside, &linked).unwrap();
 
-        let err = allow_in_project(&tmp, "run_shell", &json!({"command": "cargo build"}))
-            .expect_err("symlinked project permission directory must be rejected");
-
+        let err = add_allow_rule_at(&linked.join("proj.json"), "write_file".to_string())
+            .expect_err("symlinked store directory must be rejected");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         assert!(
-            !outside.join("permissions.json").exists(),
-            "must not write permissions through a symlinked .opencli directory"
+            !outside.join("proj.json").exists(),
+            "must not write through a symlinked store directory"
         );
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[cfg(unix)]
     #[test]
-    fn allow_in_project_rejects_symlinked_permissions_file() {
+    fn add_allow_rule_rejects_symlinked_target_file() {
         use std::os::unix::fs::symlink;
 
-        let tmp =
+        let base =
             std::env::temp_dir().join(format!("opencli-perm-file-link-{}", rand::random::<u64>()));
         let outside = std::env::temp_dir().join(format!(
             "opencli-perm-file-target-{}",
             rand::random::<u64>()
         ));
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_file(&outside);
-        std::fs::create_dir_all(tmp.join(".opencli")).unwrap();
+        std::fs::create_dir_all(&base).unwrap();
         std::fs::write(&outside, "sentinel").unwrap();
-        symlink(&outside, permissions_path(&tmp)).unwrap();
+        let target = base.join("proj.json");
+        symlink(&outside, &target).unwrap();
 
-        let err = allow_in_project(&tmp, "run_shell", &json!({"command": "cargo build"}))
-            .expect_err("symlinked project permissions file must be rejected");
-
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        // The parent dir is real, so the dir check passes; the O_NOFOLLOW open of
+        // the symlinked file then fails (ELOOP) without overwriting the target.
+        let err = add_allow_rule_at(&target, "write_file".to_string())
+            .expect_err("symlinked target file must be rejected");
+        let _ = err;
         assert_eq!(
             std::fs::read_to_string(&outside).unwrap(),
             "sentinel",
             "must not overwrite the symlink target"
         );
-        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_file(&outside);
     }
 }
