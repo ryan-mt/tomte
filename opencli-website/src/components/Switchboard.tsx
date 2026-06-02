@@ -123,6 +123,7 @@ export function Switchboard() {
             return (
               <g
                 key={p.key}
+                aria-hidden="true"
                 style={{ cursor: "pointer" }}
                 onClick={() => setActive(p.key)}
                 onMouseEnter={() => setActive(p.key)}
