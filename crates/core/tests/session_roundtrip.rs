@@ -8,7 +8,7 @@
 
 use opencli_core::openai::{InputItem, MessageContent};
 use opencli_core::session::{
-    self, SessionGoalSnapshot, SessionMeta, SessionRecord, SessionSnapshot,
+    self, ModelUsage, SessionGoalSnapshot, SessionMeta, SessionRecord, SessionSnapshot,
 };
 use opencli_core::tools::{TodoItem, TodoStatus};
 use std::path::{Path, PathBuf};
@@ -62,6 +62,13 @@ fn session_save_load_list_and_missing_id() {
         blocked_by: Vec::new(),
     });
     r.state.read_files.push(cwd_a.join("src/lib.rs"));
+    r.state.usage.push(ModelUsage {
+        model: "claude-opus-4-8".into(),
+        input_tokens: 1_000,
+        output_tokens: 500,
+        cache_read_tokens: 2_000,
+        cache_write_tokens: 100,
+    });
     r.state.active_goal = Some(SessionGoalSnapshot {
         objective: "finish release".to_string(),
         turns_completed: 3,
@@ -78,6 +85,11 @@ fn session_save_load_list_and_missing_id() {
     assert_eq!(loaded.state.todos.len(), 1);
     assert_eq!(loaded.state.todos[0].active_form, "Running tests");
     assert_eq!(loaded.state.read_files, vec![cwd_a.join("src/lib.rs")]);
+    assert_eq!(loaded.state.usage.len(), 1, "per-model usage should roundtrip");
+    assert_eq!(loaded.state.usage[0].model, "claude-opus-4-8");
+    assert_eq!(loaded.state.usage[0].input_tokens, 1_000);
+    assert_eq!(loaded.state.usage[0].cache_read_tokens, 2_000);
+    assert_eq!(loaded.state.usage[0].cache_write_tokens, 100);
     let loaded_goal = loaded
         .state
         .active_goal
@@ -143,6 +155,7 @@ fn session_save_load_list_and_missing_id() {
     assert!(legacy_loaded.state.todos.is_empty());
     assert!(legacy_loaded.state.read_files.is_empty());
     assert!(legacy_loaded.state.active_goal.is_none());
+    assert!(legacy_loaded.state.usage.is_empty());
 
     // --- missing id is NotFound -----------------------------------------
     let err = session::load(&cwd_a, "does-not-exist").unwrap_err();

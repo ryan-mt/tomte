@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod memory;
 pub mod openai;
 pub mod permissions;
+pub mod pricing;
 pub mod provider;
 mod retry;
 mod sensitive;

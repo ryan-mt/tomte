@@ -229,6 +229,11 @@ pub enum AgentEvent {
         output_tokens: u64,
         total_tokens: u64,
     },
+    /// Cumulative per-model billed token tally after a response was accounted.
+    /// The TUI mirrors this for `/cost`; persistence lives in the session record.
+    CostUpdate {
+        usage: Vec<crate::session::ModelUsage>,
+    },
     /// The active provider's real quota/rate-limit snapshot, captured from the
     /// turn's response (headers or the Codex `codex.rate_limits` event). The TUI
     /// stores the latest for `/usage`. Fire-and-forget, never blocks the turn.
@@ -416,6 +421,11 @@ pub struct Agent {
     /// response appended but hasn't been sent back yet (which would hand the
     /// model "[cleared]" for results it never saw). 0 until the first request.
     pub history_seen_len: usize,
+    /// Cumulative billed token counts per model for this session, accumulated
+    /// from each response's `usage` block. Persisted in the session record so
+    /// `/cost` survives a `/resume`. Keyed by model so a mid-session `/model`
+    /// switch bills each model at its own rate.
+    pub cost_usage: Vec<crate::session::ModelUsage>,
 }
 
 impl Agent {
@@ -437,7 +447,28 @@ impl Agent {
             auto_approve_edits: false,
             last_input_tokens: 0,
             history_seen_len: 0,
+            cost_usage: Vec::new(),
         }
+    }
+
+    /// Fold one response's billed tokens into the per-model cost tally.
+    fn record_cost(&mut self, model: &str, u: &TurnUsage) {
+        let entry = match self.cost_usage.iter_mut().find(|e| e.model == model) {
+            Some(e) => e,
+            None => {
+                self.cost_usage.push(crate::session::ModelUsage {
+                    model: model.to_string(),
+                    ..Default::default()
+                });
+                self.cost_usage
+                    .last_mut()
+                    .expect("just pushed an entry")
+            }
+        };
+        entry.input_tokens = entry.input_tokens.saturating_add(u.uncached_input);
+        entry.output_tokens = entry.output_tokens.saturating_add(u.output);
+        entry.cache_read_tokens = entry.cache_read_tokens.saturating_add(u.cache_read);
+        entry.cache_write_tokens = entry.cache_write_tokens.saturating_add(u.cache_write);
     }
 
     pub async fn respond_approval(&self, call_id: &str, granted: bool) {
@@ -503,6 +534,7 @@ impl Agent {
         let mut state = SessionState::default();
         state.todos = record.state.todos;
         state.read_files = record.state.read_files.into_iter().collect();
+        self.cost_usage = record.state.usage;
         self.session = Arc::new(Mutex::new(state));
         self.history = record.history;
         self.session_id = record.meta.id;
@@ -566,6 +598,7 @@ impl Agent {
                 todos: session.todos.clone(),
                 read_files,
                 active_goal: None,
+                usage: self.cost_usage.clone(),
             }
         };
         crate::session::SessionRecord {
@@ -1304,10 +1337,17 @@ impl Agent {
                         });
                     }
                     ResponseStreamEvent::Completed { response } => {
-                        if let Some(tokens) =
+                        if let Some(u) =
                             emit_usage(&response, &tx, self.config.effective_context_limit()).await
                         {
-                            self.last_input_tokens = tokens;
+                            self.last_input_tokens = u.occupancy;
+                            let model = self.config.model.clone();
+                            self.record_cost(&model, &u);
+                            let _ = tx
+                                .send(AgentEvent::CostUpdate {
+                                    usage: self.cost_usage.clone(),
+                                })
+                                .await;
                         }
                         break;
                     }
@@ -1315,10 +1355,17 @@ impl Agent {
                         // Previously handled identically to Completed, which
                         // masked content-filter / quota / 5xx errors as a
                         // successful empty turn. Surface them instead.
-                        if let Some(tokens) =
+                        if let Some(u) =
                             emit_usage(&response, &tx, self.config.effective_context_limit()).await
                         {
-                            self.last_input_tokens = tokens;
+                            self.last_input_tokens = u.occupancy;
+                            let model = self.config.model.clone();
+                            self.record_cost(&model, &u);
+                            let _ = tx
+                                .send(AgentEvent::CostUpdate {
+                                    usage: self.cost_usage.clone(),
+                                })
+                                .await;
                         }
                         let message = response
                             .get("error")
@@ -3220,7 +3267,22 @@ fn wire_debug_enabled() -> bool {
 /// e.g. a `Failed` event, or a provider that serializes `"usage": null`). The
 /// caller records `Some` on the agent to drive microcompaction and skips on
 /// `None`, so a usage-less response never clobbers the last good occupancy.
-async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, limit: u64) -> Option<u64> {
+/// One response's billed token counts, split by class for accurate costing.
+/// `occupancy` is the cache-folded input total used for context/compaction math.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TurnUsage {
+    occupancy: u64,
+    uncached_input: u64,
+    cache_read: u64,
+    cache_write: u64,
+    output: u64,
+}
+
+async fn emit_usage(
+    response: &Value,
+    tx: &mpsc::Sender<AgentEvent>,
+    limit: u64,
+) -> Option<TurnUsage> {
     if let Some(usage) = response.get("usage") {
         if wire_debug_enabled() {
             eprintln!("[opencli wire] ← usage={usage}");
@@ -3229,11 +3291,15 @@ async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, limit: u64)
         // With prompt caching on, Anthropic reports the cached prompt tokens
         // separately from `input_tokens`. The true context occupancy (what the
         // window limit applies to) is the sum of all three; folding them in
-        // keeps the /compact warning accurate. OpenAI omits the cache fields,
-        // so this is a no-op there.
-        let i = get("input_tokens")
-            .saturating_add(get("cache_read_input_tokens"))
-            .saturating_add(get("cache_creation_input_tokens"));
+        // keeps the /compact warning accurate. The classes are kept separate
+        // for `/cost` because they bill at very different rates. OpenAI omits
+        // the cache fields, so those are simply 0 there.
+        let uncached_input = get("input_tokens");
+        let cache_read = get("cache_read_input_tokens");
+        let cache_write = get("cache_creation_input_tokens");
+        let i = uncached_input
+            .saturating_add(cache_read)
+            .saturating_add(cache_write);
         let o = get("output_tokens");
         let t = usage
             .get("total_tokens")
@@ -3264,7 +3330,17 @@ async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, limit: u64)
         // A real request always reports a non-zero input count; `i == 0` means
         // the block lacked input tokens (`"usage": null`), so don't overwrite a
         // good prior reading with 0.
-        return if i > 0 { Some(i) } else { None };
+        return if i > 0 {
+            Some(TurnUsage {
+                occupancy: i,
+                uncached_input,
+                cache_read,
+                cache_write,
+                output: o,
+            })
+        } else {
+            None
+        };
     }
     None
 }
@@ -3617,27 +3693,77 @@ mod compaction_tests {
         let (tx, _rx) = mpsc::channel(16);
         // No usage block (e.g. a Failed event) → None, so the caller leaves
         // last_input_tokens untouched instead of clobbering it with 0.
-        assert_eq!(emit_usage(&json!({}), &tx, 100_000).await, None);
+        assert!(emit_usage(&json!({}), &tx, 100_000).await.is_none());
         // Present but null (a Chat Completions stream with no usage chunk) → None.
-        assert_eq!(
-            emit_usage(&json!({ "usage": null }), &tx, 100_000).await,
-            None
-        );
-        // A real usage block → Some(folded input tokens).
-        assert_eq!(
-            emit_usage(&json!({ "usage": { "input_tokens": 1234 } }), &tx, 100_000).await,
-            Some(1234)
-        );
-        // Cache fields fold into the input total.
-        assert_eq!(
-            emit_usage(
-                &json!({ "usage": { "input_tokens": 100, "cache_read_input_tokens": 20 } }),
-                &tx,
-                100_000
-            )
-            .await,
-            Some(120)
-        );
+        assert!(emit_usage(&json!({ "usage": null }), &tx, 100_000)
+            .await
+            .is_none());
+        // A real usage block → occupancy = the cache-folded input total.
+        let u = emit_usage(&json!({ "usage": { "input_tokens": 1234 } }), &tx, 100_000)
+            .await
+            .expect("usage present");
+        assert_eq!(u.occupancy, 1234);
+        assert_eq!(u.uncached_input, 1234);
+        // Cache fields fold into occupancy but stay split for accurate costing.
+        let u = emit_usage(
+            &json!({ "usage": { "input_tokens": 100, "cache_read_input_tokens": 20, "cache_creation_input_tokens": 5, "output_tokens": 7 } }),
+            &tx,
+            100_000,
+        )
+        .await
+        .expect("usage present");
+        assert_eq!(u.occupancy, 125);
+        assert_eq!(u.uncached_input, 100);
+        assert_eq!(u.cache_read, 20);
+        assert_eq!(u.cache_write, 5);
+        assert_eq!(u.output, 7);
+    }
+
+    #[test]
+    fn record_cost_accumulates_per_model() {
+        use super::{Agent, TurnUsage};
+        use crate::auth::Credential;
+        use crate::client::LlmClient;
+        use crate::config::Config;
+        use crate::provider::Provider;
+
+        let client = LlmClient::new(Credential::ApiKey {
+            provider: Provider::OpenAi,
+            key: "sk-dummy".into(),
+        })
+        .unwrap();
+        let mut agent = Agent::new(client, Config::default());
+
+        let turn = TurnUsage {
+            occupancy: 120,
+            uncached_input: 100,
+            cache_read: 15,
+            cache_write: 5,
+            output: 40,
+        };
+        // Two responses on the same model fold into one entry.
+        agent.record_cost("claude-opus-4-8", &turn);
+        agent.record_cost("claude-opus-4-8", &turn);
+        // A different model opens a second entry, billed independently — this is
+        // what makes a mid-session /model switch cost correctly.
+        agent.record_cost("gpt-5", &turn);
+
+        assert_eq!(agent.cost_usage.len(), 2);
+        let opus = agent
+            .cost_usage
+            .iter()
+            .find(|e| e.model == "claude-opus-4-8")
+            .expect("opus entry");
+        assert_eq!(opus.input_tokens, 200);
+        assert_eq!(opus.output_tokens, 80);
+        assert_eq!(opus.cache_read_tokens, 30);
+        assert_eq!(opus.cache_write_tokens, 10);
+        let gpt = agent
+            .cost_usage
+            .iter()
+            .find(|e| e.model == "gpt-5")
+            .expect("gpt entry");
+        assert_eq!(gpt.input_tokens, 100);
     }
 
     #[test]

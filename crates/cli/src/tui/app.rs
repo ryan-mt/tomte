@@ -264,11 +264,10 @@ pub struct App {
     pub turn_started_at: Option<std::time::Instant>,
     pub spinner_word: String,
     pub tokens_used: u64,
-    /// Cumulative input tokens for the session — used by `/cost` to estimate
-    /// USD spend and break down the bill.
-    pub input_tokens_total: u64,
-    /// Cumulative output (reasoning + completion) tokens for the session.
-    pub output_tokens_total: u64,
+    /// Cumulative per-model billed token tally, mirrored from the agent's
+    /// `AgentEvent::CostUpdate` and rendered by `/cost`. The agent owns the
+    /// authoritative copy and persists it in the session record.
+    pub usage_by_model: Vec<opencli_core::session::ModelUsage>,
     /// Number of turns the user has run this session. Surfaced by `/cost`.
     pub turn_count: u64,
     /// Latest provider quota/rate-limit snapshot, captured from the most recent
@@ -784,8 +783,7 @@ impl App {
             turn_started_at: None,
             spinner_word: String::new(),
             tokens_used: 0,
-            input_tokens_total: 0,
-            output_tokens_total: 0,
+            usage_by_model: Vec::new(),
             turn_count: 0,
             last_quota: None,
             pending_images: Vec::new(),
@@ -2087,6 +2085,7 @@ async fn apply_resume(
     let msg_count = record.meta.message_count;
     let restored_todos = record.state.todos.clone();
     let restored_goal = record.state.active_goal.clone();
+    let restored_usage = record.state.usage.clone();
 
     // Rebuild visible blocks BEFORE we hand the history off to the agent so
     // we still own the record's contents.
@@ -2129,6 +2128,7 @@ async fn apply_resume(
     )));
     app.session_todos = restored_todos;
     app.todo_completed_at.clear();
+    app.usage_by_model = restored_usage;
     app.active_goal = restored_goal.map(ActiveGoal::from_session_snapshot);
     app.pending_goal_replacement = None;
     app.pending_plan_exit = None;
@@ -2650,31 +2650,12 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             app.open_overlay(OverlayKind::ResumePicker);
         }
         "cost" => {
-            let input = app.input_tokens_total;
-            let output = app.output_tokens_total;
-            let total = input.saturating_add(output);
-            let (in_per_m, out_per_m) = pricing_for(&app.config.model);
-            let in_cost = (input as f64) * in_per_m / 1_000_000.0;
-            let out_cost = (output as f64) * out_per_m / 1_000_000.0;
-            let total_cost = in_cost + out_cost;
-            let mut msg = String::new();
-            msg.push_str(&format!("Session usage — model: {}\n", app.config.model));
-            msg.push_str(&format!("  Turns:           {}\n", app.turn_count));
-            msg.push_str(&format!(
-                "  Input tokens:    {input:>12}  ·  ${in_cost:.4}\n",
-                in_cost = in_cost
-            ));
-            msg.push_str(&format!(
-                "  Output tokens:   {output:>12}  ·  ${out_cost:.4}\n",
-                out_cost = out_cost
-            ));
-            msg.push_str(&format!(
-                "  Total tokens:    {total:>12}\n  Estimated cost:  ${total_cost:.4}\n"
-            ));
-            msg.push_str(&format!(
-                "  Pricing assumed: ${in_per_m:.2}/M input, ${out_per_m:.2}/M output"
-            ));
-            app.blocks.push(Block::System(msg));
+            let report = opencli_core::pricing::render_cost_report(
+                &app.usage_by_model,
+                &app.config.model,
+                app.turn_count,
+            );
+            app.blocks.push(Block::System(report));
         }
         "usage" => {
             app.blocks.push(Block::System(render_usage_report(app)));
@@ -3397,25 +3378,6 @@ fn prune_expired_completed_todos(app: &mut App) {
     app.todo_completed_at.clear();
 }
 
-/// Rough OpenAI Responses pricing per model — used by `/cost` for a local
-/// estimate. Returns `(input_$_per_million, output_$_per_million)`.
-/// Update when official pricing changes; an inexact estimate beats none.
-fn pricing_for(model: &str) -> (f64, f64) {
-    match model {
-        "gpt-5.5" => (5.00, 30.0),
-        "gpt-5.4" => (2.50, 15.0),
-        "gpt-5.3" | "gpt-5.3-chat-latest" | "gpt-5.3-codex" => (1.75, 14.0),
-        "gpt-5" => (1.25, 10.0),
-        "gpt-5.5-pro" | "gpt-5.4-pro" => (30.00, 180.0),
-        "gpt-5-pro" => (15.00, 120.0),
-        "gpt-5.4-mini" => (0.75, 4.50),
-        "gpt-5-mini" => (0.25, 2.00),
-        "gpt-5.4-nano" => (0.20, 1.25),
-        "gpt-5-nano" => (0.05, 0.40),
-        _ => (1.25, 10.0),
-    }
-}
-
 /// `/usage` report: the active provider's real quota/rate-limit status (5h +
 /// weekly for subscriptions, token/request budgets for API keys), captured from
 /// the last turn's response. Falls back to a hint when no turn has run yet.
@@ -3980,17 +3942,18 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
         }
         AgentEvent::Usage {
             input_tokens,
-            output_tokens,
+            output_tokens: _,
             total_tokens: _,
         } => {
             // Current context occupancy, NOT a running total. Each agentic step
-            // resends the whole history, so summing across steps balloons into
-            // the millions and reads as runaway spend. Claude Code shows the
-            // live context size instead; `input_tokens` already folds in cache
-            // read/creation, so it is the true window usage of the last request.
+            // resends the whole history, so this is the live window size of the
+            // last request (cache read/creation already folded in). Cumulative
+            // billing is tracked per-model by the agent and arrives separately
+            // via CostUpdate, split by billing class for an accurate /cost.
             app.tokens_used = input_tokens;
-            app.input_tokens_total = app.input_tokens_total.saturating_add(input_tokens);
-            app.output_tokens_total = app.output_tokens_total.saturating_add(output_tokens);
+        }
+        AgentEvent::CostUpdate { usage } => {
+            app.usage_by_model = usage;
         }
         AgentEvent::Quota { snapshot } => {
             // Latest real provider quota; rendered on demand by `/usage`.
@@ -5262,19 +5225,6 @@ mod tests {
         assert!(app.approval_handle.is_none());
         assert!(!approvals.lock().await.contains_key("call_1"));
         assert_eq!(rx.await, Ok(false));
-    }
-
-    #[test]
-    fn pricing_for_current_openai_models_matches_api_docs() {
-        assert_eq!(pricing_for("gpt-5.5"), (5.00, 30.0));
-        assert_eq!(pricing_for("gpt-5.4"), (2.50, 15.0));
-        assert_eq!(pricing_for("gpt-5.3"), (1.75, 14.0));
-        assert_eq!(pricing_for("gpt-5-pro"), (15.00, 120.0));
-        assert_eq!(pricing_for("gpt-5.5-pro"), (30.00, 180.0));
-        assert_eq!(pricing_for("gpt-5.4-mini"), (0.75, 4.50));
-        assert_eq!(pricing_for("gpt-5.4-nano"), (0.20, 1.25));
-        assert_eq!(pricing_for("gpt-5-mini"), (0.25, 2.00));
-        assert_eq!(pricing_for("gpt-5-nano"), (0.05, 0.40));
     }
 
     #[test]

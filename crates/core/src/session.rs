@@ -48,6 +48,24 @@ pub struct SessionSnapshot {
     pub read_files: Vec<PathBuf>,
     #[serde(default)]
     pub active_goal: Option<SessionGoalSnapshot>,
+    /// Cumulative billed token counts per model, so `/cost` survives a `/resume`.
+    #[serde(default)]
+    pub usage: Vec<ModelUsage>,
+}
+
+/// Cumulative billed token counts for one model within a session, split by
+/// billing class. Cached reads and cache writes are priced very differently
+/// from fresh input, so they are tracked separately for an accurate `/cost`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelUsage {
+    pub model: String,
+    /// Fresh (uncached) input tokens, billed at the model's input rate.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// Tokens served from the prompt cache, billed at the cheap cache-read rate.
+    pub cache_read_tokens: u64,
+    /// Tokens written into the prompt cache, billed at the cache-write rate.
+    pub cache_write_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
