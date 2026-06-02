@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+/* ===========================================================================
+   OpenCLI website. Swiss / International-Typographic system.
+   One binary, any model. Monochrome canvas + semantic provider color.
+   Light-only by intent (a stark Swiss identity). No em-dashes in copy.
+   =========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  --bg: #f4f4f1;     /* cool off-white, not warm cream */
+  --bg-2: #ebebe6;   /* panel */
+  --bg-3: #e2e2db;   /* deeper panel */
+  --ink: #131312;    /* near-black */
+  --ink-2: #56564e;  /* secondary */
+  --ink-3: #8c8c82;  /* tertiary / mono labels */
+  --line: #dcdcd4;   /* hairline */
+  --line-2: #c6c6bb; /* rule */
+
+  /* semantic provider accents (flat, meaning-bearing, never decoration) */
+  --oai: #0a7d6b;    /* teal */
+  --ant: #c0552d;    /* burnt clay */
+  --compat: #2f53d6; /* cobalt */
+
+  --code-bg: #131312;
+  --code-fg: #ededE6;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-bg-3: var(--bg-3);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-oai: var(--oai);
+  --color-ant: var(--ant);
+  --color-compat: var(--compat);
+  --color-code: var(--code-bg);
+  --color-codefg: var(--code-fg);
+
+  --font-display: var(--font-bricolage);
+  --font-sans: var(--font-hanken);
+  --font-mono: var(--font-jetbrains);
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-hanken), system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  h1, h2, h3, h4 {
+    font-family: var(--font-bricolage), system-ui, sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 0.98;
+  }
+  ::selection {
+    background: var(--ink);
+    color: var(--bg);
+  }
+}
+
+/* Swiss helpers */
+.mono-label {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 0.6875rem;
+  line-height: 1;
+  color: var(--ink-3);
+}
+
+/* Faint blueprint grid, used deliberately on select sections. */
+.blueprint {
+  background-image:
+    linear-gradient(to right, var(--line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--line) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+/* Selection stays legible on dark surfaces: light highlight, dark text. */
+.bg-code ::selection,
+.bg-code::selection,
+.bg-ink ::selection,
+.bg-ink::selection {
+  background: var(--code-fg);
+  color: var(--code-bg);
+}
+
+/* Connector draw-in for the switchboard. */
+@keyframes gf-draw {
+  from { stroke-dashoffset: var(--dash, 400); }
+  to { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
