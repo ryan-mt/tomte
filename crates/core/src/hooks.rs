@@ -361,12 +361,13 @@ async fn run_hook_with_timeout(
 
     let mut child = cmd.spawn()?;
     let child_pid = child.id();
-    if let Some(mut stdin) = child.stdin.take() {
-        let bytes = serde_json::to_vec(payload).unwrap_or_default();
-        let _ = stdin.write_all(&bytes).await;
-        let _ = stdin.flush().await;
-        drop(stdin);
-    }
+
+    // Spawn the stdout/stderr drainers BEFORE writing stdin. Otherwise a hook
+    // that emits output before reading its stdin deadlocks: we block on
+    // `write_all` (the stdin pipe is full because the hook isn't reading yet)
+    // while the hook blocks on its stdout write (that pipe is full because no
+    // one is draining it). The PostToolUse payload carries the tool output (up
+    // to ~1 MiB), far larger than the ~64 KiB pipe buffer, so this is reachable.
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let stdout_task = tokio::spawn(async move {
@@ -384,17 +385,38 @@ async fn run_hook_with_timeout(
         }
     });
 
+    // Feed stdin on its own task so a hook that never reads stdin can't block the
+    // whole call — the write completes, errors (EPIPE once the child exits), or
+    // is aborted at the deadline. Dropping the handle closes stdin (EOF).
+    let stdin = child.stdin.take();
+    let payload_bytes = serde_json::to_vec(payload).unwrap_or_default();
+    let stdin_task = tokio::spawn(async move {
+        if let Some(mut stdin) = stdin {
+            let _ = stdin.write_all(&payload_bytes).await;
+            let _ = stdin.flush().await;
+        }
+    });
+
     let status = match tokio::time::timeout(timeout, child.wait()).await {
         Ok(Ok(status)) => status,
-        Ok(Err(e)) => return Err(e.into()),
+        Ok(Err(e)) => {
+            stdin_task.abort();
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(e.into());
+        }
         Err(e) => {
             kill_process_group(child_pid);
             let _ = child.kill().await;
+            stdin_task.abort();
             stdout_task.abort();
             stderr_task.abort();
             return Err(e.into());
         }
     };
+    // Child has exited; its stdin read-end is closed so any pending write fails
+    // fast. Abort defensively so this can never hang.
+    stdin_task.abort();
     let stdout = stdout_task.await??.into_string("stdout");
     let _ = stderr_task.await??;
     let code = status.code().unwrap_or(-1);
@@ -580,5 +602,25 @@ mod tests {
 
         assert_eq!(code, 0);
         assert!(stdout.is_empty(), "stderr should not leak into stdout");
+    }
+
+    // Regression: a hook that emits a large stdout BEFORE reading its (large)
+    // stdin used to deadlock — we blocked writing the payload while the hook
+    // blocked writing output. With readers spawned first and stdin written on
+    // its own task, this completes well within the timeout.
+    #[tokio::test]
+    async fn run_hook_does_not_deadlock_when_output_precedes_stdin_read() {
+        // Payload larger than a pipe buffer (~64 KiB), like a real PostToolUse
+        // payload carrying tool output.
+        let payload = serde_json::json!({ "tool_output": "x".repeat(256 * 1024) });
+        let (code, _stdout) = run_hook_with_timeout(
+            // Write 200 KiB to stdout first, then drain stdin.
+            "head -c 200000 /dev/zero; cat >/dev/null",
+            &payload,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("must not hang or error");
+        assert_eq!(code, 0);
     }
 }

