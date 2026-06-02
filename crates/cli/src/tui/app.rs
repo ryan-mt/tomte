@@ -3710,13 +3710,24 @@ fn expand_at_mentions(text: &str, cwd: &std::path::Path) -> Option<String> {
 }
 
 /// Render one resolved `@`-mention: a fenced file body or a directory listing.
+///
+/// The resolved path is confined to `cwd`: it is canonicalized (resolving `..`
+/// and symlinks) and must stay under the canonical `cwd`, so `@/etc/passwd`,
+/// `@../../secret`, or a symlink pointing outside the workspace resolve to
+/// `None` rather than silently shipping out-of-tree file contents to the model.
 fn render_mention(token: &str, cwd: &std::path::Path, max_bytes: usize) -> Option<String> {
     let p = std::path::Path::new(token);
-    let path = if p.is_absolute() {
+    let joined = if p.is_absolute() {
         p.to_path_buf()
     } else {
         cwd.join(p)
     };
+    // canonicalize() also confirms the path exists; a missing path → None.
+    let path = joined.canonicalize().ok()?;
+    let base = cwd.canonicalize().ok()?;
+    if !path.starts_with(&base) {
+        return None;
+    }
     let meta = std::fs::metadata(&path).ok()?;
     if meta.is_dir() {
         let mut names: Vec<String> = std::fs::read_dir(&path)
@@ -4447,6 +4458,29 @@ mod tests {
 
         assert!(expand_at_mentions("ping a@b.com only", tmp.path()).is_none());
         assert!(expand_at_mentions("read @does/not/exist", tmp.path()).is_none());
+    }
+
+    // Regression: @-mentions are confined to cwd — an absolute path or a `..`
+    // escape that resolves outside the workspace must not be attached.
+    #[test]
+    fn expand_at_mentions_refuses_paths_outside_cwd() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        // A secret living next to (not under) the project dir.
+        let secret = root.path().join("secret.txt");
+        std::fs::write(&secret, "TOP SECRET").unwrap();
+
+        // Absolute path outside cwd.
+        let abs = format!("look @{}", secret.display());
+        assert!(expand_at_mentions(&abs, &project).is_none());
+        // Parent-dir escape.
+        assert!(expand_at_mentions("look @../secret.txt", &project).is_none());
+
+        // A file genuinely under cwd still resolves.
+        std::fs::write(project.join("ok.txt"), "fine").unwrap();
+        let out = expand_at_mentions("see @ok.txt", &project).unwrap();
+        assert!(out.contains("fine"));
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@
 ### Fixed
 
 - `!`-commands from the composer now run on a background task with a 120s timeout (killed on expiry) instead of blocking the event loop — a long-running or non-terminating command (dev server, `tail -f`) no longer freezes the whole TUI.
+- `@<path>` mentions are now confined to the workspace: an absolute path, a `..` escape, or a symlink resolving outside `cwd` is ignored instead of attaching out-of-tree file contents to the prompt.
 
 ## 0.0.1-beta.4
 
