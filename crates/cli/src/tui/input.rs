@@ -187,6 +187,31 @@ impl TextInput {
     pub fn line_count(&self) -> usize {
         self.buffer.matches('\n').count() + 1
     }
+
+    /// If the cursor sits inside an `@`-prefixed token, return its byte offset
+    /// (of the `@`) and the partial query typed after it. The token runs from the
+    /// nearest `@` before the cursor up to the cursor, and must contain no
+    /// whitespace — typing a space ends the token (returns `None`). Drives the
+    /// `@`-file typeahead overlay.
+    pub fn active_at_token(&self) -> Option<(usize, String)> {
+        let before = &self.buffer[..self.cursor];
+        let at = before.rfind('@')?;
+        let token = &before[at + 1..];
+        if token.chars().any(char::is_whitespace) {
+            return None;
+        }
+        Some((at, token.to_string()))
+    }
+
+    /// Replace the active `@`-token (from the `@` up to the cursor) with
+    /// `@<path> ` and move the cursor past it. No-op when not inside a token.
+    pub fn complete_at_token(&mut self, path: &str) {
+        if let Some((at, _)) = self.active_at_token() {
+            let replacement = format!("@{path} ");
+            self.buffer.replace_range(at..self.cursor, &replacement);
+            self.cursor = at + replacement.len();
+        }
+    }
 }
 
 fn display_width(s: &str) -> usize {
@@ -248,5 +273,32 @@ mod tests {
         let mut i = at("abc", 3);
         i.kill_to_line_end();
         assert_eq!(i.buffer, "abc");
+    }
+
+    #[test]
+    fn active_at_token_reads_partial_after_at() {
+        let i = at("open @src/ma", 12);
+        assert_eq!(i.active_at_token(), Some((5, "src/ma".to_string())));
+    }
+
+    #[test]
+    fn active_at_token_ends_at_whitespace() {
+        // A space after the token closes it — no active completion.
+        let i = at("see @foo bar", 12);
+        assert_eq!(i.active_at_token(), None);
+    }
+
+    #[test]
+    fn active_at_token_none_without_at() {
+        let i = at("plain text", 10);
+        assert_eq!(i.active_at_token(), None);
+    }
+
+    #[test]
+    fn complete_at_token_replaces_partial_with_path() {
+        let mut i = at("look at @src/ma", 15);
+        i.complete_at_token("src/main.rs");
+        assert_eq!(i.buffer, "look at @src/main.rs ");
+        assert_eq!(i.cursor, i.buffer.len());
     }
 }

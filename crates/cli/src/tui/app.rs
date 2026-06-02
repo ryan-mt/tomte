@@ -85,6 +85,7 @@ impl PermissionMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayKind {
     SlashMenu,
+    FilePicker,
     ModelPicker,
     EffortPicker,
     VerbosityPicker,
@@ -262,6 +263,10 @@ pub struct App {
     pub last_quota: Option<opencli_core::usage::QuotaSnapshot>,
     pub pending_images: Vec<std::path::PathBuf>,
     pub next_image_num: usize,
+    /// Output of `!`-prefixed shell commands the user ran from the composer,
+    /// waiting to be prepended to the next real message as context so the model
+    /// can reason about it. Drained in `launch_turn`.
+    pub pending_shell_context: Vec<String>,
     /// `/buddy` companion state. `hatch` is the in-progress reveal animation;
     /// `buddy_pet` is the adopted pet (locked to the account) shown small in the
     /// corner; `buddy_hidden` toggles that corner display via `/buddy off`.
@@ -769,6 +774,7 @@ impl App {
             last_quota: None,
             pending_images: Vec::new(),
             next_image_num: 1,
+            pending_shell_context: Vec::new(),
             hatch: None,
             buddy_pet: None,
             buddy_hidden: false,
@@ -903,6 +909,7 @@ impl App {
     pub fn open_overlay(&mut self, kind: OverlayKind) {
         let picker = match kind {
             OverlayKind::SlashMenu => Picker::new("commands", picker::slash_commands()),
+            OverlayKind::FilePicker => Picker::new("attach file (@)", file_candidates(&self.cwd)),
             OverlayKind::ModelPicker => {
                 let mut p = Picker::new("select model", picker::models());
                 // pre-select current
@@ -1519,6 +1526,14 @@ async fn handle_key(
             app.input.insert_char('/');
             app.open_overlay(OverlayKind::SlashMenu);
         }
+        KeyCode::Char('@') if ctrl == alt => {
+            // Insert '@' and open the file typeahead; characters typed after it
+            // filter the list (handled in handle_overlay_key), matching the
+            // `@file` reference flow in Claude Code / Codex.
+            app.input.insert_char('@');
+            app.history_pos = None;
+            app.open_overlay(OverlayKind::FilePicker);
+        }
         // Insert only for a plain key or AltGr (Ctrl+Alt, used for `@{}[]` etc.
         // on international layouts — there ctrl==alt). A lone Ctrl or lone Alt is
         // a command/no-op, not text; otherwise unhandled combos like Ctrl+A typed
@@ -1537,6 +1552,14 @@ async fn handle_key(
             if !app.busy && !app.compacting {
                 if let Some(rest) = text.strip_prefix('/') {
                     handle_slash(app, rest.trim()).await;
+                    return Ok(false);
+                }
+                if let Some(cmd) = text.strip_prefix('!') {
+                    handle_bang_shell(app, cmd.trim()).await;
+                    return Ok(false);
+                }
+                if let Some(note) = text.strip_prefix('#') {
+                    handle_hash_memory(app, agent, note.trim()).await;
                     return Ok(false);
                 }
                 app.blocks.push(Block::User(text.clone()));
@@ -1784,6 +1807,43 @@ async fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     match key.code {
         KeyCode::Up => picker.move_up(),
         KeyCode::Down => picker.move_down(),
+        // FilePicker arms must precede the generic Esc/Enter below, which assume
+        // a slash/model/effort selection.
+        KeyCode::Esc if kind == OverlayKind::FilePicker => {
+            // Dismiss the typeahead but keep whatever the user typed.
+            app.overlay = None;
+        }
+        KeyCode::Enter | KeyCode::Tab if kind == OverlayKind::FilePicker => {
+            if let Some(key_sel) = picker.selected_key() {
+                app.input.complete_at_token(&key_sel);
+            }
+            app.overlay = None;
+        }
+        KeyCode::Backspace if kind == OverlayKind::FilePicker => {
+            app.input.backspace();
+            match app.input.active_at_token() {
+                Some((_, q)) => {
+                    if let Some((_, p)) = app.overlay.as_mut() {
+                        p.query = q;
+                        p.ensure_visible_selected();
+                    }
+                }
+                None => app.overlay = None,
+            }
+        }
+        KeyCode::Char(c) if kind == OverlayKind::FilePicker => {
+            app.input.insert_char(c);
+            // A space (or any whitespace) ends the `@`-token; close the overlay.
+            match app.input.active_at_token() {
+                Some((_, q)) => {
+                    if let Some((_, p)) = app.overlay.as_mut() {
+                        p.query = q;
+                        p.ensure_visible_selected();
+                    }
+                }
+                None => app.overlay = None,
+            }
+        }
         KeyCode::Esc => {
             app.overlay = None;
             if kind == OverlayKind::SlashMenu {
@@ -1858,6 +1918,9 @@ async fn handle_overlay_select(app: &mut App, kind: OverlayKind, key_sel: &str) 
                 }
             }
         }
+        // FilePicker commits via its own Enter/Tab arm in handle_overlay_key
+        // (it rewrites the `@`-token in place), so it never reaches here.
+        OverlayKind::FilePicker => {}
         OverlayKind::ModelPicker => {
             app.config.model = key_sel.to_string();
             if let Err(e) = config::save(&app.config) {
@@ -2163,6 +2226,10 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  /perms [on|off]     toggle the approval modal for writes/shell\n  \
                  /undo               revert the most recent file edit\n  \
                  /quit               exit\n\n\
+                 Composer prefixes:\n  \
+                 @<path>             reference a file (typeahead); its contents are attached\n  \
+                 !<command>          run a shell command now (!! to force past the guard)\n  \
+                 #<note>             save a note to this project's CLAUDE.md\n\n\
                  Keyboard shortcuts:\n  \
                  Esc                 cancel the running turn (while busy)\n  \
                  Ctrl+O              toggle tool-call detail view\n  \
@@ -3358,6 +3425,277 @@ fn render_blocks_as_markdown(blocks: &[Block]) -> String {
     out
 }
 
+/// Run a `!`-prefixed shell command straight from the composer (no model turn),
+/// mirroring `!bash` mode in Claude Code. A leading `!` (the user typed `!!cmd`)
+/// forces past the destructive-command guard. Output is shown inline and staged
+/// into `pending_shell_context` so the next message can reason about it.
+async fn handle_bang_shell(app: &mut App, raw: &str) {
+    let (force, cmd) = match raw.strip_prefix('!') {
+        Some(rest) => (true, rest.trim()),
+        None => (false, raw),
+    };
+    if cmd.is_empty() {
+        app.blocks.push(Block::System(
+            "usage: !<shell command>  (!! to force)".into(),
+        ));
+        return;
+    }
+    if !force {
+        if let Some(reason) = opencli_core::tools::shell::classify_danger(cmd) {
+            app.blocks.push(Block::System(format!(
+                "⚠ refused: {reason}. Re-run as `!!{cmd}` to force."
+            )));
+            return;
+        }
+    }
+    app.blocks.push(Block::System(format!("! {cmd}")));
+    app.auto_scroll = true;
+
+    let cwd = app.cwd.clone();
+    #[cfg(windows)]
+    let output = tokio::process::Command::new("cmd")
+        .arg("/C")
+        .arg(cmd)
+        .current_dir(&cwd)
+        .output()
+        .await;
+    #[cfg(not(windows))]
+    let output = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(&cwd)
+        .output()
+        .await;
+
+    match output {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let mut body = String::new();
+            if !stdout.trim().is_empty() {
+                body.push_str(stdout.trim_end());
+            }
+            if !stderr.trim().is_empty() {
+                if !body.is_empty() {
+                    body.push('\n');
+                }
+                body.push_str(stderr.trim_end());
+            }
+            let code = o.status.code().unwrap_or(-1);
+            let body = truncate_output(&body, 16 * 1024);
+            let shown = if body.trim().is_empty() {
+                if o.status.success() {
+                    "(no output)".to_string()
+                } else {
+                    format!("(exit {code}, no output)")
+                }
+            } else {
+                body
+            };
+            app.blocks.push(Block::System(shown.clone()));
+            app.pending_shell_context.push(format!(
+                "[The user ran a shell command in the terminal]\n$ {cmd}\nExit code: {code}\nOutput:\n{shown}"
+            ));
+        }
+        Err(e) => app
+            .blocks
+            .push(Block::System(format!("! failed to run: {e}"))),
+    }
+}
+
+/// Append a `#`-prefixed note to the project `CLAUDE.md` and re-apply memory to
+/// the live agent so it takes effect immediately (Claude Code's `#` quick-add).
+async fn handle_hash_memory(
+    app: &mut App,
+    agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
+    note: &str,
+) {
+    if note.is_empty() {
+        app.blocks
+            .push(Block::System("usage: #<note to remember>".into()));
+        return;
+    }
+    let path = app.cwd.join("CLAUDE.md");
+    let existed = path.exists();
+    use std::io::Write;
+    let res = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| {
+            if !existed {
+                writeln!(f, "# CLAUDE.md\n")?;
+            }
+            writeln!(f, "- {note}")
+        });
+    match res {
+        Ok(()) => {
+            app.blocks
+                .push(Block::System(format!("📝 remembered → {}", path.display())));
+            // Re-apply project memory so the note lands in this session's system
+            // prompt. With no agent yet it's applied on the first turn instead.
+            let mut guard = agent.lock().await;
+            if let Some(a) = guard.as_mut() {
+                a.apply_project_memory();
+            }
+        }
+        Err(e) => app
+            .blocks
+            .push(Block::System(format!("memory write failed: {e}"))),
+    }
+    app.auto_scroll = true;
+}
+
+/// Build the `@`-file picker list: project files relative to `cwd`, gitignore-
+/// aware via `rg --files`, falling back to a bounded manual walk when ripgrep is
+/// absent. Capped so a huge tree can't stall the UI.
+fn file_candidates(cwd: &std::path::Path) -> Vec<picker::PickerItem> {
+    const MAX: usize = 5000;
+    let mut paths: Vec<String> = Vec::new();
+    let rg = std::process::Command::new("rg")
+        .arg("--files")
+        .current_dir(cwd)
+        .output();
+    match rg {
+        Ok(o) if o.status.success() => {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                paths.push(line.replace('\\', "/"));
+                if paths.len() >= MAX {
+                    break;
+                }
+            }
+        }
+        _ => walk_files(cwd, MAX, &mut paths),
+    }
+    paths
+        .into_iter()
+        .map(|p| picker::PickerItem {
+            key: p.clone(),
+            title: p,
+            description: String::new(),
+        })
+        .collect()
+}
+
+/// Bounded, gitignore-blind directory walk used when `rg` is unavailable. Skips
+/// hidden entries and a few notoriously heavy directories.
+fn walk_files(root: &std::path::Path, max: usize, out: &mut Vec<String>) {
+    const SKIP: &[&str] = &[".git", "node_modules", "target", ".venv", "dist", "build"];
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if out.len() >= max {
+                return;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                if !SKIP.contains(&name.as_ref()) {
+                    stack.push(entry.path());
+                }
+            } else if ft.is_file() {
+                if let Ok(rel) = entry.path().strip_prefix(root) {
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+}
+
+/// Scan `text` for `@<path>` references that resolve to real files/dirs under
+/// `cwd` and return a context block with their contents (files) or listings
+/// (dirs), to append to the prompt — mirroring Claude Code's `@file` expansion.
+/// Each `@` must start the string or follow whitespace, so `a@b.com` is left
+/// alone. Returns `None` when nothing resolves.
+fn expand_at_mentions(text: &str, cwd: &std::path::Path) -> Option<String> {
+    const MAX_FILE_BYTES: usize = 64 * 1024;
+    const MAX_TOTAL_BYTES: usize = 256 * 1024;
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut sections = String::new();
+
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'@' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && !bytes[end].is_ascii_whitespace() {
+                end += 1;
+            }
+            if end > start {
+                let token = text[start..end].trim_end_matches(['.', ',', ':', ';', ')']);
+                if !token.is_empty() && seen.insert(token.to_string()) {
+                    if let Some(section) = render_mention(token, cwd, MAX_FILE_BYTES) {
+                        if sections.len() + section.len() <= MAX_TOTAL_BYTES {
+                            sections.push_str(&section);
+                        }
+                    }
+                }
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    (!sections.is_empty())
+        .then(|| format!("[Contents of files referenced with @ in the message above]\n{sections}"))
+}
+
+/// Render one resolved `@`-mention: a fenced file body or a directory listing.
+fn render_mention(token: &str, cwd: &std::path::Path, max_bytes: usize) -> Option<String> {
+    let p = std::path::Path::new(token);
+    let path = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    };
+    let meta = std::fs::metadata(&path).ok()?;
+    if meta.is_dir() {
+        let mut names: Vec<String> = std::fs::read_dir(&path)
+            .ok()?
+            .flatten()
+            .map(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                if e.path().is_dir() {
+                    format!("{n}/")
+                } else {
+                    n
+                }
+            })
+            .collect();
+        names.sort();
+        names.truncate(200);
+        Some(format!("\n## @{token} (directory)\n{}\n", names.join("\n")))
+    } else if meta.is_file() {
+        // Skip binary: only attach valid UTF-8.
+        let text = String::from_utf8(std::fs::read(&path).ok()?).ok()?;
+        let body = truncate_output(&text, max_bytes);
+        Some(format!("\n## @{token}\n```\n{body}\n```\n"))
+    } else {
+        None
+    }
+}
+
+/// Truncate `s` to at most `max` bytes on a char boundary, appending a note when
+/// it was cut. Shared by `!` output capture and `@file` expansion.
+fn truncate_output(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n… (truncated, {} bytes total)", &s[..end], s.len())
+}
+
 async fn launch_turn(
     app: &mut App,
     agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
@@ -3374,6 +3712,21 @@ async fn launch_turn(
             .push(Block::System(format!("⛔ prompt blocked: {reason}")));
         return;
     }
+    // Fold in any composer-prefix context the user staged before this prompt:
+    // `!` shell output (prepended) and `@file` references (file contents appended).
+    // The hook above and the visible Block::User both see only the raw prompt;
+    // this enrichment is invisible plumbing sent to the model.
+    let text = {
+        let mut t = text;
+        if !app.pending_shell_context.is_empty() {
+            let ctx = std::mem::take(&mut app.pending_shell_context).join("\n\n");
+            t = format!("{ctx}\n\n{t}");
+        }
+        if let Some(attached) = expand_at_mentions(&t, &app.cwd) {
+            t = format!("{t}\n\n{attached}");
+        }
+        t
+    };
     if let Some(goal) = app.active_goal.as_mut() {
         goal.waiting_for_user = false;
         app.pending_session_save = true;
@@ -4018,6 +4371,22 @@ fn rotate_assistant_block(blocks: &mut Vec<Block>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expand_at_mentions_includes_existing_file_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("notes.txt"), "hello world").unwrap();
+
+        // A real file is attached; an email-shaped token and a missing path are
+        // left untouched (no section, returns the same None when nothing resolves).
+        let out = expand_at_mentions("see @notes.txt and mail a@b.com", tmp.path()).unwrap();
+        assert!(out.contains("## @notes.txt"));
+        assert!(out.contains("hello world"));
+        assert!(!out.contains("a@b.com"));
+
+        assert!(expand_at_mentions("ping a@b.com only", tmp.path()).is_none());
+        assert!(expand_at_mentions("read @does/not/exist", tmp.path()).is_none());
+    }
 
     #[test]
     fn goal_word_count_and_limit_boundary() {

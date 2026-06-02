@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.2
+
+- Added composer prefixes matching Claude Code / Codex muscle memory: `@<path>` opens a gitignore-aware file typeahead and attaches the referenced file's contents (or a directory listing) to the prompt; `!<command>` runs a shell command immediately without a model turn (output is shown inline and fed into the next message's context, `!!` forces past the destructive-command guard); `#<note>` appends a note to the project `CLAUDE.md` and re-applies memory to the live session.
+
 ## 0.0.1-beta.4
 
 Beta 4 focuses on making long agent sessions easier to run, inspect, and recover: better context/quota visibility, safer file and shell behavior, more Claude Code-compatible tools, and release-ready TUI polish.

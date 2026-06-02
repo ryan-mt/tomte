@@ -30,3 +30,6 @@ arboard.workspace = true
 image.workspace = true
 chrono.workspace = true
 syntect.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
