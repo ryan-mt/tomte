@@ -193,11 +193,22 @@ pub fn supports_extended_thinking(model: &str) -> bool {
 
 fn family_supports_1m(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
-    m.contains("opus-4-8")
-        || m.contains("opus-4-7")
-        || m.contains("opus-4-6")
-        || m.contains("sonnet-4-6")
-        || m.contains("mythos")
+    // The Mythos preview ships 1M; Haiku never does.
+    if m.contains("mythos") {
+        return true;
+    }
+    if m.contains("haiku") {
+        return false;
+    }
+    // Opus and Sonnet ship a 1M window from 4.6 on (Opus/Sonnet 4.5 and earlier
+    // are 200K). Version-gated — like adaptive thinking and `xhigh` — so future
+    // Opus/Sonnet ids (4.9, 5.x) inherit 1M without a catalog edit instead of
+    // being wrongly capped at 200K (which would trigger auto-compaction far too
+    // early). Known ids with a different window are still pinned by `lookup`.
+    if m.contains("opus") || m.contains("sonnet") {
+        return matches!(claude_version(&m), Some((major, minor)) if major > 4 || (major == 4 && minor >= 6));
+    }
+    false
 }
 
 fn family_context_limit(model: &str) -> u64 {
@@ -252,7 +263,14 @@ fn claude_version(model_lc: &str) -> Option<(u32, u32)> {
         .iter()
         .position(|p| matches!(*p, "opus" | "sonnet" | "haiku"))?;
     let major = parts.get(tier + 1)?.parse().ok()?;
-    let minor = parts.get(tier + 2)?.parse().ok()?;
+    // The segment after the major is the minor only if it looks like one. A
+    // bare-major id with a date snapshot (`claude-sonnet-4-20250514`) has no
+    // minor — an 8-digit date must not be read as `minor = 20250514`.
+    let minor_str = parts.get(tier + 2)?;
+    if minor_str.len() > 2 {
+        return None;
+    }
+    let minor = minor_str.parse().ok()?;
     Some((major, minor))
 }
 
@@ -329,6 +347,27 @@ mod tests {
     fn lookup_finds_known_and_misses_unknown() {
         assert!(lookup("claude-opus-4-8").is_some());
         assert!(lookup("claude-opus-4-8-20260101").is_none());
+    }
+
+    // Regression: a future, uncatalogued Opus/Sonnet must inherit the 1M window
+    // the same way it inherits adaptive thinking / xhigh — otherwise it would be
+    // capped at 200K and auto-compact far too early.
+    #[test]
+    fn future_opus_and_sonnet_inherit_one_million_window() {
+        for id in ["claude-opus-4-9", "claude-opus-5-0", "claude-sonnet-4-9"] {
+            assert!(supports_1m(id), "{id} should be 1M");
+            assert_eq!(context_limit(id), 1_000_000, "{id} window");
+            // Consistent with the other version-gated capabilities.
+            assert!(supports_adaptive_thinking(id), "{id} adaptive");
+        }
+        assert!(supports_xhigh("claude-opus-4-9"));
+        // Pre-4.6 stays 200K; Haiku never gets 1M.
+        assert!(!supports_1m("claude-opus-4-5"));
+        assert!(!supports_1m("claude-haiku-4-9"));
+        // A bare-major id with a date snapshot (no minor) must NOT be read as a
+        // huge minor and wrongly promoted to 1M.
+        assert!(!supports_1m("claude-sonnet-4-20250514"));
+        assert_eq!(context_limit("claude-sonnet-4-20250514"), 200_000);
     }
 
     #[test]

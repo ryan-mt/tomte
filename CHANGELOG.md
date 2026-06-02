@@ -19,6 +19,7 @@
 - A foreground `run_shell` whose command leaves a backgrounded process holding the stdout pipe open (`cmd &`, `( sleep 999 & )`) is now bounded by its timeout instead of hanging until the descendant exits; on timeout the whole process group is killed.
 - Background shells (`run_shell` with `run_in_background`) are now killed when the session ends, instead of leaking as orphaned processes after the CLI exits.
 - `notebook_edit` now requires the notebook to have been read this session and unchanged on disk (matching `edit_file`), so it can't clobber cells the model never saw; and `delete` no longer falls back to treating a numeric `cell_id` as a position, which could delete the wrong cell.
+- A future, uncatalogued Opus/Sonnet model now inherits the 1M context window via version-gating (like adaptive thinking and `xhigh`), instead of being capped at 200K and auto-compacting far too early. Bare-major ids with a date snapshot are no longer misread as a huge minor version.
 
 ## 0.0.1-beta.4
 
