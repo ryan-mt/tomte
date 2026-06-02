@@ -62,8 +62,11 @@ printf 'ok version: %s\n' "$actual_version"
 tmp_root="$(mktemp -d)"
 trap 'rm -rf "$tmp_root"' EXIT
 
-openai_cfg="$(XDG_CONFIG_HOME="$tmp_root/openai-config" "$bin" config --set-model openai/gpt-5 --set-reasoning max --show)"
-contains "$openai_cfg" '"model": "gpt-5.5"' || fail "OpenAI model normalization missing"
+# A retired id (gpt-5-pro no longer resolves at the API) is normalized to its
+# current equivalent; the `openai/` prefix is stripped. (gpt-5 and gpt-5.2 are
+# real current models and are intentionally NOT remapped.)
+openai_cfg="$(XDG_CONFIG_HOME="$tmp_root/openai-config" "$bin" config --set-model openai/gpt-5-pro --set-reasoning max --show)"
+contains "$openai_cfg" '"model": "gpt-5.5-pro"' || fail "OpenAI model normalization missing"
 contains "$openai_cfg" '"reasoning_effort": "max"' || fail "OpenAI max reasoning should persist"
 printf 'ok config: OpenAI legacy model normalized\n'
 
