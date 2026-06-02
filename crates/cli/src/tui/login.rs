@@ -5,6 +5,7 @@
 //!   ▸ OpenAI — API key
 //!   ▸ Anthropic — Claude Pro/Max (OAuth, manual code paste, may violate ToS)
 //!   ▸ Anthropic — Console API key
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -80,6 +81,12 @@ pub struct LoginScreen {
     /// Claude OAuth client has no loopback redirect, so there is no callback —
     /// the user pastes the code and we finish the exchange here.
     anth_pending: Option<anth::ManualLogin>,
+    /// Bumped whenever a ChatGPT OAuth flow is abandoned (Esc / Ctrl+C) or a new
+    /// one is started. The spawned completion task applies its result only if
+    /// this still equals the value it captured at spawn, so a callback that
+    /// fires after the user moved on can't clobber the screen (e.g. flip it to
+    /// an unexpected `Success` or overwrite a fresh flow with a stale error).
+    flow_generation: Arc<AtomicU64>,
 }
 
 impl LoginScreen {
@@ -91,6 +98,7 @@ impl LoginScreen {
             paste_input: TextInput::default(),
             error: Arc::new(Mutex::new(None)),
             anth_pending: None,
+            flow_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -108,6 +116,8 @@ impl LoginScreen {
             return Ok(false);
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            // Invalidate any in-flight OAuth completion task before leaving.
+            self.flow_generation.fetch_add(1, Ordering::SeqCst);
             *self.stage.lock().await = Stage::Cancelled;
             return Ok(true);
         }
@@ -116,6 +126,9 @@ impl LoginScreen {
             Stage::PickMode => self.handle_pick(key).await,
             Stage::WaitingForBrowser { .. } => {
                 if key.code == KeyCode::Esc {
+                    // Abandon the flow: invalidate the pending completion task so
+                    // a late browser callback can't reopen or "succeed" the screen.
+                    self.flow_generation.fetch_add(1, Ordering::SeqCst);
                     *self.stage.lock().await = Stage::PickMode;
                 }
                 Ok(false)
@@ -276,6 +289,13 @@ impl LoginScreen {
     }
 
     async fn start_chatgpt(&mut self) {
+        // Claim a fresh generation so this flow's completion task can tell
+        // whether it's still current when it finishes (also supersedes any
+        // previous flow's task on re-entry).
+        let my_gen = self
+            .flow_generation
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
         let stage = self.stage.clone();
         let err = self.error.clone();
         // Start the OAuth flow. This returns immediately with the auth URL.
@@ -286,25 +306,44 @@ impl LoginScreen {
                 };
                 let stage2 = stage.clone();
                 let err2 = err.clone();
+                let gen2 = self.flow_generation.clone();
                 tokio::spawn(async move {
-                    match pending.completion.await {
-                        Ok(Ok(_)) => {
-                            *stage2.lock().await = Stage::Success(AuthMode::OpenaiOauth);
-                        }
-                        Ok(Err(e)) => {
-                            *err2.lock().await = Some(e.to_string());
-                            *stage2.lock().await = Stage::PickMode;
-                        }
-                        Err(e) => {
-                            *err2.lock().await = Some(format!("login task crashed: {e}"));
-                            *stage2.lock().await = Stage::PickMode;
-                        }
-                    }
+                    let outcome = match pending.completion.await {
+                        Ok(Ok(_)) => Ok(()),
+                        Ok(Err(e)) => Err(e.to_string()),
+                        Err(e) => Err(format!("login task crashed: {e}")),
+                    };
+                    Self::finish_chatgpt(&stage2, &err2, &gen2, my_gen, outcome).await;
                 });
             }
             Err(e) => {
                 *err.lock().await = Some(e.to_string());
                 *stage.lock().await = Stage::PickMode;
+            }
+        }
+    }
+
+    /// Apply a ChatGPT OAuth completion, but only if its flow is still current:
+    /// if the user pressed Esc/Ctrl+C or started another flow, `flow_generation`
+    /// has moved past `my_gen` and the (now stale) result is dropped instead of
+    /// clobbering the screen. The generation is read under the `stage` lock so it
+    /// stays consistent with the state being written.
+    async fn finish_chatgpt(
+        stage: &Arc<Mutex<Stage>>,
+        err: &Arc<Mutex<Option<String>>>,
+        generation: &Arc<AtomicU64>,
+        my_gen: u64,
+        outcome: Result<(), String>,
+    ) {
+        let mut s = stage.lock().await;
+        if generation.load(Ordering::SeqCst) != my_gen {
+            return;
+        }
+        match outcome {
+            Ok(()) => *s = Stage::Success(AuthMode::OpenaiOauth),
+            Err(msg) => {
+                *err.lock().await = Some(msg);
+                *s = Stage::PickMode;
             }
         }
     }
@@ -725,5 +764,72 @@ mod tests {
 
         assert!(!finished);
         assert!(matches!(login.stage().await, Stage::AnthropicTos));
+    }
+
+    #[tokio::test]
+    async fn esc_in_waiting_for_browser_bumps_generation() {
+        let mut login = LoginScreen::new();
+        *login.stage.lock().await = Stage::WaitingForBrowser { url: "x".into() };
+        let before = login.flow_generation.load(Ordering::SeqCst);
+
+        let finished = login
+            .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert!(!finished);
+        assert!(matches!(login.stage().await, Stage::PickMode));
+        assert_ne!(login.flow_generation.load(Ordering::SeqCst), before);
+    }
+
+    #[tokio::test]
+    async fn stale_chatgpt_result_is_dropped() {
+        // A completion task from an abandoned flow must not clobber the screen.
+        let login = LoginScreen::new();
+        *login.stage.lock().await = Stage::WaitingForBrowser { url: "x".into() };
+        let my_gen = login
+            .flow_generation
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+        // User abandons the flow (Esc/Ctrl+C bumps the generation).
+        login.flow_generation.fetch_add(1, Ordering::SeqCst);
+        *login.stage.lock().await = Stage::PickMode;
+
+        // The late OAuth success arrives — it must be ignored.
+        LoginScreen::finish_chatgpt(
+            &login.stage,
+            &login.error,
+            &login.flow_generation,
+            my_gen,
+            Ok(()),
+        )
+        .await;
+
+        assert!(matches!(login.stage().await, Stage::PickMode));
+        assert!(login.error_text().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn current_chatgpt_result_is_applied() {
+        let login = LoginScreen::new();
+        *login.stage.lock().await = Stage::WaitingForBrowser { url: "x".into() };
+        let my_gen = login
+            .flow_generation
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+
+        LoginScreen::finish_chatgpt(
+            &login.stage,
+            &login.error,
+            &login.flow_generation,
+            my_gen,
+            Ok(()),
+        )
+        .await;
+
+        assert!(matches!(
+            login.stage().await,
+            Stage::Success(AuthMode::OpenaiOauth)
+        ));
     }
 }
