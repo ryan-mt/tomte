@@ -1433,6 +1433,14 @@ async fn main_loop(
                 while let Ok(ev) = agent_rx.try_recv() {
                     apply_agent_event(&mut app, ev);
                 }
+                // Tail-following streamed output scrolls the chat under a
+                // screen-coordinate selection highlight; drop it so the
+                // highlight doesn't slide onto unrelated text. When the user is
+                // parked above the tail (auto_scroll off) the view is stable, so
+                // a selection of history stays put.
+                if app.auto_scroll && app.selection.is_some() {
+                    app.clear_selection();
+                }
             }
             Some(r) = bang_rx.recv() => {
                 // A background `!`-command finished; show its output and stage it

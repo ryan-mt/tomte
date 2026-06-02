@@ -11,6 +11,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Color;
+use unicode_width::UnicodeWidthStr;
 
 /// Selection highlight background — a muted blue, consistent with the truecolor
 /// palette the TUI already assumes elsewhere.
@@ -77,10 +78,18 @@ pub fn extract_text(buf: &Buffer, sel: &Selection) -> String {
             continue;
         };
         let mut line = String::new();
-        for col in from..=to {
-            if let Some(cell) = buf.cell(Position::new(col, row)) {
-                line.push_str(cell.symbol());
-            }
+        let mut col = from;
+        while col <= to {
+            let Some(cell) = buf.cell(Position::new(col, row)) else {
+                col = col.saturating_add(1);
+                continue;
+            };
+            let sym = cell.symbol();
+            line.push_str(sym);
+            // A wide grapheme occupies its cell plus continuation cells, which
+            // ratatui fills with a space; skip them so the copied text doesn't
+            // gain a spurious space after each wide char.
+            col = col.saturating_add(UnicodeWidthStr::width(sym).max(1) as u16);
         }
         lines.push(line.trim_end().to_string());
     }
@@ -165,6 +174,19 @@ mod tests {
         assert_eq!(row_span(&sel, 2, area), Some((0, 1)));
         // Outside the selection's rows.
         assert_eq!(row_span(&sel, 3, area), None);
+    }
+
+    #[test]
+    fn extract_skips_wide_char_continuation_cells() {
+        // ratatui stores a 2-cell-wide grapheme in the first cell and fills the
+        // continuation cell with a space; reading every column verbatim would
+        // inject a spurious space after each wide char.
+        let b = Buffer::with_lines(vec!["a🦀b"]);
+        let sel = Selection {
+            anchor: (0, 0),
+            cursor: (3, 0),
+        };
+        assert_eq!(extract_text(&b, &sel), "a🦀b");
     }
 
     #[test]

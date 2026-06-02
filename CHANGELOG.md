@@ -3,7 +3,7 @@
 ## 0.0.2
 
 - Added composer prefixes matching Claude Code / Codex muscle memory: `@<path>` opens a gitignore-aware file typeahead and attaches the referenced file's contents (or a directory listing) to the prompt; `!<command>` runs a shell command immediately without a model turn (output is shown inline and fed into the next message's context, `!!` forces past the destructive-command guard); `#<note>` appends a note to the project `CLAUDE.md` and re-applies memory to the live session.
-- Added left-drag text selection: dragging with the left mouse button highlights text on screen and copies it to the clipboard on release — no Shift needed (the TUI captures the mouse for scroll/clicks, which otherwise suppresses the terminal's own selection). The highlight stays until the next key, scroll, or click; a plain click (no drag) still hits its target (jump-to-bottom bar, sub-agent row).
+- Added left-drag text selection: dragging with the left mouse button highlights text on screen and copies it to the clipboard on release — no Shift needed (the TUI captures the mouse for scroll/clicks, which otherwise suppresses the terminal's own selection). Wide characters (CJK/emoji) copy without spurious spaces. The highlight clears on the next key, scroll, or click — and when tail-following streamed output would scroll it onto unrelated text; a plain click (no drag) still hits its target (jump-to-bottom bar, sub-agent row).
 - The `/help` keyboard-shortcuts list now documents the existing composer history recall (↑/↓ on the first/last line bring back previously submitted messages) and the new left-drag selection, so both are discoverable.
 
 ### Fixed
