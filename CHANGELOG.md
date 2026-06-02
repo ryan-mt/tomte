@@ -32,6 +32,7 @@
 - An Anthropic response that stops with `stop_reason: refusal` (a safety classifier blocked the output mid-stream) now surfaces as an error instead of a silent, often-empty "successful" turn — matching how the OpenAI `content_filter` stop is handled.
 - The `login` API-key prompt now ignores key-release/repeat events, so on terminals that emit them (Windows console, kitty keyboard enhancement) a typed or pasted key is no longer doubled into a corrupted key; and it restores cooked-mode terminal via an RAII guard, so a panic while reading the key can't leave the shell stuck with echo off.
 - The `web_fetch` SSRF guard now also blocks IPv6 literals that embed an internal IPv4 address through the IPv4-compatible (`::127.0.0.1`) or NAT64 (`64:ff9b::7f00:1`) prefixes, not just IPv4-mapped (`::ffff:…`); previously such a literal could reach loopback/private hosts (e.g. cloud metadata) while skipping the IPv4 rules.
+- The `/buddy` pet roll no longer risks a `usize` underflow panic if a rarity tier is ever left without a species: an empty tier now falls back to the first pet instead of indexing past the end (the distribution for populated tiers is unchanged).
 
 ## 0.0.1-beta.4
 

@@ -359,9 +359,17 @@ fn roll_weighted(identity: &str) -> usize {
     let tier: Vec<usize> = (0..PETS.len())
         .filter(|&i| PETS[i].rarity == rarity)
         .collect();
-    // Every rarity has at least one species by construction.
-    let pick = (rng.next_f64() * tier.len() as f64) as usize;
-    tier[pick.min(tier.len() - 1)]
+    pick_from_tier(&tier, rng.next_f64())
+}
+
+/// Pick a [`PETS`] index from `tier` using `r` in [0, 1). Every rarity has at
+/// least one species by construction, but fall back to the first pet rather
+/// than underflowing `len() - 1` into a panic if a rarity is ever added
+/// without one. For any non-empty tier `r in [0, 1)` yields a valid index, so
+/// the distribution is unchanged.
+fn pick_from_tier(tier: &[usize], r: f64) -> usize {
+    let pick = (r * tier.len() as f64) as usize;
+    tier.get(pick).copied().unwrap_or(0)
 }
 
 fn legendary_index() -> usize {
@@ -657,6 +665,17 @@ mod tests {
             roll_weighted("anthropic-oauth:acct-123"),
             roll_weighted("anthropic-oauth:acct-123")
         );
+    }
+
+    #[test]
+    fn pick_from_tier_falls_back_on_empty_and_stays_in_bounds() {
+        // An empty tier must not panic on `len() - 1` underflow.
+        assert_eq!(pick_from_tier(&[], 0.0), 0);
+        assert_eq!(pick_from_tier(&[], 0.999), 0);
+        // Non-empty: r in [0, 1) maps across the tier and stays in bounds.
+        assert_eq!(pick_from_tier(&[3, 5, 7], 0.0), 3);
+        assert_eq!(pick_from_tier(&[3, 5, 7], 0.5), 5);
+        assert_eq!(pick_from_tier(&[3, 5, 7], 0.999), 7);
     }
 
     #[test]
