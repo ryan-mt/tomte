@@ -23,6 +23,7 @@
 - Manual Anthropic OAuth login now verifies the `state` echoed back in the pasted `code#state` against the one it generated, restoring CSRF / code-injection protection (the state was generated but never checked).
 - An OpenAI Chat Completions response that stops with `finish_reason: content_filter` now surfaces as an error instead of a silent, empty "successful" turn (matching the native Responses path).
 - The `Retry-After` header is now honored in its HTTP-date form as well as delta-seconds (previously a date was ignored and retry fell back to plain backoff).
+- Retry backoff now adds random jitter so several concurrent requests (e.g. sub-agents) hitting an overload don't all retry in lockstep.
 
 ## 0.0.1-beta.4
 

@@ -34,7 +34,9 @@ pub(crate) async fn send_with_retry(
             Ok(resp) => {
                 let status = resp.status();
                 if attempt < MAX_ATTEMPTS && is_retryable_status(status) {
-                    let wait = retry_after(&resp).unwrap_or_else(|| backoff(attempt));
+                    // Honor the server's Retry-After verbatim; jitter only our own
+                    // computed backoff so concurrent retriers don't sync up.
+                    let wait = retry_after(&resp).unwrap_or_else(|| jittered(backoff(attempt)));
                     tracing::warn!(attempt, %status, "llm request overloaded; retrying");
                     tokio::time::sleep(wait).await;
                     continue;
@@ -44,7 +46,7 @@ pub(crate) async fn send_with_retry(
             Err(e) => {
                 if attempt < MAX_ATTEMPTS && is_transient(&e) {
                     tracing::warn!(attempt, error = %e, "llm request transient failure; retrying");
-                    tokio::time::sleep(backoff(attempt)).await;
+                    tokio::time::sleep(jittered(backoff(attempt))).await;
                     continue;
                 }
                 return Err(e);
@@ -97,7 +99,8 @@ fn parse_retry_after(raw: &str, now: chrono::DateTime<chrono::Utc>) -> Option<Du
     Some(Duration::from_secs(secs))
 }
 
-/// Exponential-ish backoff between attempts.
+/// Exponential-ish backoff between attempts (deterministic base; jitter is
+/// added at the call site via [`jittered`]).
 fn backoff(attempt: u32) -> Duration {
     match attempt {
         1 => Duration::from_millis(300),
@@ -105,6 +108,14 @@ fn backoff(attempt: u32) -> Duration {
         3 => Duration::from_millis(1800),
         _ => Duration::from_secs(3),
     }
+}
+
+/// Add up to +25% random jitter to a backoff delay so many clients hitting the
+/// same overload (e.g. several sub-agents) don't all retry in lockstep and
+/// re-thunder the provider at the same instant.
+fn jittered(base: Duration) -> Duration {
+    let extra = (base.as_millis() as f64 * 0.25 * rand::random::<f64>()) as u64;
+    base + Duration::from_millis(extra)
 }
 
 #[cfg(test)]
@@ -155,5 +166,18 @@ mod tests {
         );
         // Garbage → None (caller falls back to backoff).
         assert_eq!(parse_retry_after("soon", now), None);
+    }
+
+    #[test]
+    fn jitter_stays_within_base_and_125_percent() {
+        let base = Duration::from_millis(800);
+        for _ in 0..1000 {
+            let j = jittered(base);
+            assert!(j >= base, "jitter must not shorten the delay");
+            assert!(
+                j <= base + Duration::from_millis(200),
+                "jitter must stay within +25%"
+            );
+        }
     }
 }
