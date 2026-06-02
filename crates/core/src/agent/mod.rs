@@ -32,6 +32,12 @@ const MAX_OVERFLOW_RECOVERIES: usize = 2;
 /// connection surfaces the error instead of spinning.
 const MAX_STREAM_RECOVERIES: usize = 2;
 
+/// How many times a single turn may fail over to a different model after the
+/// active one is rate-limited / its provider is overloaded. Bounded so a chain
+/// of overloaded providers surfaces the error instead of spinning, and a const
+/// (not a config knob) to keep the surface small.
+const MAX_FALLBACK_ATTEMPTS: usize = 2;
+
 /// Heuristic match for a provider's "input too large for the context window"
 /// rejection across OpenAI / Anthropic / OpenAI-compatible phrasings. The single
 /// source of truth the agent's auto-recovery and the TUI's error hint both use.
@@ -232,6 +238,15 @@ pub enum AgentEvent {
     TurnComplete,
     Error {
         message: String,
+    },
+    /// The active model was rate-limited / its provider was overloaded, so the
+    /// turn transparently failed over to a configured fallback model (which may
+    /// be a different provider or a local endpoint). The UI surfaces this and
+    /// adopts `to` as the current model for the rest of the session.
+    FallbackSwitched {
+        from: String,
+        to: String,
+        reason: String,
     },
     ContextWarning {
         used: u64,
@@ -789,6 +804,61 @@ impl Agent {
         }
     }
 
+    /// Try to fail over to a configured fallback model when the active one is
+    /// rate-limited / its provider is overloaded. Returns `true` (and swaps
+    /// `self.client`/`self.config.model`, emitting [`AgentEvent::FallbackSwitched`])
+    /// when a usable fallback was adopted, so the caller retries the turn; `false`
+    /// otherwise (the error then surfaces as today).
+    ///
+    /// Provider-agnostic by construction: it knows nothing about specific models.
+    /// Guards: only a genuine overload error (never a fatal 4xx, refusal, or
+    /// context overflow); bounded by [`MAX_FALLBACK_ATTEMPTS`]; each candidate is
+    /// built via [`LlmClient::for_config`], which fails for a built-in provider
+    /// with no stored credential — such an unusable fallback is skipped rather
+    /// than turning a clear rate-limit into a confusing auth error.
+    async fn try_fail_over(
+        &mut self,
+        error: &str,
+        tried: &mut Vec<String>,
+        attempts: &mut usize,
+        tx: &mpsc::Sender<AgentEvent>,
+    ) -> bool {
+        if *attempts >= MAX_FALLBACK_ATTEMPTS {
+            return false;
+        }
+        // Only an overload/rate-limit warrants switching models — a fatal error
+        // (bad request, auth, model-not-found, refusal) or a context overflow
+        // would not be helped by another model.
+        if !crate::fallback::is_quota_or_overload(error) || is_context_overflow_message(error) {
+            return false;
+        }
+        while let Some(candidate) = crate::fallback::next_fallback(&self.config, tried) {
+            tried.push(candidate.clone());
+            let mut trial = self.config.clone();
+            trial.model = candidate.clone();
+            match LlmClient::for_config(&trial).await {
+                Ok(client) => {
+                    let from = std::mem::replace(&mut self.config.model, candidate.clone());
+                    self.client = client;
+                    *attempts += 1;
+                    tracing::warn!(%from, to = %candidate, "model overloaded — failing over");
+                    let _ = tx
+                        .send(AgentEvent::FallbackSwitched {
+                            from,
+                            to: candidate,
+                            reason: error.to_string(),
+                        })
+                        .await;
+                    return true;
+                }
+                // Unbuildable (e.g. a built-in provider with no stored
+                // credential) — skip and try the next configured fallback.
+                Err(_) => continue,
+            }
+        }
+        false
+    }
+
     /// Drive a request through the streaming path and return the accumulated
     /// assistant text. A minimal recv loop for tool-free turns (used by
     /// `compact_history`): it handles only text and terminal events. It does
@@ -843,6 +913,10 @@ impl Agent {
         let mut steps = 0usize;
         let mut overflow_recoveries = 0usize;
         let mut stream_recoveries = 0usize;
+        let mut fallback_attempts = 0usize;
+        // Seeded with the active model so a fallback list that names the current
+        // model can't fail over to itself.
+        let mut fallback_tried: Vec<String> = vec![self.config.model.clone()];
         'turn: loop {
             steps += 1;
             if steps > MAX_AGENT_STEPS {
@@ -886,6 +960,22 @@ impl Agent {
                     // can't be shrunk still surfaces the error with the /compact
                     // hint (handled by the TUI).
                     if self.try_recover_overflow(&e.to_string(), &mut overflow_recoveries) {
+                        continue;
+                    }
+                    // A rate-limit / overload on stream open means the request was
+                    // rejected before any output was produced or billed — safe to
+                    // transparently fail over to a configured fallback model and
+                    // retry. Other errors (auth, bad request, refusal, overflow)
+                    // fall through and surface as today.
+                    if self
+                        .try_fail_over(
+                            &e.to_string(),
+                            &mut fallback_tried,
+                            &mut fallback_attempts,
+                            &tx,
+                        )
+                        .await
+                    {
                         continue;
                     }
                     return Err(e);
@@ -5217,6 +5307,107 @@ mod function_call_id_tests {
         };
         let client = LlmClient::for_config(&config).await.unwrap();
         Agent::new(client, config)
+    }
+
+    /// A configured `local/<model>` provider (built offline, no credential
+    /// lookup) used as a fallback target in failover tests.
+    fn local_provider_map() -> HashMap<String, ProviderConfig> {
+        HashMap::from([(
+            "local".to_string(),
+            ProviderConfig {
+                base_url: "http://localhost/v1".to_string(),
+                api_key: Some("sk-test".to_string()),
+                api_key_env: None,
+                context_limit: None,
+                forward_reasoning_effort: false,
+            },
+        )])
+    }
+
+    #[tokio::test]
+    async fn try_fail_over_switches_to_buildable_fallback_on_overload() {
+        use tokio::sync::mpsc;
+        let config = Config {
+            model: "local/primary".to_string(),
+            providers: local_provider_map(),
+            fallback_models: vec!["local/backup".to_string()],
+            ..Config::default()
+        };
+        let client = LlmClient::for_config(&config).await.unwrap();
+        let mut agent = Agent::new(client, config);
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut tried = vec![agent.config.model.clone()];
+        let mut attempts = 0usize;
+
+        let switched = agent
+            .try_fail_over("HTTP 429 rate limit exceeded", &mut tried, &mut attempts, &tx)
+            .await;
+        assert!(switched, "overload + buildable fallback should fail over");
+        assert_eq!(agent.config.model, "local/backup");
+        assert_eq!(attempts, 1);
+        match rx.try_recv() {
+            Ok(AgentEvent::FallbackSwitched { from, to, .. }) => {
+                assert_eq!(from, "local/primary");
+                assert_eq!(to, "local/backup");
+            }
+            other => panic!("expected FallbackSwitched, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn try_fail_over_ignores_fatal_and_overflow_errors() {
+        use tokio::sync::mpsc;
+        let config = Config {
+            model: "local/primary".to_string(),
+            providers: local_provider_map(),
+            fallback_models: vec!["local/backup".to_string()],
+            ..Config::default()
+        };
+        let client = LlmClient::for_config(&config).await.unwrap();
+        let mut agent = Agent::new(client, config);
+        let (tx, _rx) = mpsc::channel(8);
+        let mut tried = vec![agent.config.model.clone()];
+        let mut attempts = 0usize;
+
+        // A fatal auth error must not switch models.
+        assert!(
+            !agent
+                .try_fail_over("401 Unauthorized: invalid api key", &mut tried, &mut attempts, &tx)
+                .await
+        );
+        // A context overflow must not switch models (a different model won't help).
+        assert!(
+            !agent
+                .try_fail_over("prompt is too long: 250000 tokens", &mut tried, &mut attempts, &tx)
+                .await
+        );
+        assert_eq!(agent.config.model, "local/primary", "model unchanged");
+        assert_eq!(attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn try_fail_over_is_bounded_by_max_attempts() {
+        use tokio::sync::mpsc;
+        let config = Config {
+            model: "local/primary".to_string(),
+            providers: local_provider_map(),
+            fallback_models: vec!["local/a".to_string(), "local/b".to_string()],
+            ..Config::default()
+        };
+        let client = LlmClient::for_config(&config).await.unwrap();
+        let mut agent = Agent::new(client, config);
+        let (tx, _rx) = mpsc::channel(8);
+        let mut tried = vec![agent.config.model.clone()];
+        let mut attempts = 0usize;
+        let err = "503 service unavailable: overloaded";
+
+        assert!(agent.try_fail_over(err, &mut tried, &mut attempts, &tx).await);
+        assert_eq!(agent.config.model, "local/a");
+        assert!(agent.try_fail_over(err, &mut tried, &mut attempts, &tx).await);
+        assert_eq!(agent.config.model, "local/b");
+        // Bound reached: a further overload surfaces instead of spinning.
+        assert!(!agent.try_fail_over(err, &mut tried, &mut attempts, &tx).await);
+        assert_eq!(attempts, super::MAX_FALLBACK_ATTEMPTS);
     }
 
     #[tokio::test]

@@ -229,6 +229,13 @@ fn render_text_event<W: Write>(
         AgentEvent::Error { message } => {
             return TextEventOutcome::Error(message);
         }
+        AgentEvent::FallbackSwitched { from, to, .. } => {
+            writeln!(
+                stdout,
+                "\n\x1b[2m⚠ {from} rate-limited/overloaded — switched to fallback model {to}\x1b[0m"
+            )
+            .ok();
+        }
         _ => {}
     }
     TextEventOutcome::Continue

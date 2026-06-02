@@ -4012,6 +4012,16 @@ fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             app.current_turn = None;
             app.subagents.clear();
         }
+        AgentEvent::FallbackSwitched { from, to, .. } => {
+            // Adopt the fallback as the session's model so the status bar is
+            // accurate and the next turn (which rebuilds the agent from
+            // `app.config`) stays on it. Not persisted to disk: this is a
+            // transient reaction to a rate-limit, not a user-chosen `/model`.
+            app.config.model = to.clone();
+            app.blocks.push(Block::System(format!(
+                "⚠ {from} is rate-limited/overloaded — switched to fallback model {to}"
+            )));
+        }
         AgentEvent::ContextWarning { used, limit } => {
             let pct = (used as f64 / limit.max(1) as f64 * 100.0) as u64;
             app.blocks.push(Block::System(format!(
