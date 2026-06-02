@@ -249,10 +249,46 @@ fn rule_matches(rule: &str, tool_name: &str, args: &Value, mode: MatchMode) -> b
     }
     // File tools: the spec is a glob over the path argument as accepted by the
     // target tool. Keep this in sync with the runtime aliases so permission
-    // rules don't silently miss camelCase/provider-shaped calls.
+    // rules don't silently miss camelCase/provider-shaped calls. The path is
+    // lexically normalized first so a `deny(.git/**)` isn't slipped past by
+    // `./.git/config`, `.git//config`, or `.git/x/../config`.
     match path_argument(tool_name, args) {
-        Some(path) => glob_match(spec, path),
+        Some(path) => glob_match(spec, &normalize_rule_path(path)),
         None => false,
+    }
+}
+
+/// Lexically normalize a path argument for glob matching: drop `./` and empty
+/// (`//`) segments and resolve `..` without touching disk (the target may not
+/// exist yet). A `..` that would climb above the start is kept literal, so an
+/// escaping path like `../secret` can't normalize into an in-tree `secret` and
+/// thereby match a clean relative rule. An absolute path stays absolute.
+///
+/// Note: a relative rule (`.git/**`) still won't match an *absolute* argument
+/// (`/home/u/proj/.git/config`); writes are separately confined to the project
+/// by `tools::fs::resolve`, and rules meant for absolute paths must be written
+/// in absolute form.
+fn normalize_rule_path(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => continue,
+            ".." => {
+                if matches!(out.last(), Some(&s) if s != "..") {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            s => out.push(s),
+        }
+    }
+    let joined = out.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
     }
 }
 
@@ -572,6 +608,37 @@ mod tests {
                 &json!({"notebookPath": "notebooks/demo.ipynb"})
             ),
             Decision::Allow
+        );
+    }
+
+    #[test]
+    fn deny_glob_is_not_bypassed_by_path_spelling() {
+        let perms = ProjectPermissions {
+            allow: vec![],
+            deny: vec!["write_file(.git/**)".into()],
+        };
+        for p in [".git/config", "./.git/config", ".git//config", ".git/x/../config"] {
+            assert_eq!(
+                decide(&perms, "write_file", &json!({ "path": p })),
+                Decision::Deny,
+                "expected deny for spelling: {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_keeps_escaping_paths_from_matching_in_tree_rules() {
+        // `../secret` must NOT normalize to `secret` and match a relative rule.
+        assert_eq!(normalize_rule_path("../secret"), "../secret");
+        assert_eq!(normalize_rule_path("./a//b/../c"), "a/c");
+        assert_eq!(normalize_rule_path("/abs/./p"), "/abs/p");
+        let perms = ProjectPermissions {
+            allow: vec!["write_file(secret)".into()],
+            deny: vec![],
+        };
+        assert_eq!(
+            decide(&perms, "write_file", &json!({"path": "../secret"})),
+            Decision::Ask
         );
     }
 
