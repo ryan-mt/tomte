@@ -259,6 +259,13 @@ fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
     ]));
 
     for s in &app.subagents {
+        // The panel height is capped (see `fleet_height`). Stop once the next
+        // row would fall outside it: otherwise off-screen rows still get a
+        // click hit-rect, and those land on the input box / status line so a
+        // click there silently toggles a sub-agent you can't even see.
+        if lines.len() as u16 >= area.height {
+            break;
+        }
         // The row's absolute y is the panel origin plus lines already emitted.
         let y = area.y.saturating_add(lines.len() as u16);
         rows.push((
