@@ -1195,9 +1195,23 @@ async fn main_loop(
             let mut iter = queued.into_iter();
             let mut launched = false;
             while let Some(item) = iter.next() {
-                if let Some(rest) = item.strip_prefix('/') {
+                // Composer-prefix items (`/`, `!`, `#`) are commands, not model
+                // input — dispatch them in order instead of sending them to the
+                // model verbatim. To preserve ordering, any pending normal text
+                // is flushed as a turn first (then we requeue and stop, since
+                // launching a turn must be the last action — see the deadlock
+                // note above).
+                let is_command =
+                    item.starts_with('/') || item.starts_with('!') || item.starts_with('#');
+                if is_command {
                     if normal.is_empty() {
-                        handle_slash(&mut app, rest.trim()).await;
+                        if let Some(rest) = item.strip_prefix('/') {
+                            handle_slash(&mut app, rest.trim()).await;
+                        } else if let Some(cmd) = item.strip_prefix('!') {
+                            handle_bang_shell(&mut app, &bang_tx, cmd.trim());
+                        } else if let Some(note) = item.strip_prefix('#') {
+                            handle_hash_memory(&mut app, &agent, note.trim()).await;
+                        }
                     } else {
                         let combined = std::mem::take(&mut normal).join("\n\n");
                         let mut requeue = vec![item.clone()];

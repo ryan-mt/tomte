@@ -11,6 +11,7 @@
 - `@`-expansion now scans only the user's own prompt, not the prepended output of a prior `!`-command, so a `@token` printed by a shell command no longer attaches an unrelated file.
 - The `@`-file picker streams `rg --files` and stops after 5000 entries (killing rg early) so opening the picker in a huge monorepo can't stall the UI.
 - A `#<note>` added to an existing `CLAUDE.md` that didn't end in a newline now starts on its own line instead of being glued onto the last line.
+- `!` and `#` typed while a turn is streaming are now queued and dispatched as commands when the turn finishes, instead of being sent to the model as a literal `!`/`#` message.
 
 ## 0.0.1-beta.4
 
