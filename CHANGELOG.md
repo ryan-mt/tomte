@@ -12,6 +12,7 @@
 - The `@`-file picker streams `rg --files` and stops after 5000 entries (killing rg early) so opening the picker in a huge monorepo can't stall the UI.
 - A `#<note>` added to an existing `CLAUDE.md` that didn't end in a newline now starts on its own line instead of being glued onto the last line.
 - `!` and `#` typed while a turn is streaming are now queued and dispatched as commands when the turn finishes, instead of being sent to the model as a literal `!`/`#` message.
+- Fixed a hard deadlock where choosing a session in the resume picker (or `/undo`) while a turn was streaming locked the agent mutex held by the turn, freezing the UI permanently. Such agent-locking operations now wait until the turn finishes.
 
 ## 0.0.1-beta.4
 

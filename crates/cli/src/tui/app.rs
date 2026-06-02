@@ -906,6 +906,16 @@ impl App {
         }
     }
 
+    /// Whether a deferred operation that locks the agent mutex (resume load,
+    /// undo) may run on this iteration. It must NOT run while a turn is streaming
+    /// (`busy`) or a compaction is in flight (`compacting`): both hold the agent
+    /// mutex, so locking it from the main loop would stall the loop, and a turn
+    /// that then fills the bounded `agent_rx` would block on `tx.send` forever —
+    /// a hard deadlock. Any new agent-locking deferred op must gate on this.
+    pub fn can_run_deferred_agent_op(&self) -> bool {
+        !self.compacting && !self.busy
+    }
+
     pub fn open_overlay(&mut self, kind: OverlayKind) {
         let picker = match kind {
             OverlayKind::SlashMenu => Picker::new("commands", picker::slash_commands()),
@@ -1086,18 +1096,22 @@ async fn main_loop(
         }
         // Resume picker leaves the chosen session id here; perform the load
         // out-of-band so handle_overlay_select doesn't need the agent Arc.
-        // Deferred while compacting: a background compaction holds the agent
-        // mutex, so locking here would block the whole UI (and both replace
-        // history). `&&` short-circuits before `.take()`, so the id is kept.
-        if !app.compacting {
+        // Deferred while compacting OR busy: a background compaction/turn holds
+        // the agent mutex, so `apply_resume` locking it here would stall the main
+        // loop — and a streaming turn that then fills the 256-cap agent_rx would
+        // block forever on `tx.send`, a hard deadlock (the resume picker can be
+        // opened mid-turn). `&&` short-circuits before `.take()`, so the id is
+        // kept until the turn finishes.
+        if app.can_run_deferred_agent_op() {
             if let Some(id) = app.pending_resume_id.take() {
                 apply_resume(&mut app, &agent, &id).await;
             }
         }
         // `/undo` sets this so the agent Arc can stay out of handle_slash.
-        // Deferred while compacting for the same reason (left side of `&&`
-        // short-circuits, so the flag survives until compaction finishes).
-        if !app.compacting && std::mem::take(&mut app.pending_undo) {
+        // Deferred while compacting OR busy for the same agent-mutex reason as
+        // the resume load above (left side of `&&` short-circuits, so the flag
+        // survives until the turn/compaction finishes).
+        if app.can_run_deferred_agent_op() && std::mem::take(&mut app.pending_undo) {
             let result = {
                 let mut g = agent.lock().await;
                 match g.as_mut() {
@@ -4538,6 +4552,21 @@ mod tests {
         assert!(r.display.contains("hi"));
         assert!(r.context.contains("$ echo hi"));
         assert!(r.context.contains("Exit code: 0"));
+    }
+
+    // Regression: agent-locking deferred ops (resume/undo) must be blocked while
+    // a turn is streaming, or apply_resume would deadlock against the turn task.
+    #[test]
+    fn deferred_agent_ops_blocked_while_busy_or_compacting() {
+        let mut app = App::new();
+        app.busy = false;
+        app.compacting = false;
+        assert!(app.can_run_deferred_agent_op());
+        app.busy = true;
+        assert!(!app.can_run_deferred_agent_op());
+        app.busy = false;
+        app.compacting = true;
+        assert!(!app.can_run_deferred_agent_op());
     }
 
     #[test]
