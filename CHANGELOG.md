@@ -31,6 +31,7 @@
 - Anthropic `redacted_thinking` blocks (reasoning the safety system encrypts) are no longer dropped from the stream: their opaque `data` is now captured and replayed verbatim ahead of the turn's tool call, so a redacted-thinking-then-tool turn no longer breaks the reasoning/tool_use chain and gets rejected on the next request.
 - An Anthropic response that stops with `stop_reason: refusal` (a safety classifier blocked the output mid-stream) now surfaces as an error instead of a silent, often-empty "successful" turn — matching how the OpenAI `content_filter` stop is handled.
 - The `login` API-key prompt now ignores key-release/repeat events, so on terminals that emit them (Windows console, kitty keyboard enhancement) a typed or pasted key is no longer doubled into a corrupted key; and it restores cooked-mode terminal via an RAII guard, so a panic while reading the key can't leave the shell stuck with echo off.
+- The `web_fetch` SSRF guard now also blocks IPv6 literals that embed an internal IPv4 address through the IPv4-compatible (`::127.0.0.1`) or NAT64 (`64:ff9b::7f00:1`) prefixes, not just IPv4-mapped (`::ffff:…`); previously such a literal could reach loopback/private hosts (e.g. cloud metadata) while skipping the IPv4 rules.
 
 ## 0.0.1-beta.4
 

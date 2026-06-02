@@ -315,7 +315,7 @@ async fn validate_ssrf_safe(url_str: &str) -> Result<()> {
 /// `web_fetch`. Covers v4 loopback / RFC1918 / link-local / CGNAT /
 /// unspecified / broadcast / documentation, and v6 loopback /
 /// unique-local (fc00::/7) / link-local (fe80::/10) / unspecified /
-/// multicast / IPv4-mapped equivalents.
+/// multicast / IPv4-mapped / IPv4-compatible / NAT64-embedded equivalents.
 fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
     use std::net::IpAddr;
     match ip {
@@ -347,6 +347,22 @@ fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
             }
             // IPv4-mapped: ::ffff:0:0/96 — re-check against v4 rules.
             if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_blocked_ip(&IpAddr::V4(v4));
+            }
+            // Other prefixes that embed an IPv4 in the low 32 bits must re-check
+            // it against the v4 rules, or a v6 literal could reach a loopback /
+            // private v4 while skipping them entirely: IPv4-compatible (::/96,
+            // deprecated but still routable on some stacks, e.g. ::127.0.0.1) and
+            // the NAT64 well-known prefix (64:ff9b::/96, e.g. 64:ff9b::7f00:1).
+            let embeds_v4 = seg[..6] == [0, 0, 0, 0, 0, 0]
+                || (seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2..6] == [0, 0, 0, 0]);
+            if embeds_v4 {
+                let v4 = std::net::Ipv4Addr::new(
+                    (seg[6] >> 8) as u8,
+                    (seg[6] & 0xff) as u8,
+                    (seg[7] >> 8) as u8,
+                    (seg[7] & 0xff) as u8,
+                );
                 return is_blocked_ip(&IpAddr::V4(v4));
             }
             false
@@ -853,6 +869,26 @@ mod web_search_tests {
         let r = apply_filters(parse_ddg(SAMPLE), 10, None, Some(&["tokio.rs".to_string()]));
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].url, "https://github.com/tokio-rs/tokio");
+    }
+
+    #[test]
+    fn ssrf_blocks_v6_embedded_internal_ipv4() {
+        use std::net::IpAddr;
+        let blocked = |s: &str| is_blocked_ip(&s.parse::<IpAddr>().unwrap());
+        // IPv4-mapped (already handled) — still blocked.
+        assert!(blocked("::ffff:127.0.0.1"));
+        assert!(blocked("::ffff:169.254.169.254"));
+        // IPv4-compatible (::/96, deprecated) embedding loopback / private / CGNAT.
+        assert!(blocked("::127.0.0.1"));
+        assert!(blocked("::10.0.0.1"));
+        // NAT64 well-known prefix (64:ff9b::/96) embedding loopback / link-local.
+        assert!(blocked("64:ff9b::7f00:1")); // 127.0.0.1
+        assert!(blocked("64:ff9b::a9fe:a9fe")); // 169.254.169.254 (cloud metadata)
+        // A public IPv4 under the same prefixes is not blocked (same as fetching
+        // that public v4 directly) — the re-check must not over-block.
+        assert!(!blocked("64:ff9b::5db8:d822")); // 93.184.216.34 (example.com)
+        // A real, unrelated public v6 host is not blocked.
+        assert!(!blocked("2606:2800:220:1:248:1893:25c8:1946"));
     }
 
     #[test]
