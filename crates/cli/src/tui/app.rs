@@ -2300,6 +2300,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  /worktree exit keep|remove [--discard]\n  \
                  /goal <objective>   keep working until the objective is complete\n  \
                  /status             show auth status\n  \
+                 /doctor             diagnose setup (auth, config, MCP, tools)\n  \
                  /cost               show token usage and estimated cost\n  \
                  /usage              show the provider's real quota / rate-limit status\n  \
                  /context            show context-window usage + composition\n  \
@@ -2794,6 +2795,10 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 msg.push_str("\nServers are spawned on first turn; tools register under mcp__<server>__<tool>.");
                 app.blocks.push(Block::System(msg));
             }
+        }
+        "doctor" => {
+            let report = opencli_core::doctor::diagnose(&app.cwd);
+            app.blocks.push(Block::System(report.render()));
         }
         "init" => {
             let claude_md = app.cwd.join("CLAUDE.md");

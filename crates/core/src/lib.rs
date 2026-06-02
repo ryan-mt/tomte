@@ -5,6 +5,7 @@ pub mod catalog;
 pub mod client;
 pub mod command;
 pub mod config;
+pub mod doctor;
 pub mod fallback;
 pub mod hooks;
 pub mod mcp;

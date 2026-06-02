@@ -261,6 +261,11 @@ pub fn slash_commands() -> Vec<PickerItem> {
         item("apikey", "/apikey", "save an OpenAI API key"),
         item("logout", "/logout", "clear credentials"),
         item("status", "/status", "show auth status"),
+        item(
+            "doctor",
+            "/doctor",
+            "run setup diagnostics (auth, config, MCP, tools)",
+        ),
         item("img", "/img", "attach an image to next message"),
         item("cwd", "/cwd", "show / set working directory"),
         item(

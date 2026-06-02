@@ -66,6 +66,7 @@ opencli login                                   # OpenAI OAuth (ChatGPT Plus/Pro
 opencli login --api-key --provider openai       # paste an OpenAI API key
 opencli login --api-key --provider anthropic    # paste an Anthropic API key
 opencli status                                   # who am I, and on what plan?
+opencli doctor                                   # diagnose setup (auth, config, model, MCP, tools)
 opencli logout
 ```
 

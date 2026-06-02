@@ -35,6 +35,10 @@ enum Command {
     },
     /// Show authentication status
     Status,
+    /// Diagnose your setup — auth, config, model routing, MCP servers, and the
+    /// external tools opencli depends on. Exits non-zero if any check fails.
+    /// Runs headless (no TUI), so it works even when startup is broken.
+    Doctor,
     /// Sign out and remove stored credentials
     Logout,
     /// Run a single chat turn (headless) — output printed to the terminal.
@@ -145,6 +149,7 @@ async fn main() -> Result<()> {
             provider,
         }) => commands::login::run(api_key, !no_browser, provider).await,
         Some(Command::Status) => commands::login::status().await,
+        Some(Command::Doctor) => commands::doctor::run().await,
         Some(Command::Logout) => commands::login::logout().await,
         Some(Command::Chat {
             prompt,
