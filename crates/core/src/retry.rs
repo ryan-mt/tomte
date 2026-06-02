@@ -65,18 +65,36 @@ fn is_retryable_status(s: reqwest::StatusCode) -> bool {
     matches!(s.as_u16(), 429 | 500 | 502 | 503 | 504)
 }
 
-/// Parse a `Retry-After` header given in delta-seconds, capped so a hostile or
-/// huge value can't stall a turn for minutes.
+/// Cap on a honored `Retry-After` so a hostile or huge value can't stall a turn.
+const RETRY_AFTER_CAP_SECS: u64 = 30;
+
+/// Read and parse a `Retry-After` header from the response (capped).
 fn retry_after(resp: &reqwest::Response) -> Option<Duration> {
-    let secs: u64 = resp
+    let raw = resp
         .headers()
         .get(reqwest::header::RETRY_AFTER)?
         .to_str()
-        .ok()?
-        .trim()
-        .parse()
         .ok()?;
-    Some(Duration::from_secs(secs.min(30)))
+    parse_retry_after(raw, chrono::Utc::now())
+}
+
+/// Parse a `Retry-After` value, supporting BOTH forms allowed by RFC 7231:
+/// delta-seconds (`"120"`) and an HTTP-date (`"Wed, 21 Oct 2026 07:28:00 GMT"`).
+/// The previous version only handled delta-seconds, silently ignoring a valid
+/// HTTP-date and falling back to plain backoff. Capped at `RETRY_AFTER_CAP_SECS`.
+fn parse_retry_after(raw: &str, now: chrono::DateTime<chrono::Utc>) -> Option<Duration> {
+    let raw = raw.trim();
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(secs.min(RETRY_AFTER_CAP_SECS)));
+    }
+    // HTTP-date (IMF-fixdate). Treat the parsed naive time as UTC ("GMT").
+    let when = chrono::NaiveDateTime::parse_from_str(raw, "%a, %d %b %Y %H:%M:%S GMT")
+        .ok()?
+        .and_utc();
+    let secs = (when - now)
+        .num_seconds()
+        .clamp(0, RETRY_AFTER_CAP_SECS as i64) as u64;
+    Some(Duration::from_secs(secs))
 }
 
 /// Exponential-ish backoff between attempts.
@@ -112,5 +130,30 @@ mod tests {
         assert!(backoff(1) < backoff(2));
         assert!(backoff(2) < backoff(3));
         assert!(backoff(3) <= backoff(4));
+    }
+
+    #[test]
+    fn retry_after_parses_both_seconds_and_http_date() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-21T07:28:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        // delta-seconds, capped.
+        assert_eq!(parse_retry_after("5", now), Some(Duration::from_secs(5)));
+        assert_eq!(
+            parse_retry_after("9999", now),
+            Some(Duration::from_secs(RETRY_AFTER_CAP_SECS))
+        );
+        // HTTP-date 10s in the future.
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2026 07:28:10 GMT", now),
+            Some(Duration::from_secs(10))
+        );
+        // HTTP-date in the past clamps to zero (don't wait).
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2026 07:27:00 GMT", now),
+            Some(Duration::from_secs(0))
+        );
+        // Garbage → None (caller falls back to backoff).
+        assert_eq!(parse_retry_after("soon", now), None);
     }
 }

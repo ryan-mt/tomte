@@ -22,6 +22,7 @@
 - A future, uncatalogued Opus/Sonnet model now inherits the 1M context window via version-gating (like adaptive thinking and `xhigh`), instead of being capped at 200K and auto-compacting far too early. Bare-major ids with a date snapshot are no longer misread as a huge minor version.
 - Manual Anthropic OAuth login now verifies the `state` echoed back in the pasted `code#state` against the one it generated, restoring CSRF / code-injection protection (the state was generated but never checked).
 - An OpenAI Chat Completions response that stops with `finish_reason: content_filter` now surfaces as an error instead of a silent, empty "successful" turn (matching the native Responses path).
+- The `Retry-After` header is now honored in its HTTP-date form as well as delta-seconds (previously a date was ignored and retry fell back to plain backoff).
 
 ## 0.0.1-beta.4
 
