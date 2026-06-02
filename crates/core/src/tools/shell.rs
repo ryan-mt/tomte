@@ -92,14 +92,18 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
             return Some("dd writing to a raw block device");
         }
     }
-    for w in tokens.windows(2) {
-        if (w[0] == ">" || w[0] == ">>")
-            && (w[1].starts_with("/dev/sd")
-                || w[1].starts_with("/dev/nvme")
-                || w[1].starts_with("/dev/hd"))
-        {
-            return Some("redirecting output to a raw block device");
-        }
+    // A redirect to a raw block device, whether the `>`/`>>` is glued to the
+    // target (`>/dev/sda`, `x>>/dev/nvme0`) or a separate token (`> /dev/sda`).
+    // Only segments that follow a `>` count, so a plain `/dev/sda` argument
+    // (e.g. `cat /dev/sda`, a read) is not flagged.
+    let redirect_to_block_device = tokens
+        .iter()
+        .any(|t| t.split('>').skip(1).any(is_raw_block_device))
+        || tokens
+            .windows(2)
+            .any(|w| (w[0] == ">" || w[0] == ">>") && is_raw_block_device(w[1]));
+    if redirect_to_block_device {
+        return Some("redirecting output to a raw block device");
     }
     if (has("chmod") || has("chown"))
         && tokens
@@ -152,6 +156,14 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
         return Some("piping curl/wget output into a shell");
     }
     None
+}
+
+/// A raw block-device path that a write/redirect could corrupt. Kept to the
+/// disk families the redirect guard has always covered (`sd`/`nvme`/`hd`).
+fn is_raw_block_device(target: &str) -> bool {
+    target.starts_with("/dev/sd")
+        || target.starts_with("/dev/nvme")
+        || target.starts_with("/dev/hd")
 }
 
 fn pipe_rhs_is_interpreter(rhs: &str, interpreters: &[&str]) -> bool {
@@ -1446,6 +1458,11 @@ mod tests {
             "mkswap /dev/sda1",
             "dd if=/dev/zero of=/dev/sda bs=1M",
             "/bin/dd if=/dev/zero of=/dev/sda bs=1M",
+            // Redirect to a raw block device — `>`/`>>` separated or glued.
+            "echo x > /dev/sda",
+            "echo x >/dev/sda",
+            "echo x >>/dev/nvme0",
+            "cat img >/dev/hda",
             "chmod -R 777 /",
             "/usr/bin/chmod -Rf 777 /",
             "git push --force origin main",
@@ -1516,6 +1533,9 @@ mod tests {
             "find . -name '*.rs'",
             "npm install",
             "dd if=input.bin of=output.bin",
+            // Reading a block device (no redirect) is not the destructive case.
+            "cat /dev/sda",
+            "ls -l /dev/sda",
             // Children of non-OS roots are legitimate cleanups — don't over-flag.
             "rm -rf /var/tmp/mybuild",
             "rm -rf /opt/myapp/cache",
