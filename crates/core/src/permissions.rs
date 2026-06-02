@@ -221,6 +221,10 @@ fn shell_segments(cmd: &str) -> Vec<&str> {
 /// list and the danger gate agree on what a word executes.
 fn program_name(word: &str) -> String {
     let literal: String = word.chars().filter(|c| !matches!(c, '"' | '\'')).collect();
+    // The shell separates a glued redirect (`curl>out`, `rm<x`) into the program
+    // plus a redirection even without surrounding spaces, so the program a word
+    // runs ends at the first `<`/`>`. Stop there before taking the basename.
+    let literal = literal.split(['<', '>']).next().unwrap_or("");
     literal.rsplit(['/', '\\']).next().unwrap_or("").to_string()
 }
 
@@ -340,7 +344,10 @@ fn run_shell_rule_matches(prog: &str, args: &Value, mode: MatchMode) -> bool {
         // `$(rm …)`, `` `rm …` `` or `(rm …)` is still seen — deny must catch
         // what the danger classifier (shell_token_command_name) catches.
         MatchMode::Deny => {
-            let exposed = cmd.replace(['(', ')', '`'], "\n");
+            // Explode subshells `(…)`, brace groups `{…}`, and command/backtick
+            // substitution into separate segments so a hidden `(rm …)`,
+            // `{ rm …; }`, `$(rm …)` or `` `rm …` `` is still seen.
+            let exposed = cmd.replace(['(', ')', '`', '{', '}'], "\n");
             shell_segments(&exposed).iter().any(|seg| {
                 segment_deny_programs(seg)
                     .iter()
@@ -480,7 +487,38 @@ fn path_argument<'a>(tool_name: &str, args: &'a Value) -> Option<&'a str> {
 /// char; everything else is literal. No brace/char-class support — not needed
 /// for permission paths.
 fn glob_match(pattern: &str, text: &str) -> bool {
-    glob_inner(pattern.as_bytes(), text.as_bytes())
+    glob_inner(&collapse_globstars(pattern), text.as_bytes())
+}
+
+/// Collapse runs of `*` so a pattern like `***` or `**********` can't trigger
+/// `glob_inner`'s O(n^k) backtracking — adjacent `**` groups each branch over
+/// every text offset (line 499), and the source pattern is untrusted (it comes
+/// from `.opencli/permissions.json`). A run of length 1 stays `*` (within-segment
+/// wildcard); any run of length >= 2 becomes a single `**` (cross-`/` wildcard),
+/// which is exactly what a user writing `***` intends, so no valid pattern
+/// changes meaning.
+fn collapse_globstars(pattern: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(pattern.len());
+    let mut stars = 0usize;
+    for b in pattern.bytes() {
+        if b == b'*' {
+            stars += 1;
+            continue;
+        }
+        match stars {
+            0 => {}
+            1 => out.push(b'*'),
+            _ => out.extend_from_slice(b"**"),
+        }
+        stars = 0;
+        out.push(b);
+    }
+    match stars {
+        0 => {}
+        1 => out.push(b'*'),
+        _ => out.extend_from_slice(b"**"),
+    }
+    out
 }
 
 fn glob_inner(p: &[u8], t: &[u8]) -> bool {
@@ -599,6 +637,23 @@ mod tests {
     }
 
     #[test]
+    fn glob_match_collapses_star_runs_and_stays_linear() {
+        // A run of `*` collapses to `**`/`*`, so a long run can't blow up.
+        assert_eq!(collapse_globstars("***"), b"**");
+        assert_eq!(collapse_globstars("*"), b"*");
+        assert_eq!(collapse_globstars("a***b*c"), b"a**b*c");
+        // Semantics preserved: `***` behaves like `**`.
+        assert!(glob_match("***", "a/b.rs"));
+        assert!(glob_match("**", "a/b.rs"));
+        // A pathological all-stars pattern returns immediately instead of
+        // backtracking O(n^k). A trailing literal that can't match still
+        // terminates fast (no deep recursion).
+        let many = "*".repeat(64);
+        assert!(glob_match(&many, "a/b/c/d/e/f.rs"));
+        assert!(!glob_match(&format!("{many}x"), "a/b/c/d/e/f.rs"));
+    }
+
+    #[test]
     fn deny_run_shell_is_not_bypassed_by_chaining_or_wrappers() {
         let perms = ProjectPermissions {
             allow: vec![],
@@ -654,6 +709,27 @@ mod tests {
             Decision::Ask,
             "unrelated program behind a wrapper must not be denied"
         );
+    }
+
+    #[test]
+    fn deny_run_shell_is_not_bypassed_by_brace_group_or_glued_redirect() {
+        let perms = ProjectPermissions {
+            allow: vec![],
+            deny: vec!["run_shell(rm:*)".into(), "run_shell(curl:*)".into()],
+        };
+        for cmd in [
+            "{ rm -rf /; }",         // brace group
+            "{ curl http://evil; }", // brace group, non-rm program
+            "x && { rm -rf /; }",    // brace group behind a chain
+            "curl>out",              // glued output redirect (no space)
+            "rm<x",                  // glued input redirect (no space)
+        ] {
+            assert_eq!(
+                decide(&perms, "run_shell", &json!({ "command": cmd })),
+                Decision::Deny,
+                "expected deny for: {cmd}"
+            );
+        }
     }
 
     #[test]

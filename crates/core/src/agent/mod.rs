@@ -3276,6 +3276,37 @@ struct TurnUsage {
     output: u64,
 }
 
+/// Split a provider `usage` block into `(uncached_input, cache_read, cache_write)`,
+/// reconciling the two wire shapes:
+///   - Anthropic reports the cache classes as siblings of `input_tokens`, which
+///     *excludes* them — so the three add up to the true input.
+///   - OpenAI Responses nests the cache hit in
+///     `input_tokens_details.cached_tokens` and folds it *into* `input_tokens`
+///     (the total). Splitting it back out lets the cache-read discount in
+///     `pricing.rs` apply instead of billing every cached token at full rate.
+///
+/// Either way `uncached + cache_read + cache_write` equals the true input
+/// occupancy, so the caller's context-window math is unchanged.
+fn classify_input_tokens(usage: &Value) -> (u64, u64, u64) {
+    let get = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+    let input_tokens = get("input_tokens");
+    let cache_write = get("cache_creation_input_tokens");
+    let openai_cached = usage
+        .get("input_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if openai_cached > 0 {
+        (
+            input_tokens.saturating_sub(openai_cached),
+            openai_cached,
+            cache_write,
+        )
+    } else {
+        (input_tokens, get("cache_read_input_tokens"), cache_write)
+    }
+}
+
 async fn emit_usage(
     response: &Value,
     tx: &mpsc::Sender<AgentEvent>,
@@ -3286,15 +3317,12 @@ async fn emit_usage(
             eprintln!("[opencli wire] ← usage={usage}");
         }
         let get = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-        // With prompt caching on, Anthropic reports the cached prompt tokens
-        // separately from `input_tokens`. The true context occupancy (what the
-        // window limit applies to) is the sum of all three; folding them in
-        // keeps the /compact warning accurate. The classes are kept separate
-        // for `/cost` because they bill at very different rates. OpenAI omits
-        // the cache fields, so those are simply 0 there.
-        let uncached_input = get("input_tokens");
-        let cache_read = get("cache_read_input_tokens");
-        let cache_write = get("cache_creation_input_tokens");
+        // With prompt caching on, both providers report cached prompt tokens, but
+        // with different shapes (see `classify_input_tokens`). The true context
+        // occupancy (what the window limit applies to) is the sum of all three;
+        // folding them in keeps the /compact warning accurate. The classes are
+        // kept separate for `/cost` because they bill at very different rates.
+        let (uncached_input, cache_read, cache_write) = classify_input_tokens(usage);
         let i = uncached_input
             .saturating_add(cache_read)
             .saturating_add(cache_write);
@@ -3552,8 +3580,8 @@ mod context_limit_tests {
 #[cfg(test)]
 mod compaction_tests {
     use super::{
-        clear_stale_tool_outputs, compacted_history, emit_usage, is_context_overflow_message,
-        should_compact, CLEARED_TOOL_OUTPUT_MARKER, COMPACT_MIN_ITEMS,
+        classify_input_tokens, clear_stale_tool_outputs, compacted_history, emit_usage,
+        is_context_overflow_message, should_compact, CLEARED_TOOL_OUTPUT_MARKER, COMPACT_MIN_ITEMS,
     };
     use crate::openai::{InputItem, MessageContent};
     use serde_json::json;
@@ -3762,6 +3790,35 @@ mod compaction_tests {
             .find(|e| e.model == "gpt-5")
             .expect("gpt entry");
         assert_eq!(gpt.input_tokens, 100);
+    }
+
+    #[test]
+    fn classify_input_tokens_handles_both_provider_shapes() {
+        // OpenAI Responses: `input_tokens` is the TOTAL, cache hit nested. The
+        // cached portion must split out so it bills at the cache-read rate.
+        let openai = json!({
+            "input_tokens": 1000,
+            "output_tokens": 50,
+            "input_tokens_details": { "cached_tokens": 800 }
+        });
+        assert_eq!(classify_input_tokens(&openai), (200, 800, 0));
+        // Occupancy (sum) must still equal the total input.
+        let (u, r, w) = classify_input_tokens(&openai);
+        assert_eq!(u + r + w, 1000);
+
+        // Anthropic: `input_tokens` EXCLUDES cache; classes are siblings.
+        let anthropic = json!({
+            "input_tokens": 200,
+            "cache_read_input_tokens": 800,
+            "cache_creation_input_tokens": 10
+        });
+        assert_eq!(classify_input_tokens(&anthropic), (200, 800, 10));
+
+        // No cache reported anywhere.
+        assert_eq!(
+            classify_input_tokens(&json!({ "input_tokens": 200 })),
+            (200, 0, 0)
+        );
     }
 
     #[test]
