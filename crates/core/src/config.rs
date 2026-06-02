@@ -185,6 +185,27 @@ pub fn config_dir() -> PathBuf {
         .join(CONFIG_DIR_NAME)
 }
 
+/// Create `dir` (recursively) restricted to the owner. The config dir holds
+/// `auth.json` (mode 0o600) and `config.json`; the directory itself must be
+/// 0o700 too, or with the usual umask it lands at 0o755 and other local users
+/// can list it and stat the files (leaking login/refresh timestamps).
+pub fn create_dir_secure(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        // Repair an existing dir created before this (or under a looser umask).
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
+}
+
 pub fn config_file() -> PathBuf {
     config_dir().join("config.json")
 }
@@ -230,7 +251,7 @@ pub fn save(cfg: &Config) -> std::io::Result<()> {
 
 fn save_to_path(path: &Path, cfg: &Config) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        create_dir_secure(dir)?;
     }
     let persistable = persist_view(cfg);
     let text = serde_json::to_string_pretty(&persistable).unwrap();
@@ -485,5 +506,23 @@ mod tests {
         assert!(std::fs::read_to_string(&path)
             .unwrap()
             .contains("sk-literal-secret"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_dir_secure_is_owner_only_and_repairs_existing() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("cfg");
+
+        create_dir_secure(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "newly created config dir must be owner-only");
+
+        // A pre-existing world-listable dir is tightened on the next call.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        create_dir_secure(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "existing loose dir must be repaired");
     }
 }

@@ -64,7 +64,7 @@ pub fn load_auth() -> Result<AuthRecord> {
 
 pub fn save_auth(record: &AuthRecord) -> Result<()> {
     let dir = config::config_dir();
-    std::fs::create_dir_all(&dir)?;
+    config::create_dir_secure(&dir)?;
     let path = auth_file();
     let text = serde_json::to_string_pretty(record)?;
     // Unique temp name (not a fixed `auth.tmp`) so two concurrent writers — e.g.
