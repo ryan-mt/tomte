@@ -38,6 +38,7 @@
 - Pressing Esc to back out of the ChatGPT OAuth "waiting for browser" screen now cancels the pending login: a browser callback that completes afterwards can no longer flip the screen to an unexpected success or overwrite a freshly started flow with a stale error (guarded by a per-flow generation counter).
 - The per-stream buffers that hold tool-argument fragments arriving before their tool call are now bounded by aggregate size (16 MiB total), not just by count (256) and per-buffer size (2 MiB), so a malformed stream can no longer pin hundreds of MiB of memory. The byte/count gate also now covers the args-`done` path, which previously created orphan buffers with no count cap at all.
 - The dangerous-command guard now also flags a redirect to a raw block device when the `>`/`>>` is glued to the target (`echo x >/dev/sda`, `>>/dev/nvme0`), not only when it's a separate token (`> /dev/sda`); reading a device (`cat /dev/sda`) is still allowed.
+- Removed the unused `keyring` dependency (it had no code references). It pulled in a vendored C library and the secret-service/D-Bus stack for no benefit; credentials remain stored in `auth.json` with `0o600` permissions and atomic writes, matching what `gh`/`aws`/`gcloud` do. Smaller build and attack surface.
 
 ## 0.0.1-beta.4
 
