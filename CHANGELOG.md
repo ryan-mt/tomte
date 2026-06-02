@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Selecting an OpenAI model that a ChatGPT/Codex subscription does not accept (anything other than `gpt-5.5`/`gpt-5.4` — e.g. `gpt-5.4-mini`/`-nano`, a `-pro`, `gpt-5.2`, or `gpt-5`, set via `--model`, `config.json`, or a typed `/model`) now fails fast with a clear message naming the supported models, instead of letting the request reach the provider and come back as a raw 400 mid-turn. The OAuth model picker already hid these ids; this closes the manual-override paths. API-key sign-ins are unaffected and keep the full public catalogue.
 - Project permission persistence now rejects a symlinked `.opencli` directory or `.opencli/permissions.json` file before saving an "allow in this project" rule; on Unix it writes the permission file with `O_NOFOLLOW` and owner-only mode, so the allow-list cannot be redirected into an arbitrary file through a project symlink.
 - Headless `chat` output now strips terminal control sequences from untrusted assistant text, tool arguments/results, plan text, goal status, and fallback model names while keeping opencli's own renderer styling, so a model/tool payload cannot rewrite the terminal, set titles, inject OSC clipboard data, or use carriage returns to corrupt the display.
 - `/export` Markdown now uses fences longer than any backtick run inside reasoning/tool payloads, so transcripts containing raw code fences or `</details>` text no longer break the exported document structure.

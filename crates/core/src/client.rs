@@ -61,6 +61,9 @@ impl LlmClient {
         }
         let provider = Provider::from_model(&cfg.model);
         let credential = crate::auth::resolve_credential(provider).await?;
+        if let Some(msg) = chatgpt_oauth_model_rejection(&credential, &cfg.model) {
+            anyhow::bail!(msg);
+        }
         Self::new(credential)
     }
 
@@ -77,10 +80,65 @@ impl LlmClient {
     }
 }
 
+/// On a ChatGPT/Codex subscription the OpenAI backend accepts only a narrow
+/// model set (see [`crate::catalog::openai_chatgpt_oauth_models`]); any other id
+/// 400s at request time. Return a clear, actionable error for such a model so
+/// the failure names the supported set instead of surfacing a raw provider 400.
+/// API-key credentials are unaffected — they keep the full public catalogue.
+fn chatgpt_oauth_model_rejection(credential: &Credential, model: &str) -> Option<String> {
+    if credential.is_chatgpt_subscription()
+        && !crate::catalog::openai_chatgpt_oauth_models().contains(&model)
+    {
+        let supported = crate::catalog::openai_chatgpt_oauth_models().join(", ");
+        Some(format!(
+            "model `{model}` isn't available on a ChatGPT/Codex subscription. \
+             Supported with this sign-in: {supported}. Switch with /model, or sign in \
+             with an OpenAI API key to use the full catalogue."
+        ))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{Config, ProviderConfig};
+
+    #[test]
+    fn chatgpt_oauth_rejects_api_key_only_models() {
+        let oauth = Credential::OAuth {
+            provider: Provider::OpenAi,
+            access_token: "t".into(),
+            account_id: None,
+        };
+        // An allowlisted model passes the guard.
+        assert!(chatgpt_oauth_model_rejection(&oauth, "gpt-5.5").is_none());
+        // A non-allowlisted model is rejected, naming the model and the set.
+        let msg = chatgpt_oauth_model_rejection(&oauth, "gpt-5-nano").expect("should reject");
+        assert!(msg.contains("gpt-5-nano"), "{msg}");
+        assert!(msg.contains("gpt-5.5"), "{msg}");
+    }
+
+    #[test]
+    fn api_key_credential_keeps_full_catalogue() {
+        let api = Credential::ApiKey {
+            provider: Provider::OpenAi,
+            key: "sk-x".into(),
+        };
+        assert!(chatgpt_oauth_model_rejection(&api, "gpt-5-nano").is_none());
+        assert!(chatgpt_oauth_model_rejection(&api, "gpt-5.4-mini").is_none());
+    }
+
+    #[test]
+    fn anthropic_oauth_is_unaffected() {
+        let anth = Credential::OAuth {
+            provider: Provider::Anthropic,
+            access_token: "t".into(),
+            account_id: None,
+        };
+        assert!(chatgpt_oauth_model_rejection(&anth, "claude-opus-4-8").is_none());
+    }
 
     #[tokio::test]
     async fn for_config_routes_declared_provider_to_chat_adapter() {
