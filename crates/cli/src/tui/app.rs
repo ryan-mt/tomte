@@ -1056,6 +1056,9 @@ async fn main_loop(
     }
     let mut events = EventStream::new();
     let (agent_tx, mut agent_rx) = mpsc::channel::<AgentEvent>(256);
+    // Background `!`-command output flows back here so it lands on the UI thread
+    // (the command itself runs off the event loop — see `handle_bang_shell`).
+    let (bang_tx, mut bang_rx) = mpsc::channel::<BangResult>(8);
     // Persistent agent kept across turns to preserve history.
     let agent: std::sync::Arc<tokio::sync::Mutex<Option<Agent>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));
@@ -1289,7 +1292,7 @@ async fn main_loop(
                                 }
                             }
                             Screen::Chat => {
-                                if handle_key(&mut app, key, &agent, &agent_tx).await? { break; }
+                                if handle_key(&mut app, key, &agent, &agent_tx, &bang_tx).await? { break; }
                             }
                         }
                     }
@@ -1354,6 +1357,13 @@ async fn main_loop(
                     apply_agent_event(&mut app, ev);
                 }
             }
+            Some(r) = bang_rx.recv() => {
+                // A background `!`-command finished; show its output and stage it
+                // as context for the next message.
+                app.blocks.push(Block::System(r.display));
+                app.pending_shell_context.push(r.context);
+                app.auto_scroll = true;
+            }
             _ = tokio::time::sleep(Duration::from_millis(if app.hatch.is_some() { 45 } else { 80 })) => {
                 // Wake periodically so the spinner redraws while a turn runs and
                 // no agent events arrive; the glyph itself advances on elapsed
@@ -1378,6 +1388,7 @@ async fn handle_key(
     key: KeyEvent,
     agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
     tx: &mpsc::Sender<AgentEvent>,
+    bang_tx: &mpsc::Sender<BangResult>,
 ) -> Result<bool> {
     // A keypress during the hatch animation skips straight to the reveal.
     if app.hatch.is_some() {
@@ -1555,7 +1566,7 @@ async fn handle_key(
                     return Ok(false);
                 }
                 if let Some(cmd) = text.strip_prefix('!') {
-                    handle_bang_shell(app, cmd.trim()).await;
+                    handle_bang_shell(app, bang_tx, cmd.trim());
                     return Ok(false);
                 }
                 if let Some(note) = text.strip_prefix('#') {
@@ -3425,11 +3436,32 @@ fn render_blocks_as_markdown(blocks: &[Block]) -> String {
     out
 }
 
+/// Hard ceiling on a composer `!`-command. The command runs on a background
+/// task, so the UI stays responsive regardless; this bound exists so a
+/// non-terminating command (a dev server, `tail -f`, a hung pipe) is killed
+/// instead of leaking a process forever.
+const BANG_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Result of a background `!`-command, sent back to the main loop so the output
+/// is appended on the UI thread (never touching `App` from the spawned task).
+pub struct BangResult {
+    /// What to show inline in the transcript.
+    display: String,
+    /// What to stage into `pending_shell_context` for the next model turn.
+    context: String,
+}
+
 /// Run a `!`-prefixed shell command straight from the composer (no model turn),
 /// mirroring `!bash` mode in Claude Code. A leading `!` (the user typed `!!cmd`)
-/// forces past the destructive-command guard. Output is shown inline and staged
-/// into `pending_shell_context` so the next message can reason about it.
-async fn handle_bang_shell(app: &mut App, raw: &str) {
+/// forces past the destructive-command guard.
+///
+/// The command runs on a **background task** and reports back over `bang_tx`, so
+/// a slow or non-terminating command never blocks the event loop (the previous
+/// version `.await`ed `output()` inline, freezing the whole TUI until the
+/// command exited — an unrecoverable hang for e.g. a dev server). The task is
+/// also bounded by [`BANG_TIMEOUT`] with `kill_on_drop`, so the child is killed
+/// on timeout rather than leaking.
+fn handle_bang_shell(app: &mut App, bang_tx: &mpsc::Sender<BangResult>, raw: &str) {
     let (force, cmd) = match raw.strip_prefix('!') {
         Some(rest) => (true, rest.trim()),
         None => (false, raw),
@@ -3452,20 +3484,48 @@ async fn handle_bang_shell(app: &mut App, raw: &str) {
     app.auto_scroll = true;
 
     let cwd = app.cwd.clone();
+    let cmd = cmd.to_string();
+    let tx = bang_tx.clone();
+    tokio::spawn(async move {
+        let result = run_bang_command(&cmd, &cwd, BANG_TIMEOUT).await;
+        // Receiver gone (app exiting) → nothing to do.
+        let _ = tx.send(result).await;
+    });
+}
+
+/// Execute one composer `!`-command with a hard `timeout`, killing the child on
+/// timeout (`kill_on_drop`). Pure w.r.t. `App` so it is safe to run off-thread
+/// and straightforward to unit-test. Split out from [`handle_bang_shell`] so the
+/// timeout can be exercised in tests without waiting the full ceiling.
+async fn run_bang_command(cmd: &str, cwd: &std::path::Path, timeout: Duration) -> BangResult {
+    let ctx = |body: &str| format!("[The user ran a shell command in the terminal]\n$ {cmd}\n{body}");
+
     #[cfg(windows)]
-    let output = tokio::process::Command::new("cmd")
-        .arg("/C")
-        .arg(cmd)
-        .current_dir(&cwd)
-        .output()
-        .await;
+    let mut command = {
+        let mut c = tokio::process::Command::new("cmd");
+        c.arg("/C").arg(cmd);
+        c
+    };
     #[cfg(not(windows))]
-    let output = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .current_dir(&cwd)
-        .output()
-        .await;
+    let mut command = {
+        let mut c = tokio::process::Command::new("sh");
+        c.arg("-c").arg(cmd);
+        c
+    };
+    command.current_dir(cwd).kill_on_drop(true);
+
+    // On timeout the `output()` future is dropped; `kill_on_drop` then kills the
+    // child so a hung command can't survive past the ceiling.
+    let output = match tokio::time::timeout(timeout, command.output()).await {
+        Ok(r) => r,
+        Err(_) => {
+            let msg = format!("⏱ timed out after {}s (process killed)", timeout.as_secs());
+            return BangResult {
+                display: msg.clone(),
+                context: ctx(&msg),
+            };
+        }
+    };
 
     match output {
         Ok(o) => {
@@ -3492,14 +3552,15 @@ async fn handle_bang_shell(app: &mut App, raw: &str) {
             } else {
                 body
             };
-            app.blocks.push(Block::System(shown.clone()));
-            app.pending_shell_context.push(format!(
-                "[The user ran a shell command in the terminal]\n$ {cmd}\nExit code: {code}\nOutput:\n{shown}"
-            ));
+            BangResult {
+                context: ctx(&format!("Exit code: {code}\nOutput:\n{shown}")),
+                display: shown,
+            }
         }
-        Err(e) => app
-            .blocks
-            .push(Block::System(format!("! failed to run: {e}"))),
+        Err(e) => BangResult {
+            display: format!("! failed to run: {e}"),
+            context: ctx(&format!("failed to run: {e}")),
+        },
     }
 }
 
@@ -4386,6 +4447,30 @@ mod tests {
 
         assert!(expand_at_mentions("ping a@b.com only", tmp.path()).is_none());
         assert!(expand_at_mentions("read @does/not/exist", tmp.path()).is_none());
+    }
+
+    #[tokio::test]
+    async fn run_bang_command_captures_output_and_exit_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = run_bang_command("echo hi", tmp.path(), Duration::from_secs(10)).await;
+        assert!(r.display.contains("hi"));
+        assert!(r.context.contains("$ echo hi"));
+        assert!(r.context.contains("Exit code: 0"));
+    }
+
+    // Regression: a non-terminating `!`-command must be killed at the deadline,
+    // never freeze the UI (the old inline `.await` hung forever on such commands).
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn run_bang_command_times_out_instead_of_hanging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        let r = run_bang_command("sleep 30", tmp.path(), Duration::from_millis(200)).await;
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "command must return at the deadline, not run to completion"
+        );
+        assert!(r.display.contains("timed out"), "got: {}", r.display);
     }
 
     #[test]
