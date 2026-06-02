@@ -196,6 +196,11 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
             let mut last_usage: Option<Value> = None;
             let mut response_id: Option<String> = None;
             let mut response_model: Option<String> = None;
+            // The terminal `stop_reason` from `message_delta`. A `refusal` means
+            // the safety classifier blocked the output; surface it as an error
+            // rather than a silent (often empty) successful turn.
+            let mut stop_reason: Option<String> = None;
+            let mut stop_explanation: Option<String> = None;
             let mut had_error = false;
             let mut completed = false;
             while let Some(item) = stream.next().await {
@@ -457,6 +462,18 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 }
                             }
                             "message_delta" => {
+                                if let Some(delta) = parsed.get("delta") {
+                                    if let Some(sr) =
+                                        delta.get("stop_reason").and_then(|v| v.as_str())
+                                    {
+                                        stop_reason = Some(sr.to_string());
+                                    }
+                                    stop_explanation = delta
+                                        .get("stop_details")
+                                        .and_then(|d| d.get("explanation"))
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
+                                }
                                 if let Some(u) = parsed.get("usage") {
                                     if let Some(existing) = last_usage.as_mut() {
                                         if let Some(out) = u.get("output_tokens").cloned() {
@@ -470,6 +487,23 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 }
                             }
                             "message_stop" => {
+                                // A `refusal` stop means a safety classifier blocked
+                                // the output mid-stream; surface it as an error rather
+                                // than a silent, often-empty "successful" turn (the
+                                // OpenAI content_filter path does the same).
+                                if stop_reason.as_deref() == Some("refusal") {
+                                    let detail = stop_explanation
+                                        .as_deref()
+                                        .map(|e| format!(": {e}"))
+                                        .unwrap_or_default();
+                                    let _ = tx
+                                        .send(Err(anyhow::anyhow!(
+                                            "response blocked by the provider safety classifier (stop_reason: refusal){detail}"
+                                        )))
+                                        .await;
+                                    had_error = true;
+                                    break;
+                                }
                                 let response = json!({
                                     "id": response_id,
                                     "model": response_model,
@@ -732,6 +766,54 @@ mod tests {
         server.abort();
 
         assert_eq!(redacted.as_deref(), Some("enc-xyz"));
+    }
+
+    #[tokio::test]
+    async fn refusal_stop_reason_surfaces_as_error() {
+        // A `refusal` stop means a safety classifier blocked the output. It must
+        // surface as an error, not a silent successful turn.
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let events = vec![
+                    Ok::<Event, Infallible>(Event::default().data(
+                        r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","explanation":"policy"}},"usage":{"output_tokens":3}}"#,
+                    )),
+                    Ok(Event::default().data(r#"{"type":"message_stop"}"#)),
+                ];
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_from_response(resp);
+        let mut saw_error = false;
+        let mut saw_completed = false;
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            match event {
+                Err(e) => {
+                    assert!(e.to_string().contains("refusal"), "got: {e}");
+                    saw_error = true;
+                }
+                Ok(ResponseStreamEvent::Completed { .. }) => saw_completed = true,
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert!(saw_error, "refusal should emit an error");
+        assert!(!saw_completed, "refusal must not also complete");
     }
 
     #[tokio::test]
