@@ -8,9 +8,9 @@ pub use oauth::{
     TokenSet,
 };
 pub use storage::{
-    activate_anthropic_api_key, activate_openai_api_key, clear_credential, effective_mode,
-    has_anthropic_api_key, has_anthropic_oauth, has_openai_api_key, has_openai_oauth, load_auth,
-    save_auth, AuthMode, AuthRecord, LogoutTarget,
+    account_identity, activate_anthropic_api_key, activate_openai_api_key, clear_credential,
+    effective_mode, has_anthropic_api_key, has_anthropic_oauth, has_openai_api_key,
+    has_openai_oauth, load_auth, save_auth, AuthMode, AuthRecord, LogoutTarget,
 };
 
 use anyhow::Result;
