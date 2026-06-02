@@ -196,6 +196,15 @@ pub enum Block {
     System(String),
 }
 
+/// An in-progress `/buddy` hatch animation: a wobbling egg that cracks and
+/// reveals the account's companion, after which the small corner buddy takes
+/// over. Time-driven, like the spinner, so the frame follows wall-clock.
+#[derive(Debug, Clone)]
+pub struct HatchAnim {
+    pub pet: usize,
+    pub started: std::time::Instant,
+}
+
 /// One live sub-agent row in the fleet view, populated from `Subagent*` events
 /// forwarded by `dispatch_agent`. Mirrors Claude Code's sub-agent list.
 #[derive(Debug, Clone)]
@@ -253,6 +262,12 @@ pub struct App {
     pub last_quota: Option<opencli_core::usage::QuotaSnapshot>,
     pub pending_images: Vec<std::path::PathBuf>,
     pub next_image_num: usize,
+    /// `/buddy` companion state. `hatch` is the in-progress reveal animation;
+    /// `buddy_pet` is the adopted pet (locked to the account) shown small in the
+    /// corner; `buddy_hidden` toggles that corner display via `/buddy off`.
+    pub hatch: Option<HatchAnim>,
+    pub buddy_pet: Option<usize>,
+    pub buddy_hidden: bool,
     pub overlay: Option<(OverlayKind, Picker)>,
     /// When set, after choosing a model the next overlay shown is the effort picker.
     pub chain_to_effort: bool,
@@ -754,6 +769,9 @@ impl App {
             last_quota: None,
             pending_images: Vec::new(),
             next_image_num: 1,
+            hatch: None,
+            buddy_pet: None,
+            buddy_hidden: false,
             overlay: None,
             chain_to_effort: false,
             message_queue: Vec::new(),
@@ -1219,6 +1237,16 @@ async fn main_loop(
 
         prune_expired_completed_todos(&mut app);
 
+        // Finish the hatch animation once it has run its course, adopting the
+        // companion (the loop keeps redrawing it via the idle tick below).
+        if app
+            .hatch
+            .as_ref()
+            .is_some_and(|h| h.started.elapsed() >= Duration::from_millis(crate::tui::buddy::HATCH_MS))
+        {
+            finish_hatch(&mut app);
+        }
+
         if !app.busy || last_draw.elapsed() >= frame_budget {
             terminal.draw(|f| {
                 app.last_width = f.area().width;
@@ -1321,7 +1349,7 @@ async fn main_loop(
                     apply_agent_event(&mut app, ev);
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(80)) => {
+            _ = tokio::time::sleep(Duration::from_millis(if app.hatch.is_some() { 45 } else { 80 })) => {
                 // Wake periodically so the spinner redraws while a turn runs and
                 // no agent events arrive; the glyph itself advances on elapsed
                 // wall-clock time in render_spinner, not on a counter.
@@ -1331,12 +1359,27 @@ async fn main_loop(
     Ok(())
 }
 
+/// Finish the hatch animation: adopt the pet (locked to the account) and let
+/// the small corner companion take over.
+fn finish_hatch(app: &mut App) {
+    if let Some(h) = app.hatch.take() {
+        app.buddy_pet = Some(h.pet);
+        app.buddy_hidden = false;
+    }
+}
+
 async fn handle_key(
     app: &mut App,
     key: KeyEvent,
     agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
     tx: &mpsc::Sender<AgentEvent>,
 ) -> Result<bool> {
+    // A keypress during the hatch animation skips straight to the reveal.
+    if app.hatch.is_some() {
+        finish_hatch(app);
+        return Ok(false);
+    }
+
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -2105,6 +2148,7 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                  /cost               show token usage and estimated cost\n  \
                  /usage              show the provider's real quota / rate-limit status\n  \
                  /context            show context-window usage + composition\n  \
+                 /buddy [off|reset]  meet your account's pixel companion\n  \
                  /config             show current configuration\n  \
                  /hooks              list configured PreToolUse hooks\n  \
                  /mcp                list configured MCP servers\n  \
@@ -2477,6 +2521,52 @@ async fn handle_slash(app: &mut App, cmd: &str) {
         }
         "context" | "ctx" => {
             app.blocks.push(Block::System(render_context_report(app)));
+        }
+        "buddy" | "pet" => {
+            let arg = arg.trim();
+            if arg.eq_ignore_ascii_case("off") {
+                app.buddy_hidden = true;
+                app.blocks.push(Block::System(
+                    "buddy hidden — run /buddy to bring your companion back".to_string(),
+                ));
+            } else if arg.eq_ignore_ascii_case("reset") || arg.eq_ignore_ascii_case("clear") {
+                // Dev/testing: forget the adopted companion so the next /buddy
+                // hatches again. This only replays the hatch — WHICH pet you get
+                // is still derived from the account (or OPENCLI_BUDDY_SEED), so
+                // it can't be tricked into a different companion.
+                app.buddy_pet = None;
+                app.buddy_hidden = false;
+                app.hatch = None;
+                app.blocks
+                    .push(Block::System("buddy reset — run /buddy to hatch again".to_string()));
+            } else if app.hatch.is_some() {
+                // Already hatching; ignore repeat presses.
+            } else if let Some(pet) = app.buddy_pet {
+                // Locked: the companion is already adopted for this account.
+                app.buddy_hidden = false;
+                app.blocks.push(Block::System(format!(
+                    "{} is already your companion — locked to this account.",
+                    crate::tui::buddy::pet_name(pet)
+                )));
+            } else {
+                // First hatch: the pet is a pure function of the signed-in
+                // account, so it persists for that account and re-rolls only on
+                // account switch — nothing is stored to delete or tamper with.
+                // `OPENCLI_BUDDY_SEED` lets a dev preview other pets by seeding
+                // the roll directly instead of from the account.
+                let identity = std::env::var("OPENCLI_BUDDY_SEED")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| {
+                        auth::account_identity(&auth::load_auth().unwrap_or_default())
+                    });
+                let pet = crate::tui::buddy::roll(&identity);
+                app.hatch = Some(HatchAnim {
+                    pet,
+                    started: std::time::Instant::now(),
+                });
+                app.auto_scroll = true;
+            }
         }
         "config" => {
             let auth = match app.auth_mode {
@@ -4095,6 +4185,50 @@ mod tests {
         assert!(text.contains("Context window"));
         assert!(text.contains(&app.config.model));
         assert!(text.contains("composition"));
+    }
+
+    #[tokio::test]
+    async fn buddy_starts_hatch_then_locks() {
+        let mut app = App::new();
+        handle_slash(&mut app, "buddy").await;
+        assert!(app.hatch.is_some(), "/buddy should start the hatch animation");
+
+        finish_hatch(&mut app);
+        assert!(app.buddy_pet.is_some(), "finishing the hatch adopts the pet");
+        assert!(app.hatch.is_none());
+
+        // Locked: a second /buddy must NOT re-hatch or spawn another pet.
+        handle_slash(&mut app, "buddy").await;
+        assert!(app.hatch.is_none(), "must not re-hatch once adopted");
+        assert!(
+            matches!(app.blocks.last(), Some(Block::System(t)) if t.contains("already")),
+            "expected the locked note"
+        );
+    }
+
+    #[tokio::test]
+    async fn buddy_reset_allows_rehatch() {
+        let mut app = App::new();
+        handle_slash(&mut app, "buddy").await;
+        finish_hatch(&mut app);
+        assert!(app.buddy_pet.is_some());
+
+        handle_slash(&mut app, "buddy reset").await;
+        assert!(app.buddy_pet.is_none(), "reset clears the adopted pet");
+
+        handle_slash(&mut app, "buddy").await;
+        assert!(app.hatch.is_some(), "can hatch again after reset");
+    }
+
+    #[tokio::test]
+    async fn buddy_off_hides_the_corner_companion() {
+        let mut app = App::new();
+        handle_slash(&mut app, "buddy off").await;
+        assert!(app.buddy_hidden, "/buddy off should hide the corner buddy");
+        let Some(Block::System(text)) = app.blocks.last() else {
+            panic!("expected a system block from /buddy off");
+        };
+        assert!(text.contains("hidden"), "{text}");
     }
 
     #[tokio::test]

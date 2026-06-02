@@ -19,6 +19,7 @@ Beta 4 focuses on making long agent sessions easier to run, inspect, and recover
 - Added stale-file guards to `edit_file`, `multi_edit`, and `write_file` so writes are refused when the file changed after the model last read it.
 - Added `/commit` and `/commit-push-pr` slash commands with a git safety protocol, Conventional Commit generation, optional branch push, and PR creation via `gh`.
 - Added `opencli run` as an alias for headless `chat`, plus `--cwd` and `--prompt-file` for cron/systemd-style scheduled runs.
+- Added `/buddy`, a pixel-art companion that hatches from an egg and then sits small in the bottom-right of the chat. The species is a rarity-weighted roll (common→legendary) seeded deterministically from the signed-in account, so it's stable for an account and only re-rolls on an account switch — and because it's derived purely (nothing stored), clearing local state can't change it. `/buddy off` hides it, `/buddy reset` re-hatches, and `OPENCLI_BUDDY_DEV` / `OPENCLI_BUDDY_SEED` are dev overrides.
 
 ### Reliability and recovery
 

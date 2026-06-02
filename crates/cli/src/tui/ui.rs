@@ -59,6 +59,14 @@ pub fn render(f: &mut Frame, app: &mut App) {
     render_input(f, layout[5], app);
     render_status(f, layout[6], app);
 
+    // Buddy companion: the hatch animation takes over the chat area; otherwise
+    // the adopted pet tucks into the bottom-right corner.
+    if app.hatch.is_some() {
+        render_hatch(f, layout[0], app);
+    } else if let (Some(pet), false) = (app.buddy_pet, app.buddy_hidden) {
+        render_corner_buddy(f, layout[0], pet);
+    }
+
     // Overlay popup — drawn above the input.
     if let Some((_, picker)) = &app.overlay {
         super::picker::render(f, layout[5], picker);
@@ -66,6 +74,49 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.pending_approval.is_some() {
         render_approval(f, layout[5], app);
     }
+}
+
+/// The hatch animation as a centered overlay over the chat area.
+fn render_hatch(f: &mut Frame, area: Rect, app: &App) {
+    use ratatui::widgets::{Block as RBlock, BorderType, Borders, Clear};
+    let Some(h) = &app.hatch else {
+        return;
+    };
+    let elapsed = h.started.elapsed().as_millis() as u64;
+    let lines = crate::tui::buddy::hatch_lines(h.pet, elapsed);
+    let inner_w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let width = (inner_w + 4).min(area.width.max(1));
+    let height = (lines.len() as u16 + 2).min(area.height.max(1));
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let popup = Rect { x, y, width, height };
+    f.render_widget(Clear, popup);
+    let block = RBlock::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(255, 200, 100)));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The adopted companion, small, tucked into the bottom-right of the chat.
+fn render_corner_buddy(f: &mut Frame, area: Rect, pet: usize) {
+    use ratatui::widgets::Clear;
+    let lines = crate::tui::buddy::mini_lines(pet);
+    let w = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let h = lines.len() as u16;
+    if w == 0 || h == 0 || area.width < w + 2 || area.height < h + 1 {
+        return;
+    }
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(w + 1),
+        y: area.y + area.height.saturating_sub(h),
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(lines), rect);
 }
 
 fn queued_height(app: &App) -> u16 {

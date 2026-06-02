@@ -227,6 +227,7 @@ pub fn slash_commands() -> Vec<PickerItem> {
             "/context",
             "show context-window usage + composition",
         ),
+        item("buddy", "/buddy", "meet your account's pixel companion"),
         item("config", "/config", "show current configuration"),
         item("hooks", "/hooks", "list configured PreToolUse hooks"),
         item("mcp", "/mcp", "list configured MCP servers"),
