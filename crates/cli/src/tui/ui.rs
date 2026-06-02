@@ -59,6 +59,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
     render_input(f, layout[5], app);
     render_status(f, layout[6], app);
 
+    // Paint the left-drag text selection over the rendered content (below the
+    // buddy / overlay drawn next, which should stay legible on top).
+    if let Some(sel) = app.selection {
+        let area = f.area();
+        super::selection::highlight(f.buffer_mut(), &sel, area);
+    }
+
     // Buddy companion: the hatch animation takes over the chat area; otherwise
     // the adopted pet tucks into the bottom-right corner.
     if app.hatch.is_some() {
@@ -1109,6 +1116,10 @@ fn status_left_text(app: &App) -> String {
         } else {
             text.push_str(" · Ctrl+T show tasks");
         }
+    }
+    if let Some(notice) = &app.copy_notice {
+        text.push_str(" · ");
+        text.push_str(notice);
     }
     text
 }

@@ -39,6 +39,13 @@ pub fn try_paste() -> Result<PasteResult> {
     }
 }
 
+/// Copy text to the system clipboard (used by mouse text selection).
+pub fn copy_text(text: &str) -> Result<()> {
+    let mut clip = Clipboard::new().map_err(|e| anyhow!("cannot access clipboard: {e}"))?;
+    clip.set_text(text.to_string())
+        .map_err(|e| anyhow!("cannot set clipboard text: {e}"))
+}
+
 fn save_image(img: arboard::ImageData<'_>) -> Result<PathBuf> {
     let width = img.width as u32;
     let height = img.height as u32;

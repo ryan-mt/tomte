@@ -23,10 +23,12 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 
+use super::clipboard;
 use super::composer::{self, BangResult};
 use super::input::TextInput;
 use super::login::{self, LoginScreen, Stage as LoginStage};
 use super::picker::{self, Picker};
+use super::selection;
 use super::ui;
 
 /// Shared handle into the Agent's in-flight approval map. Cloned from
@@ -247,6 +249,16 @@ pub struct App {
     /// `render` each frame so a left-click can toggle the row's detail.
     pub subagent_rows: Vec<(ratatui::layout::Rect, String)>,
     pub status_line: String,
+    /// In-progress / completed left-drag text selection over the screen, in
+    /// cell coordinates. Drawn as a highlight and copied to the clipboard on
+    /// release; `None` when nothing is selected. See `tui::selection`.
+    pub selection: Option<crate::tui::selection::Selection>,
+    /// Clone of the last rendered frame, captured only while a selection is
+    /// active, so the selected cells' text can be read back on mouse-release.
+    pub last_buffer: Option<ratatui::buffer::Buffer>,
+    /// Brief "copied N chars" confirmation shown after a selection is copied;
+    /// cleared on the next key / scroll / new click.
+    pub copy_notice: Option<String>,
     pub last_height: u16,
     pub last_width: u16,
     pub turn_started_at: Option<std::time::Instant>,
@@ -764,6 +776,9 @@ impl App {
             subagents: Vec::new(),
             subagent_rows: Vec::new(),
             status_line: String::new(),
+            selection: None,
+            last_buffer: None,
+            copy_notice: None,
             last_height: 0,
             last_width: 0,
             turn_started_at: None,
@@ -868,6 +883,28 @@ impl App {
             let draft = std::mem::take(&mut self.history_draft);
             self.input.set_text(draft);
         }
+    }
+
+    /// Drop any active text selection and its copy confirmation.
+    fn clear_selection(&mut self) {
+        self.selection = None;
+        self.copy_notice = None;
+    }
+
+    /// Finalize a dragged selection: copy the highlighted text to the clipboard
+    /// (read from the frame captured during the drag) and keep the highlight
+    /// visible with a brief confirmation until the next action.
+    fn finish_selection(&mut self, sel: selection::Selection) {
+        if let Some(buf) = self.last_buffer.as_ref() {
+            let text = selection::extract_text(buf, &sel);
+            if !text.is_empty() {
+                self.copy_notice = Some(match clipboard::copy_text(&text) {
+                    Ok(()) => format!("✂ copied {} chars", text.chars().count()),
+                    Err(e) => format!("copy failed: {e}"),
+                });
+            }
+        }
+        self.selection = Some(sel);
     }
 
     pub fn permission_mode(&self) -> PermissionMode {
@@ -1287,7 +1324,7 @@ async fn main_loop(
         }
 
         if !app.busy || last_draw.elapsed() >= frame_budget {
-            terminal.draw(|f| {
+            let completed = terminal.draw(|f| {
                 app.last_width = f.area().width;
                 app.last_height = f.area().height;
                 match app.screen {
@@ -1299,6 +1336,11 @@ async fn main_loop(
                     Screen::Chat => ui::render(f, &mut app),
                 }
             })?;
+            // While a drag is active, keep a copy of the rendered frame so the
+            // selected text can be read back on release (cheap no-op otherwise).
+            if app.selection.is_some() {
+                app.last_buffer = Some(completed.buffer.clone());
+            }
             last_draw = std::time::Instant::now();
         }
 
@@ -1346,29 +1388,35 @@ async fn main_loop(
                             MouseEventKind::ScrollUp => {
                                 app.scroll = app.scroll.saturating_sub(3);
                                 app.auto_scroll = false;
+                                // Content moves under a screen-coordinate
+                                // selection, so drop it rather than mislead.
+                                app.clear_selection();
                             }
                             MouseEventKind::ScrollDown => {
                                 app.scroll = app.scroll.saturating_add(3);
+                                app.clear_selection();
                             }
                             MouseEventKind::Down(MouseButton::Left) => {
-                                let (col, row) = (m.column, m.row);
-                                if app
-                                    .jump_to_bottom_hint
-                                    .is_some_and(|r| point_in(r, col, row))
-                                {
-                                    // Click the jump-to-bottom bar → resume tail-following.
-                                    app.auto_scroll = true;
-                                } else if let Some(id) = app
-                                    .subagent_rows
-                                    .iter()
-                                    .find(|(r, _)| point_in(*r, col, row))
-                                    .map(|(_, id)| id.clone())
-                                {
-                                    // Click a fleet row → toggle its detail.
-                                    if let Some(s) =
-                                        app.subagents.iter_mut().find(|s| s.id == id)
-                                    {
-                                        s.expanded = !s.expanded;
+                                // Begin a selection. The click target (jump /
+                                // fleet toggle) only fires on release if no drag
+                                // happened — see Up(Left) below.
+                                app.copy_notice = None;
+                                app.selection =
+                                    Some(selection::Selection::new(m.column, m.row));
+                            }
+                            MouseEventKind::Drag(MouseButton::Left) => {
+                                if let Some(sel) = app.selection.as_mut() {
+                                    sel.cursor = (m.column, m.row);
+                                }
+                            }
+                            MouseEventKind::Up(MouseButton::Left) => {
+                                if let Some(mut sel) = app.selection.take() {
+                                    sel.cursor = (m.column, m.row);
+                                    if sel.is_dragged() {
+                                        app.finish_selection(sel);
+                                    } else {
+                                        // A plain click → act on the target.
+                                        handle_left_click(&mut app, m.column, m.row);
                                     }
                                 }
                             }
@@ -1424,6 +1472,9 @@ async fn handle_key(
         finish_hatch(app);
         return Ok(false);
     }
+
+    // Any keypress dismisses a mouse text selection's highlight + copy notice.
+    app.clear_selection();
 
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -3652,6 +3703,24 @@ fn point_in(r: ratatui::layout::Rect, col: u16, row: u16) -> bool {
         && col < r.x.saturating_add(r.width)
         && row >= r.y
         && row < r.y.saturating_add(r.height)
+}
+
+/// Act on a plain left-click (no drag): click the jump-to-bottom bar to resume
+/// tail-following, or click a fleet row to toggle its detail. Mirrors the
+/// click targets the mouse-down handler used before drag selection existed.
+fn handle_left_click(app: &mut App, col: u16, row: u16) {
+    if app.jump_to_bottom_hint.is_some_and(|r| point_in(r, col, row)) {
+        app.auto_scroll = true;
+    } else if let Some(id) = app
+        .subagent_rows
+        .iter()
+        .find(|(r, _)| point_in(*r, col, row))
+        .map(|(_, id)| id.clone())
+    {
+        if let Some(s) = app.subagents.iter_mut().find(|s| s.id == id) {
+            s.expanded = !s.expanded;
+        }
+    }
 }
 
 fn apply_agent_event(app: &mut App, ev: AgentEvent) {
