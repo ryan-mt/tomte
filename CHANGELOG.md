@@ -28,6 +28,7 @@
 - The config directory holding `auth.json`/`config.json` is now created `0o700` (and an existing looser one is tightened), so other local users can't list it or stat login timestamps.
 - Pasting a large block into the composer no longer freezes briefly: the text is inserted in one operation instead of character-by-character (which was O(n²)).
 - Clicking in the input area no longer toggles an off-screen sub-agent: the sub-agent panel only registers click targets for rows actually drawn inside its (capped) height.
+- Anthropic `redacted_thinking` blocks (reasoning the safety system encrypts) are no longer dropped from the stream: their opaque `data` is now captured and replayed verbatim ahead of the turn's tool call, so a redacted-thinking-then-tool turn no longer breaks the reasoning/tool_use chain and gets rejected on the next request.
 
 ## 0.0.1-beta.4
 

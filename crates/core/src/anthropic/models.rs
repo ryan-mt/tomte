@@ -46,6 +46,11 @@ pub enum ContentBlock {
     /// continue the chain; `thinking` is the plaintext (empty when the model's
     /// `display` is `omitted`, as on Opus 4.7/4.8).
     Thinking { thinking: String, signature: String },
+    /// A reasoning block Anthropic's safety system encrypted. Carries no
+    /// plaintext or signature — only opaque `data` that must be replayed
+    /// verbatim ahead of the turn's `tool_use`, or the API rejects the
+    /// follow-up request for a broken thinking/tool_use chain.
+    RedactedThinking { data: String },
     Image {
         source: ImageSource,
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -41,6 +41,11 @@ struct PendingBlock {
     /// Accumulated `signature_delta` for a thinking block — the encrypted
     /// reasoning the API needs back when this turn's tool_use is replayed.
     signature_buf: String,
+    /// Opaque `data` of a `redacted_thinking` block, captured whole at
+    /// `content_block_start` (it streams no deltas). `None` for every other
+    /// block. Replayed verbatim so a redacted-thinking-then-tool turn isn't
+    /// rejected on the next request.
+    redacted_data: Option<String>,
 }
 
 const ANTHROPIC_TOOL_ARGUMENT_MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -275,6 +280,7 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                             args_truncated: false,
                                             text_buf: String::new(),
                                             signature_buf: String::new(),
+                                            redacted_data: None,
                                         },
                                     );
                                     let item = json!({
@@ -299,6 +305,17 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                     // "text" made content_block_stop emit an empty
                                     // OutputTextDone that blanked the assistant
                                     // buffer mid-stream on every thinking turn.
+                                    // A redacted_thinking block carries its
+                                    // encrypted payload whole in `data` here (no
+                                    // deltas follow), so capture it now.
+                                    let redacted_data = if btype == "redacted_thinking" {
+                                        block
+                                            .and_then(|b| b.get("data"))
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string())
+                                    } else {
+                                        None
+                                    };
                                     blocks.insert(
                                         index,
                                         PendingBlock {
@@ -308,6 +325,7 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                             args_truncated: false,
                                             text_buf: String::new(),
                                             signature_buf: String::new(),
+                                            redacted_data,
                                         },
                                     );
                                 }
@@ -411,8 +429,19 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                                 item_id: Some(b.item_id),
                                             }))
                                             .await;
-                                    } else if b.kind == "thinking" || b.kind == "redacted_thinking"
-                                    {
+                                    } else if b.kind == "redacted_thinking" {
+                                        // A redacted block carries no plaintext or
+                                        // signature, only its encrypted `data`;
+                                        // forward it so the agent can replay it
+                                        // verbatim ahead of this turn's tool_use.
+                                        if let Some(data) = b.redacted_data {
+                                            let _ = tx
+                                                .send(Ok(ResponseStreamEvent::RedactedThinking {
+                                                    data,
+                                                }))
+                                                .await;
+                                        }
+                                    } else if b.kind == "thinking" {
                                         // Finalize a thinking block: hand the agent
                                         // the plaintext + signature so it can replay
                                         // the block ahead of this turn's tool_use.
@@ -660,6 +689,49 @@ mod tests {
 
         assert_eq!(inline_args.as_deref(), Some(r#"{"path":"Cargo.toml"}"#));
         assert_eq!(done_args.as_deref(), Some(r#"{"path":"Cargo.toml"}"#));
+    }
+
+    #[tokio::test]
+    async fn redacted_thinking_block_forwards_its_data() {
+        // A redacted_thinking block carries its encrypted payload whole in
+        // `data` at content_block_start (no deltas) — it must be forwarded as a
+        // RedactedThinking event, not silently dropped, so it can be replayed.
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let events = vec![
+                    Ok::<Event, Infallible>(Event::default().data(
+                        r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}"#,
+                    )),
+                    Ok(Event::default().data(
+                        r#"{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"enc-xyz"}}"#,
+                    )),
+                    Ok(Event::default().data(r#"{"type":"content_block_stop","index":0}"#)),
+                    Ok(Event::default().data(r#"{"type":"message_stop"}"#)),
+                ];
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_from_response(resp);
+        let mut redacted = None;
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            if let ResponseStreamEvent::RedactedThinking { data } = event.unwrap() {
+                redacted = Some(data);
+            }
+        }
+        server.abort();
+
+        assert_eq!(redacted.as_deref(), Some("enc-xyz"));
     }
 
     #[tokio::test]

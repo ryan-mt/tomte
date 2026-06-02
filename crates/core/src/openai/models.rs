@@ -95,6 +95,12 @@ pub enum InputItem {
         /// Required ahead of a replayed `tool_use`. `skip` for the OpenAI path.
         #[serde(skip)]
         signature: Option<String>,
+        /// Anthropic `redacted_thinking` data: reasoning the safety system
+        /// encrypted, with no plaintext or signature. Replayed verbatim ahead
+        /// of a `tool_use` (see `anthropic/translate.rs`); dropping it makes the
+        /// API reject the follow-up turn. `skip` so the OpenAI wire never sees it.
+        #[serde(skip)]
+        redacted_thinking: Option<String>,
     },
 }
 

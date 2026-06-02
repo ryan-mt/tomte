@@ -176,21 +176,30 @@ pub fn to_messages_request(req: &ResponsesRequest) -> MessagesRequest {
             InputItem::Reasoning {
                 thinking,
                 signature,
+                redacted_thinking,
                 ..
             } => {
-                // Replay the signed thinking block at the head of the assistant
-                // message so the tool_use that follows verifies and the reasoning
-                // chain is preserved. Skipped when no signature was captured
-                // (e.g. an OpenAI-origin reasoning item carried in history).
-                if let Some(sig) = signature {
+                // Replay the reasoning block at the head of the assistant message
+                // so the tool_use that follows verifies and the reasoning chain is
+                // preserved: a signed thinking block, or a redacted_thinking block
+                // (opaque encrypted data, no signature). Skipped when neither was
+                // captured (e.g. an OpenAI-origin reasoning item in history).
+                let block = if let Some(sig) = signature {
+                    Some(ContentBlock::Thinking {
+                        thinking: thinking.clone().unwrap_or_default(),
+                        signature: sig.clone(),
+                    })
+                } else {
+                    redacted_thinking
+                        .clone()
+                        .map(|data| ContentBlock::RedactedThinking { data })
+                };
+                if let Some(block) = block {
                     if pending_role.as_deref() != Some("assistant") {
                         flush(&mut pending_role, &mut pending_blocks, &mut messages);
                         pending_role = Some("assistant".to_string());
                     }
-                    pending_blocks.push(ContentBlock::Thinking {
-                        thinking: thinking.clone().unwrap_or_default(),
-                        signature: sig.clone(),
-                    });
+                    pending_blocks.push(block);
                 }
             }
         }
@@ -263,7 +272,7 @@ fn apply_cache_breakpoints(request: &mut MessagesRequest) {
             | ContentBlock::ToolResult { cache_control, .. } => *cache_control = cc,
             // Thinking blocks carry no cache_control and are never the last
             // block in a message (text/tool_use always follow), so skip them.
-            ContentBlock::Thinking { .. } => {}
+            ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {}
         }
     }
 }
@@ -649,6 +658,7 @@ mod tests {
                     summary: vec![],
                     thinking: Some("pondering".into()),
                     signature: Some("sig-abc".into()),
+                    redacted_thinking: None,
                 },
                 InputItem::FunctionCall {
                     call_id: "call_1".into(),
@@ -687,10 +697,52 @@ mod tests {
                 summary: vec![],
                 thinking: None,
                 signature: None,
+                redacted_thinking: None,
             }],
         );
         let out = to_messages_request(&req);
         assert!(out.messages.is_empty());
+    }
+
+    #[test]
+    fn redacted_reasoning_emits_redacted_thinking_block_before_tool_use() {
+        // A redacted_thinking block (no signature, only opaque data) must be
+        // replayed verbatim ahead of the tool_use, or Anthropic rejects the
+        // turn for a broken thinking/tool_use chain.
+        let req = ResponsesRequest::new(
+            "claude-opus-4-8",
+            vec![
+                InputItem::Reasoning {
+                    id: String::new(),
+                    summary: vec![],
+                    thinking: None,
+                    signature: None,
+                    redacted_thinking: Some("enc-xyz".into()),
+                },
+                InputItem::FunctionCall {
+                    call_id: "call_1".into(),
+                    name: "echo".into(),
+                    arguments: "{}".into(),
+                },
+            ],
+        );
+        let out = to_messages_request(&req);
+        assert_eq!(out.messages.len(), 1);
+        assert_eq!(out.messages[0].role, "assistant");
+        match &out.messages[0].content[0] {
+            ContentBlock::RedactedThinking { data } => assert_eq!(data, "enc-xyz"),
+            other => panic!("expected redacted_thinking block first, got {other:?}"),
+        }
+        assert!(matches!(
+            out.messages[0].content[1],
+            ContentBlock::ToolUse { .. }
+        ));
+        // And it serializes in the Anthropic wire shape.
+        let json = serde_json::to_string(&out).unwrap();
+        assert!(
+            json.contains(r#""type":"redacted_thinking","data":"enc-xyz""#),
+            "got: {json}"
+        );
     }
 
     #[test]

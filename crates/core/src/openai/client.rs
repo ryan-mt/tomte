@@ -296,6 +296,7 @@ mod tests {
                 summary: Vec::new(),
                 thinking: Some("internal".into()),
                 signature: Some("sig".into()),
+                redacted_thinking: None,
             },
             // A genuine OpenAI reasoning item must survive.
             InputItem::Reasoning {
@@ -303,6 +304,7 @@ mod tests {
                 summary: Vec::new(),
                 thinking: None,
                 signature: None,
+                redacted_thinking: None,
             },
             InputItem::FunctionCallOutput {
                 call_id: "call_1".into(),
@@ -331,6 +333,7 @@ mod tests {
             summary: Vec::new(),
             thinking: Some("internal".into()),
             signature: Some("sig".into()),
+            redacted_thinking: None,
         }];
         strip_unsendable_reasoning(&mut input);
         assert!(input.is_empty());
@@ -343,6 +346,7 @@ mod tests {
             summary: Vec::new(),
             thinking: None,
             signature: None,
+            redacted_thinking: None,
         }];
         strip_unsendable_reasoning(&mut input);
         assert!(input.is_empty());

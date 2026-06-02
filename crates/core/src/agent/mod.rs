@@ -901,11 +901,13 @@ impl Agent {
             // NOT count — re-running to actually answer is better than ending the turn
             // with only a thought shown.
             let mut produced_output = false;
-            // Signed thinking blocks captured this turn, in stream order, so they
-            // can be replayed ahead of the tool_use that follows (Anthropic
-            // adaptive/extended thinking). Each entry is (plaintext, signature);
-            // plaintext is empty when the model's display is omitted (4.7/4.8).
-            let mut thinking_blocks: Vec<(String, String)> = Vec::new();
+            // Reasoning blocks captured this turn, in stream order, so they can
+            // be replayed ahead of the tool_use that follows (Anthropic
+            // adaptive/extended thinking). Each is a ready-to-replay
+            // `InputItem::Reasoning`: a signed thinking block (plaintext empty
+            // when the model's display is omitted, 4.7/4.8) or a redacted_thinking
+            // block carrying only its encrypted data.
+            let mut thinking_blocks: Vec<InputItem> = Vec::new();
             let mut orphan_arg_buffers: std::collections::HashMap<String, ToolArgsBuffer> =
                 std::collections::HashMap::new();
 
@@ -1183,8 +1185,26 @@ impl Agent {
                         // one entry per signed block — a multi-block turn then
                         // replays them all in order. `None` on the OpenAI path.
                         if let Some(signature) = signature {
-                            thinking_blocks.push((text, signature));
+                            thinking_blocks.push(InputItem::Reasoning {
+                                id: String::new(),
+                                summary: Vec::new(),
+                                thinking: Some(text),
+                                signature: Some(signature),
+                                redacted_thinking: None,
+                            });
                         }
+                    }
+                    ResponseStreamEvent::RedactedThinking { data } => {
+                        // Encrypted reasoning — nothing to show, but it must be
+                        // replayed verbatim ahead of this turn's tool_use or the
+                        // next Anthropic request rejects the broken chain.
+                        thinking_blocks.push(InputItem::Reasoning {
+                            id: String::new(),
+                            summary: Vec::new(),
+                            thinking: None,
+                            signature: None,
+                            redacted_thinking: Some(data),
+                        });
                     }
                     ResponseStreamEvent::Completed { response } => {
                         if let Some(tokens) =
@@ -1526,13 +1546,8 @@ impl Agent {
             // already finalized. Adaptive validation tolerates its absence, but
             // preserving it stops the model re-deliberating from scratch each
             // step (a real token-burn driver at high effort).
-            for (thinking, signature) in std::mem::take(&mut thinking_blocks) {
-                self.history.push(InputItem::Reasoning {
-                    id: String::new(),
-                    summary: Vec::new(),
-                    thinking: Some(thinking),
-                    signature: Some(signature),
-                });
+            for item in std::mem::take(&mut thinking_blocks) {
+                self.history.push(item);
             }
             if !final_text.is_empty() {
                 self.history.push(InputItem::Message {

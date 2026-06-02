@@ -56,6 +56,13 @@ pub enum ResponseStreamEvent {
         /// (its reasoning continuity is handled server-side / via store).
         signature: Option<String>,
     },
+    /// An Anthropic `redacted_thinking` block: reasoning the safety system
+    /// encrypted, carrying opaque `data` instead of plaintext/signature. It
+    /// must be replayed verbatim ahead of the turn's `tool_use` or the API
+    /// rejects the follow-up request. Only the Anthropic stream emits this.
+    RedactedThinking {
+        data: String,
+    },
     Completed {
         response: Value,
     },
