@@ -3613,20 +3613,36 @@ async fn handle_hash_memory(
 fn file_candidates(cwd: &std::path::Path) -> Vec<picker::PickerItem> {
     const MAX: usize = 5000;
     let mut paths: Vec<String> = Vec::new();
+    // Stream `rg --files` and stop at MAX, killing rg early, so a giant monorepo
+    // can't make the synchronous picker-open stall enumerating millions of files
+    // (the old code buffered all of rg's stdout before capping).
+    use std::io::BufRead;
     let rg = std::process::Command::new("rg")
         .arg("--files")
         .current_dir(cwd)
-        .output();
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
     match rg {
-        Ok(o) if o.status.success() => {
-            for line in String::from_utf8_lossy(&o.stdout).lines() {
-                paths.push(line.replace('\\', "/"));
-                if paths.len() >= MAX {
-                    break;
+        Ok(mut child) => {
+            if let Some(out) = child.stdout.take() {
+                for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                    paths.push(line.replace('\\', "/"));
+                    if paths.len() >= MAX {
+                        break;
+                    }
                 }
             }
+            // We have enough (or hit EOF) — stop rg and reap it.
+            let _ = child.kill();
+            let _ = child.wait();
+            // rg ran but produced nothing (e.g. not a usable dir) → manual walk.
+            if paths.is_empty() {
+                walk_files(cwd, MAX, &mut paths);
+            }
         }
-        _ => walk_files(cwd, MAX, &mut paths),
+        // rg not installed / failed to spawn.
+        Err(_) => walk_files(cwd, MAX, &mut paths),
     }
     paths
         .into_iter()

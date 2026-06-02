@@ -9,6 +9,7 @@
 - `!`-commands from the composer now run on a background task with a 120s timeout (killed on expiry) instead of blocking the event loop — a long-running or non-terminating command (dev server, `tail -f`) no longer freezes the whole TUI.
 - `@<path>` mentions are now confined to the workspace: an absolute path, a `..` escape, or a symlink resolving outside `cwd` is ignored instead of attaching out-of-tree file contents to the prompt.
 - `@`-expansion now scans only the user's own prompt, not the prepended output of a prior `!`-command, so a `@token` printed by a shell command no longer attaches an unrelated file.
+- The `@`-file picker streams `rg --files` and stops after 5000 entries (killing rg early) so opening the picker in a huge monorepo can't stall the UI.
 
 ## 0.0.1-beta.4
 
