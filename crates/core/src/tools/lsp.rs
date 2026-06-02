@@ -325,7 +325,9 @@ fn collect_source_files_at(
             // Canonicalize BOTH sides: `root` (== cwd) may itself contain a
             // symlink component (e.g. macOS `/tmp` → `/private/tmp`), which would
             // otherwise make a legitimately in-tree target fail `starts_with`.
-            let target_ok = std::fs::metadata(&path).map(|m| m.is_file()).unwrap_or(false)
+            let target_ok = std::fs::metadata(&path)
+                .map(|m| m.is_file())
+                .unwrap_or(false)
                 && match (path.canonicalize(), root.canonicalize()) {
                     (Ok(target), Ok(root)) => target.starts_with(root),
                     _ => false,

@@ -155,15 +155,11 @@ fn env_path(name: &str) -> Option<PathBuf> {
 /// Directories from the repository root through `cwd` (inclusive), in
 /// ancestor-first order. When no git root is found, only `cwd` is checked.
 pub fn project_memory_dirs(cwd: &Path) -> Vec<PathBuf> {
-    let cwd = cwd
-        .canonicalize()
-        .unwrap_or_else(|_| cwd.to_path_buf());
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     let Some(git_root) = git_root_from(&cwd) else {
         return vec![cwd];
     };
-    let git_root = git_root
-        .canonicalize()
-        .unwrap_or(git_root);
+    let git_root = git_root.canonicalize().unwrap_or(git_root);
     if !cwd.starts_with(&git_root) {
         return vec![cwd];
     }
@@ -311,11 +307,7 @@ mod tests {
 
         let global = tmp.path().join("global");
         std::fs::create_dir_all(&global).unwrap();
-        std::fs::write(
-            global.join("AGENTS.md"),
-            "g".repeat(PROJECT_DOC_MAX_BYTES),
-        )
-        .unwrap();
+        std::fs::write(global.join("AGENTS.md"), "g".repeat(PROJECT_DOC_MAX_BYTES)).unwrap();
 
         let entries = collect_entries_with_globals(repo, vec![global]);
         assert!(

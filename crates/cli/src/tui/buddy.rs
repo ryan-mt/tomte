@@ -107,7 +107,11 @@ const PETS: &[Pet] = &[
             ('M', (235, 150, 160)),
             ('W', (250, 228, 200)),
         ],
-        speech: &["all systems go!", "ready when you are", "let's build something"],
+        speech: &[
+            "all systems go!",
+            "ready when you are",
+            "let's build something",
+        ],
     },
     Pet {
         name: "Goo the Slime",
@@ -155,7 +159,11 @@ const PETS: &[Pet] = &[
             ('E', (40, 40, 45)),
             ('O', (240, 140, 60)),
         ],
-        speech: &["quack!", "swimming through the diff", "found a bug, fixed it"],
+        speech: &[
+            "quack!",
+            "swimming through the diff",
+            "found a bug, fixed it",
+        ],
     },
     Pet {
         name: "Rusty the Fox",
@@ -207,7 +215,11 @@ const PETS: &[Pet] = &[
             ('O', (245, 175, 70)),
             ('Y', (245, 175, 70)),
         ],
-        speech: &["hoo's debugging? you are", "wisdom: read the error first", "patience…"],
+        speech: &[
+            "hoo's debugging? you are",
+            "wisdom: read the error first",
+            "patience…",
+        ],
     },
     Pet {
         name: "Smolder the Dragon",
@@ -232,7 +244,11 @@ const PETS: &[Pet] = &[
             ('R', (235, 95, 80)),
             ('B', (190, 230, 140)),
         ],
-        speech: &["rawr — i mean, hi", "i hoard clean code", "breathing fire on bugs"],
+        speech: &[
+            "rawr — i mean, hi",
+            "i hoard clean code",
+            "breathing fire on bugs",
+        ],
     },
     Pet {
         name: "Blaze the Phoenix",
@@ -257,7 +273,11 @@ const PETS: &[Pet] = &[
             ('O', (255, 225, 120)),
             ('E', (60, 35, 30)),
         ],
-        speech: &["rise and shine", "from the ashes, a green build", "you found me — lucky!"],
+        speech: &[
+            "rise and shine",
+            "from the ashes, a green build",
+            "you found me — lucky!",
+        ],
     },
 ];
 
@@ -387,7 +407,9 @@ pub fn render(index: usize, tick: usize) -> Vec<Line<'static>> {
         Span::raw(INDENT),
         Span::styled(
             pet.name,
-            Style::default().fg(Color::Rgb(235, 235, 240)).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Rgb(235, 235, 240))
+                .add_modifier(Modifier::BOLD),
         ),
     ]));
     lines.push(Line::raw(""));
@@ -411,7 +433,10 @@ pub fn render(index: usize, tick: usize) -> Vec<Line<'static>> {
         pet.rarity.color().2,
     ));
     let body = Style::default().fg(Color::Rgb(225, 225, 230));
-    lines.push(Line::from(vec![Span::raw(INDENT), Span::styled("  ╱", border)]));
+    lines.push(Line::from(vec![
+        Span::raw(INDENT),
+        Span::styled("  ╱", border),
+    ]));
     lines.push(Line::from(vec![
         Span::raw(INDENT),
         Span::styled(format!("╭{}╮", "─".repeat(inner + 2)), border),
@@ -473,7 +498,11 @@ pub fn mini_lines(index: usize) -> Vec<Line<'static>> {
     let pet = &PETS[index % PETS.len()];
     pet.rows
         .chunks(2)
-        .map(|p| half_block_line("", p[0], p.get(1).copied().unwrap_or(""), |c| pet.color_of(c)))
+        .map(|p| {
+            half_block_line("", p[0], p.get(1).copied().unwrap_or(""), |c| {
+                pet.color_of(c)
+            })
+        })
         .collect()
 }
 
@@ -552,7 +581,11 @@ pub fn hatch_lines(pet: usize, elapsed_ms: u64) -> Vec<Line<'static>> {
     let offset = [0i32, 1, 0, -1][((elapsed_ms / step_ms) % 4) as usize] * amp;
     let indent = " ".repeat((4 + offset).max(0) as usize);
 
-    let caption = if cracking { "   crack… crack…" } else { "   hatching your companion…" };
+    let caption = if cracking {
+        "   crack… crack…"
+    } else {
+        "   hatching your companion…"
+    };
     let mut out = vec![
         Line::from(Span::styled(
             caption,
@@ -600,7 +633,9 @@ mod tests {
         }
         // Exactly one legendary, the rarest.
         assert_eq!(
-            PETS.iter().filter(|p| p.rarity == Rarity::Legendary).count(),
+            PETS.iter()
+                .filter(|p| p.rarity == Rarity::Legendary)
+                .count(),
             1
         );
     }
@@ -679,7 +714,12 @@ mod tests {
     #[test]
     fn mini_lines_show_the_whole_pet() {
         for (i, pet) in PETS.iter().enumerate() {
-            assert_eq!(mini_lines(i).len(), pet.rows.len() / 2, "mini for {}", pet.name);
+            assert_eq!(
+                mini_lines(i).len(),
+                pet.rows.len() / 2,
+                "mini for {}",
+                pet.name
+            );
         }
     }
 
@@ -736,7 +776,13 @@ mod tests {
             for row in pet.rows {
                 let line: String = row
                     .chars()
-                    .map(|c| if pet.color_of(c).is_some() { '█' } else { ' ' })
+                    .map(|c| {
+                        if pet.color_of(c).is_some() {
+                            '█'
+                        } else {
+                            ' '
+                        }
+                    })
                     .collect();
                 println!("{line}");
             }

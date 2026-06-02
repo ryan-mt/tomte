@@ -254,7 +254,10 @@ pub fn account_identity(record: &AuthRecord) -> String {
     match record.mode {
         AuthMode::None => "anonymous".to_string(),
         AuthMode::OpenaiApiKey => {
-            format!("openai-key:{}", short_hash(record.api_key.as_deref().unwrap_or("")))
+            format!(
+                "openai-key:{}",
+                short_hash(record.api_key.as_deref().unwrap_or(""))
+            )
         }
         AuthMode::AnthropicApiKey => format!(
             "anthropic-key:{}",
@@ -262,7 +265,10 @@ pub fn account_identity(record: &AuthRecord) -> String {
         ),
         AuthMode::OpenaiOauth => format!("openai-oauth:{}", oauth_account(record.tokens.as_ref())),
         AuthMode::AnthropicOauth => {
-            format!("anthropic-oauth:{}", oauth_account(record.anthropic_tokens.as_ref()))
+            format!(
+                "anthropic-oauth:{}",
+                oauth_account(record.anthropic_tokens.as_ref())
+            )
         }
     }
 }
@@ -448,7 +454,8 @@ mod identity_tests {
     #[test]
     fn oauth_falls_back_to_jwt_subject_across_token_rotation() {
         use base64::Engine;
-        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"sub":"user-42"}"#);
+        let payload =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"sub":"user-42"}"#);
         // Different access tokens (rotation) but the same `sub` → same identity.
         let make = |access: &str| AuthRecord {
             mode: AuthMode::AnthropicOauth,
@@ -458,8 +465,14 @@ mod identity_tests {
             }),
             ..Default::default()
         };
-        assert_eq!(account_identity(&make("sigA")), "anthropic-oauth:sub:user-42");
-        assert_eq!(account_identity(&make("sigA")), account_identity(&make("sigB")));
+        assert_eq!(
+            account_identity(&make("sigA")),
+            "anthropic-oauth:sub:user-42"
+        );
+        assert_eq!(
+            account_identity(&make("sigA")),
+            account_identity(&make("sigB"))
+        );
     }
 
     #[test]

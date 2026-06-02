@@ -89,7 +89,12 @@ fn render_hatch(f: &mut Frame, area: Rect, app: &App) {
     let height = (lines.len() as u16 + 2).min(area.height.max(1));
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
-    let popup = Rect { x, y, width, height };
+    let popup = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
     f.render_widget(Clear, popup);
     let block = RBlock::default()
         .borders(Borders::ALL)

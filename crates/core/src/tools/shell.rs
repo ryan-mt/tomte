@@ -160,7 +160,9 @@ fn pipe_rhs_is_interpreter(rhs: &str, interpreters: &[&str]) -> bool {
         return false;
     }
     let name = shell_token_command_name(rhs);
-    interpreters.iter().any(|base| is_versioned_name(&name, base))
+    interpreters
+        .iter()
+        .any(|base| is_versioned_name(&name, base))
 }
 
 /// True when `name` is `base` or `base` followed only by a version suffix
@@ -179,15 +181,8 @@ fn shell_token_command_name(token: &str) -> String {
     // Shells let quotes appear anywhere inside a word (`r''m`, `"rm"`, `rm''`
     // all execute `rm`), so strip every quote char — not just the surrounding
     // ones — before taking the basename, otherwise `r''m -rf /` slips past.
-    let literal: String = token
-        .chars()
-        .filter(|c| !matches!(c, '"' | '\''))
-        .collect();
-    literal
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("")
-        .to_string()
+    let literal: String = token.chars().filter(|c| !matches!(c, '"' | '\'')).collect();
+    literal.rsplit(['/', '\\']).next().unwrap_or("").to_string()
 }
 
 fn git_checkout_discards_worktree(tokens: &[&str]) -> bool {
@@ -260,10 +255,32 @@ fn is_critical_system_path(literal: &str) -> bool {
     // entry here must be lowercase (incl. the macOS roots) or it can never match.
     // Deleting any of these directories *themselves* is catastrophic.
     const ROOTS: &[&str] = &[
-        "/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/lib32", "/lib64",
-        "/boot", "/sys", "/proc", "/dev", "/root", "/opt", "/home", "/srv",
-        "/run", "/mnt", "/media", "/data", "/system", "/library",
-        "/applications", "/users", "/private", "/volumes",
+        "/etc",
+        "/usr",
+        "/var",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib32",
+        "/lib64",
+        "/boot",
+        "/sys",
+        "/proc",
+        "/dev",
+        "/root",
+        "/opt",
+        "/home",
+        "/srv",
+        "/run",
+        "/mnt",
+        "/media",
+        "/data",
+        "/system",
+        "/library",
+        "/applications",
+        "/users",
+        "/private",
+        "/volumes",
     ];
     if ROOTS.contains(&path) {
         return true;
@@ -272,13 +289,13 @@ fn is_critical_system_path(literal: &str) -> bool {
     // legitimate recursive-delete target (e.g. `/etc/x`, `/usr/lib`,
     // `/home/<user>/.ssh`, `/root/...`).
     const RECURSIVE_ROOTS: &[&str] = &[
-        "/etc", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/boot", "/sys",
-        "/proc", "/dev", "/usr", "/root", "/home", "/users", "/system",
-        "/library",
+        "/etc", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/boot", "/sys", "/proc", "/dev",
+        "/usr", "/root", "/home", "/users", "/system", "/library",
     ];
-    RECURSIVE_ROOTS
-        .iter()
-        .any(|root| path.strip_prefix(root).is_some_and(|rest| rest.starts_with('/')))
+    RECURSIVE_ROOTS.iter().any(|root| {
+        path.strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/'))
+    })
 }
 
 fn has_path_prefix(target: &str, prefix: &str) -> bool {
@@ -1310,7 +1327,8 @@ mod tests {
         );
         // Background returns immediately, so the default backstop is fine.
         assert_eq!(
-            RunShell.timeout(&json!({"command": "x", "timeout_ms": 600000, "run_in_background": true})),
+            RunShell
+                .timeout(&json!({"command": "x", "timeout_ms": 600000, "run_in_background": true})),
             std::time::Duration::from_secs(180)
         );
     }

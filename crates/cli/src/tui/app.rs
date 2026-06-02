@@ -1239,11 +1239,9 @@ async fn main_loop(
 
         // Finish the hatch animation once it has run its course, adopting the
         // companion (the loop keeps redrawing it via the idle tick below).
-        if app
-            .hatch
-            .as_ref()
-            .is_some_and(|h| h.started.elapsed() >= Duration::from_millis(crate::tui::buddy::HATCH_MS))
-        {
+        if app.hatch.as_ref().is_some_and(|h| {
+            h.started.elapsed() >= Duration::from_millis(crate::tui::buddy::HATCH_MS)
+        }) {
             finish_hatch(&mut app);
         }
 
@@ -2537,8 +2535,9 @@ async fn handle_slash(app: &mut App, cmd: &str) {
                 app.buddy_pet = None;
                 app.buddy_hidden = false;
                 app.hatch = None;
-                app.blocks
-                    .push(Block::System("buddy reset — run /buddy to hatch again".to_string()));
+                app.blocks.push(Block::System(
+                    "buddy reset — run /buddy to hatch again".to_string(),
+                ));
             } else if app.hatch.is_some() {
                 // Already hatching; ignore repeat presses.
             } else if let Some(pet) = app.buddy_pet {
@@ -4203,10 +4202,16 @@ mod tests {
     async fn buddy_starts_hatch_then_locks() {
         let mut app = App::new();
         handle_slash(&mut app, "buddy").await;
-        assert!(app.hatch.is_some(), "/buddy should start the hatch animation");
+        assert!(
+            app.hatch.is_some(),
+            "/buddy should start the hatch animation"
+        );
 
         finish_hatch(&mut app);
-        assert!(app.buddy_pet.is_some(), "finishing the hatch adopts the pet");
+        assert!(
+            app.buddy_pet.is_some(),
+            "finishing the hatch adopts the pet"
+        );
         assert!(app.hatch.is_none());
 
         // Locked: a second /buddy must NOT re-hatch or spawn another pet.

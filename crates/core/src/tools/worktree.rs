@@ -368,12 +368,10 @@ async fn diverged_commit_count(worktree_path: &Path, base_head: &str) -> Result<
     let stdout = String::from_utf8_lossy(&out.stdout);
     // A successful rev-list with unparseable output is unexpected; treat it as
     // an error so the remove guard errs on the side of NOT destroying work.
-    stdout.trim().parse::<usize>().map_err(|_| {
-        anyhow!(
-            "could not parse git rev-list count: {:?}",
-            stdout.trim()
-        )
-    })
+    stdout
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| anyhow!("could not parse git rev-list count: {:?}", stdout.trim()))
 }
 
 async fn git_stdout<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<String> {
