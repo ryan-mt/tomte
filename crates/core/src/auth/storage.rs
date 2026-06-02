@@ -70,7 +70,11 @@ pub fn load_auth() -> Result<AuthRecord> {
     Ok(record)
 }
 
+#[cfg(unix)]
 pub fn save_auth(record: &AuthRecord) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
     let dir = config::config_dir();
     config::create_dir_secure(&dir)?;
     let path = auth_file();
@@ -86,34 +90,30 @@ pub fn save_auth(record: &AuthRecord) -> Result<()> {
         b.iter().map(|x| format!("{x:02x}")).collect::<String>()
     };
     let tmp = path.with_extension(format!("tmp.{suffix}"));
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        f.write_all(text.as_bytes())?;
-        f.sync_all()?;
-    }
-    #[cfg(not(unix))]
-    {
-        return Err(non_unix_secure_auth_storage_error().into());
-    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
     std::fs::rename(&tmp, &path)?;
     // fsync the parent directory so the rename is durable: a crash right after
     // rename can otherwise lose the new directory entry and revert auth.json to
     // the previous (stale/expired) credentials, forcing a spurious re-login.
-    #[cfg(unix)]
-    {
-        if let Ok(f) = std::fs::File::open(&dir) {
-            let _ = f.sync_all();
-        }
+    if let Ok(f) = std::fs::File::open(&dir) {
+        let _ = f.sync_all();
     }
     Ok(())
+}
+
+/// Non-Unix platforms cannot yet enforce owner-only (`0o600`) permissions on the
+/// credential file, so persistence fails explicitly rather than storing tokens
+/// under inherited ACLs. (The real implementation is the Unix one above.)
+#[cfg(not(unix))]
+pub fn save_auth(_record: &AuthRecord) -> Result<()> {
+    Err(non_unix_secure_auth_storage_error().into())
 }
 
 /// A specific stored credential to clear on logout, or `All` to clear every
