@@ -523,6 +523,7 @@ pub fn handle_chat_response(resp: reqwest::Response) -> StreamHandle {
             let mut response_model: Option<String> = None;
             let mut done = false;
             let mut saw_finish = false;
+            let mut finish_reason: Option<String> = None;
             let mut had_error = false;
 
             while let Some(item) = stream.next().await {
@@ -584,12 +585,11 @@ pub fn handle_chat_response(resp: reqwest::Response) -> StreamHandle {
                 else {
                     continue;
                 };
-                if choice
-                    .get("finish_reason")
-                    .map(|v| !v.is_null())
-                    .unwrap_or(false)
-                {
+                if let Some(fr) = choice.get("finish_reason").filter(|v| !v.is_null()) {
                     saw_finish = true;
+                    if let Some(s) = fr.as_str() {
+                        finish_reason = Some(s.to_string());
+                    }
                 }
                 let message_part = choice.get("delta").or_else(|| choice.get("message"));
                 if let Some(reasoning) = message_part.and_then(chat_reasoning_text) {
@@ -645,6 +645,17 @@ pub fn handle_chat_response(resp: reqwest::Response) -> StreamHandle {
                 let _ = tx
                     .send(Err(anyhow::anyhow!(
                         "Chat Completions stream ended before completion"
+                    )))
+                    .await;
+                return;
+            }
+            // A content-filter stop means the provider blocked the output. Surface
+            // it as an error rather than a silent (often empty) successful turn —
+            // matching how the native Responses path treats `response.failed`.
+            if finish_reason.as_deref() == Some("content_filter") {
+                let _ = tx
+                    .send(Err(anyhow::anyhow!(
+                        "response blocked by the provider content filter (finish_reason: content_filter)"
                     )))
                     .await;
                 return;
@@ -1230,6 +1241,53 @@ mod tests {
         server.abort();
 
         assert_eq!(args, r#"{"path":"Cargo.toml"}"#);
+    }
+
+    // Regression: a content_filter stop must surface as an error, not a clean
+    // (empty) Completed that the agent mistakes for a successful turn.
+    #[tokio::test]
+    async fn stream_content_filter_surfaces_as_error() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let chunks = vec![
+                    r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}]}"#,
+                ];
+                let events: Vec<Result<Event, Infallible>> = chunks
+                    .into_iter()
+                    .map(|c| Ok(Event::default().data(c)))
+                    .chain(std::iter::once(Ok(Event::default().data("[DONE]"))))
+                    .collect();
+                Sse::new(stream::iter(events))
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let mut handle = handle_chat_response(resp);
+        let mut saw_error = false;
+        let mut saw_completed = false;
+        while let Some(ev) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+            .await
+            .unwrap()
+        {
+            match ev {
+                Err(e) => {
+                    assert!(e.to_string().contains("content filter"), "got: {e}");
+                    saw_error = true;
+                }
+                Ok(ResponseStreamEvent::Completed { .. }) => saw_completed = true,
+                _ => {}
+            }
+        }
+        server.abort();
+
+        assert!(saw_error, "content_filter should emit an error");
+        assert!(!saw_completed, "must not also report a successful completion");
     }
 
     #[tokio::test]
