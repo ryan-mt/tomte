@@ -24,6 +24,7 @@
 - An OpenAI Chat Completions response that stops with `finish_reason: content_filter` now surfaces as an error instead of a silent, empty "successful" turn (matching the native Responses path).
 - The `Retry-After` header is now honored in its HTTP-date form as well as delta-seconds (previously a date was ignored and retry fell back to plain backoff).
 - Retry backoff now adds random jitter so several concurrent requests (e.g. sub-agents) hitting an overload don't all retry in lockstep.
+- Non-streaming model calls (e.g. the compaction summary) now have a 300s total timeout, so a server that connects then never responds can no longer hang a turn forever (streaming keeps its idle-watchdog instead).
 
 ## 0.0.1-beta.4
 

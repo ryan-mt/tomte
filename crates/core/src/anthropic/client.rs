@@ -17,6 +17,11 @@ use super::stream::handle_from_response;
 use super::translate::to_messages_request;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Total timeout for a NON-streaming `create()`. A one-shot response has no
+/// stream idle-watchdog, so this bounds a server that connects then never
+/// replies (each retry attempt is bounded by it). Streaming stays unbounded.
+const CREATE_TIMEOUT: Duration = Duration::from_secs(300);
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -169,6 +174,7 @@ impl AnthropicClient {
             .http
             .post(self.endpoint())
             .headers(self.headers(&body.model)?)
+            .timeout(CREATE_TIMEOUT)
             .json(&body);
         let resp = crate::retry::send_with_retry(builder).await?;
         let status = resp.status();

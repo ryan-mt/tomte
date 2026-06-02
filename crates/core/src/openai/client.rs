@@ -18,6 +18,12 @@ use super::stream::StreamHandle;
 /// silent stream stalls.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Total timeout for a NON-streaming `create()` (e.g. the compaction summary).
+/// Unlike a stream, a one-shot response has no idle-watchdog, so without this a
+/// server that connects then never responds would hang the turn forever. Each
+/// retry attempt is bounded by it.
+const CREATE_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Best-effort scrub of `sk-…` / `Bearer …` substrings from an error body
 /// before it becomes part of an anyhow error string. The API has been
 /// observed to echo the submitted Authorization header back inside 401
@@ -164,6 +170,7 @@ impl OpenAiClient {
             .http
             .post(self.responses_endpoint())
             .headers(self.headers()?)
+            .timeout(CREATE_TIMEOUT)
             .json(&req);
         let resp = crate::retry::send_with_retry(builder).await?;
         let status = resp.status();
