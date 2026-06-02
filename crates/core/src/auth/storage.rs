@@ -49,6 +49,14 @@ fn auth_file() -> std::path::PathBuf {
     config::config_dir().join("auth.json")
 }
 
+#[cfg(any(test, not(unix)))]
+fn non_unix_secure_auth_storage_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "secure auth storage requires owner-only file permissions on this platform",
+    )
+}
+
 pub fn load_auth() -> Result<AuthRecord> {
     let path = auth_file();
     if !path.exists() {
@@ -93,13 +101,7 @@ pub fn save_auth(record: &AuthRecord) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        // SECURITY LIMITATION: unlike the Unix path above (mode 0600), this has
-        // no portable way in std to restrict the file's permissions, so on
-        // Windows `auth.json` inherits the parent directory's ACL. Hardening
-        // this needs platform ACL APIs (e.g. windows-acl) and a Windows host to
-        // verify against; until then, non-Unix builds do not enforce
-        // owner-only access to the stored tokens.
-        std::fs::write(&tmp, text.as_bytes())?;
+        return Err(non_unix_secure_auth_storage_error().into());
     }
     std::fs::rename(&tmp, &path)?;
     // fsync the parent directory so the rename is durable: a crash right after
@@ -484,5 +486,17 @@ mod identity_tests {
     #[test]
     fn no_credential_is_anonymous() {
         assert_eq!(account_identity(&AuthRecord::default()), "anonymous");
+    }
+
+    #[test]
+    fn non_unix_secure_auth_storage_error_is_explicit() {
+        let err = non_unix_secure_auth_storage_error();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        assert!(
+            err.to_string()
+                .contains("secure auth storage requires owner-only file permissions"),
+            "{err}"
+        );
     }
 }

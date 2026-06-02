@@ -1287,7 +1287,10 @@ mod tests {
         server.abort();
 
         assert!(saw_error, "content_filter should emit an error");
-        assert!(!saw_completed, "must not also report a successful completion");
+        assert!(
+            !saw_completed,
+            "must not also report a successful completion"
+        );
     }
 
     #[tokio::test]

@@ -9,7 +9,10 @@
 //!     `<prog>`, so allowing `cargo build` also allows `cargo test`.
 //!   - `<tool_name>`         — that tool unconditionally, in this project.
 
-use std::path::{Path, PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -41,9 +44,114 @@ pub fn permissions_path(cwd: &Path) -> PathBuf {
     cwd.join(".opencli").join("permissions.json")
 }
 
+fn invalid_project_permissions_path(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
+fn validate_existing_permissions_path(cwd: &Path) -> io::Result<()> {
+    let dir = cwd.join(".opencli");
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(invalid_project_permissions_path(
+                    "project permissions directory must not be a symlink",
+                ));
+            }
+            if !meta.is_dir() {
+                return Err(invalid_project_permissions_path(
+                    "project permissions path must be a directory",
+                ));
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    }
+
+    let path = permissions_path(cwd);
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(invalid_project_permissions_path(
+                    "project permissions file must not be a symlink",
+                ));
+            }
+            if !meta.is_file() {
+                return Err(invalid_project_permissions_path(
+                    "project permissions path must be a file",
+                ));
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+
+    Ok(())
+}
+
+fn ensure_project_permissions_dir(cwd: &Path) -> io::Result<()> {
+    let dir = cwd.join(".opencli");
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(invalid_project_permissions_path(
+                    "project permissions directory must not be a symlink",
+                ));
+            }
+            if !meta.is_dir() {
+                return Err(invalid_project_permissions_path(
+                    "project permissions path must be a directory",
+                ));
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&dir)?;
+        }
+        Err(e) => return Err(e),
+    }
+
+    let meta = std::fs::symlink_metadata(&dir)?;
+    if meta.file_type().is_symlink() {
+        return Err(invalid_project_permissions_path(
+            "project permissions directory must not be a symlink",
+        ));
+    }
+    if !meta.is_dir() {
+        return Err(invalid_project_permissions_path(
+            "project permissions path must be a directory",
+        ));
+    }
+    Ok(())
+}
+
+fn write_permissions_file(path: &Path, text: &str) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, text)
+    }
+}
+
 /// Load the project allow-list, treating a missing or malformed file as empty
 /// so a bad edit never blocks the agent (it just falls back to prompting).
 pub fn load(cwd: &Path) -> ProjectPermissions {
+    if validate_existing_permissions_path(cwd).is_err() {
+        return ProjectPermissions::default();
+    }
     match std::fs::read_to_string(permissions_path(cwd)) {
         Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
         Err(_) => ProjectPermissions::default(),
@@ -233,9 +341,11 @@ fn run_shell_rule_matches(prog: &str, args: &Value, mode: MatchMode) -> bool {
         // what the danger classifier (shell_token_command_name) catches.
         MatchMode::Deny => {
             let exposed = cmd.replace(['(', ')', '`'], "\n");
-            shell_segments(&exposed)
-                .iter()
-                .any(|seg| segment_deny_programs(seg).iter().any(|p| p.as_str() == prog))
+            shell_segments(&exposed).iter().any(|seg| {
+                segment_deny_programs(seg)
+                    .iter()
+                    .any(|p| p.as_str() == prog)
+            })
         }
         // Narrow: every segment must run exactly `prog` with no wrapper and no
         // command substitution, else fall through to a prompt.
@@ -416,9 +526,10 @@ pub fn allow_in_project(cwd: &Path, tool_name: &str, args: &Value) -> std::io::R
     if !perms.allow.iter().any(|r| r == &rule) {
         perms.allow.push(rule.clone());
     }
-    std::fs::create_dir_all(cwd.join(".opencli"))?;
+    ensure_project_permissions_dir(cwd)?;
+    validate_existing_permissions_path(cwd)?;
     let text = serde_json::to_string_pretty(&perms).unwrap_or_default();
-    std::fs::write(permissions_path(cwd), text)?;
+    write_permissions_file(&permissions_path(cwd), &text)?;
     Ok(rule)
 }
 
@@ -575,7 +686,11 @@ mod tests {
             deny: vec![],
         };
         assert_eq!(
-            decide(&bash, "run_shell", &json!({"command": "bash -c 'rm -rf /'"})),
+            decide(
+                &bash,
+                "run_shell",
+                &json!({"command": "bash -c 'rm -rf /'"})
+            ),
             Decision::Ask
         );
     }
@@ -702,7 +817,12 @@ mod tests {
             allow: vec![],
             deny: vec!["write_file(.git/**)".into()],
         };
-        for p in [".git/config", "./.git/config", ".git//config", ".git/x/../config"] {
+        for p in [
+            ".git/config",
+            "./.git/config",
+            ".git//config",
+            ".git/x/../config",
+        ] {
             assert_eq!(
                 decide(&perms, "write_file", &json!({ "path": p })),
                 Decision::Deny,
@@ -761,5 +881,62 @@ mod tests {
             &json!({"command": "cargo run"})
         ));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn allow_in_project_rejects_symlinked_opencli_dir() {
+        use std::os::unix::fs::symlink;
+
+        let tmp =
+            std::env::temp_dir().join(format!("opencli-perm-dir-link-{}", rand::random::<u64>()));
+        let outside =
+            std::env::temp_dir().join(format!("opencli-perm-dir-target-{}", rand::random::<u64>()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, tmp.join(".opencli")).unwrap();
+
+        let err = allow_in_project(&tmp, "run_shell", &json!({"command": "cargo build"}))
+            .expect_err("symlinked project permission directory must be rejected");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            !outside.join("permissions.json").exists(),
+            "must not write permissions through a symlinked .opencli directory"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn allow_in_project_rejects_symlinked_permissions_file() {
+        use std::os::unix::fs::symlink;
+
+        let tmp =
+            std::env::temp_dir().join(format!("opencli-perm-file-link-{}", rand::random::<u64>()));
+        let outside = std::env::temp_dir().join(format!(
+            "opencli-perm-file-target-{}",
+            rand::random::<u64>()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_file(&outside);
+        std::fs::create_dir_all(tmp.join(".opencli")).unwrap();
+        std::fs::write(&outside, "sentinel").unwrap();
+        symlink(&outside, permissions_path(&tmp)).unwrap();
+
+        let err = allow_in_project(&tmp, "run_shell", &json!({"command": "cargo build"}))
+            .expect_err("symlinked project permissions file must be rejected");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "sentinel",
+            "must not overwrite the symlink target"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_file(&outside);
     }
 }

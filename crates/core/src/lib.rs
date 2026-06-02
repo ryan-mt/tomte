@@ -13,6 +13,7 @@ pub mod openai;
 pub mod permissions;
 pub mod provider;
 mod retry;
+mod sensitive;
 pub mod session;
 pub mod skill;
 pub mod subagent;

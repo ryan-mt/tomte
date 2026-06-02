@@ -41,22 +41,17 @@ const CONTEXT_1M_BETA: &str = "context-1m-2025-08-07";
 /// this server-side; missing it produces a generic 400.
 const OAUTH_IDENTITY_PROMPT: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
-/// Best-effort scrub for API keys or bearer tokens in upstream error bodies
-/// before they are logged or shown to the model.
 fn redact_auth_in(body: &str) -> String {
-    let mut out = body.to_string();
-    for token in ["sk-ant-", "sk-", "Bearer "] {
-        while let Some(i) = out.find(token) {
-            let tail = &out[i + token.len()..];
-            let end = tail
-                .char_indices()
-                .find(|(_, c)| c.is_whitespace() || *c == '"' || *c == '}')
-                .map(|(j, _)| i + token.len() + j)
-                .unwrap_or(out.len());
-            out.replace_range(i..end, "<redacted>");
-        }
-    }
-    out
+    crate::sensitive::redact_auth_in(body)
+}
+
+fn parse_anthropic_response(text: &str) -> Result<serde_json::Value> {
+    serde_json::from_str(text).map_err(|e| {
+        anyhow!(
+            "parse Anthropic response: {e}; body: {}",
+            crate::sensitive::error_excerpt(text)
+        )
+    })
 }
 
 /// Compute the `anthropic-beta` header value, or `None` when no betas apply.
@@ -182,7 +177,7 @@ impl AnthropicClient {
         if !status.is_success() {
             return Err(anyhow!("Anthropic {} {}", status, redact_auth_in(&text)));
         }
-        serde_json::from_str(&text).map_err(|e| anyhow!("parse Anthropic response: {e}: {text}"))
+        parse_anthropic_response(&text)
     }
 
     /// Prepend the Claude Code identity line to the system prompt when using
@@ -231,7 +226,9 @@ impl crate::client::ProviderClient for AnthropicClient {
 
 #[cfg(test)]
 mod beta_header_tests {
-    use super::{anthropic_beta_value, redact_auth_in, CONTEXT_1M_BETA, OAUTH_BETA};
+    use super::{
+        anthropic_beta_value, parse_anthropic_response, redact_auth_in, CONTEXT_1M_BETA, OAUTH_BETA,
+    };
 
     #[test]
     fn redacts_auth_values_from_error_bodies() {
@@ -263,5 +260,23 @@ mod beta_header_tests {
     #[test]
     fn api_key_200k_model_sends_no_beta() {
         assert!(anthropic_beta_value(false, "claude-haiku-4-5").is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_response_redacts_and_caps_error_body() {
+        let body = format!(
+            "{{\"error\":\"bad key sk-ant-api03-secret and Bearer oauth-secret\",\"padding\":\"{}\"",
+            "x".repeat(512)
+        );
+
+        let err = parse_anthropic_response(&body).expect_err("malformed JSON must fail");
+        let message = err.to_string();
+
+        assert!(!message.contains("sk-ant-api03-secret"), "{message}");
+        assert!(!message.contains("oauth-secret"), "{message}");
+        assert!(!message.contains(&"x".repeat(256)), "{message}");
+        assert!(message.contains("<redacted>"), "{message}");
+        assert!(message.contains("truncated"), "{message}");
+        assert!(message.len() < 340, "{message}");
     }
 }

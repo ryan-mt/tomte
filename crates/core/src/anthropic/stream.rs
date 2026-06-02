@@ -100,6 +100,13 @@ fn non_empty_tool_input(value: &Value) -> Option<String> {
     }
 }
 
+fn parse_anthropic_sse_error(error: impl std::fmt::Display, data: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "parse Anthropic SSE: {error}; data: {}",
+        crate::sensitive::error_excerpt(data)
+    )
+}
+
 fn partial_json_delta(delta: Option<&Value>) -> String {
     const KEYS: &[&str] = &[
         "partial_json",
@@ -213,12 +220,7 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                         let parsed: Value = match serde_json::from_str(&ev.data) {
                             Ok(v) => v,
                             Err(e) => {
-                                let _ = tx
-                                    .send(Err(anyhow::anyhow!(
-                                        "parse Anthropic SSE: {e}: {}",
-                                        ev.data
-                                    )))
-                                    .await;
+                                let _ = tx.send(Err(parse_anthropic_sse_error(e, &ev.data))).await;
                                 continue;
                             }
                         };
@@ -577,6 +579,24 @@ mod tests {
     use futures_util::stream;
     use std::{convert::Infallible, time::Duration};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn parse_anthropic_sse_error_redacts_and_caps_event_data() {
+        let data = format!(
+            "{{\"error\":\"bad key sk-ant-api03-secret and Bearer oauth-secret\",\"padding\":\"{}\"",
+            "x".repeat(512)
+        );
+
+        let err = parse_anthropic_sse_error("expected value", &data);
+        let message = err.to_string();
+
+        assert!(!message.contains("sk-ant-api03-secret"), "{message}");
+        assert!(!message.contains("oauth-secret"), "{message}");
+        assert!(!message.contains(&"x".repeat(256)), "{message}");
+        assert!(message.contains("<redacted>"), "{message}");
+        assert!(message.contains("truncated"), "{message}");
+        assert!(message.len() < 360, "{message}");
+    }
 
     #[test]
     fn input_json_delta_concatenates_bare_null_verbatim() {

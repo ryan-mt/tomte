@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{Read, Write};
 
 use anyhow::Result;
@@ -156,12 +157,13 @@ fn render_text_event<W: Write>(
 ) -> TextEventOutcome {
     match ev {
         AgentEvent::AssistantTextDelta { text } => {
-            write!(stdout, "{}", text).ok();
+            write!(stdout, "{}", sanitize_terminal_text(&text)).ok();
             stdout.flush().ok();
         }
         AgentEvent::ReasoningDelta { .. } => {}
         AgentEvent::ToolCallStarted { name, call_id } => {
             tool_names.insert(call_id, name.clone());
+            let name = sanitize_terminal_text(&name);
             writeln!(stdout, "\n\x1b[2m▸ tool: {name}\x1b[0m").ok();
         }
         AgentEvent::ToolCallArgsDone { call_id, arguments } => {
@@ -174,6 +176,7 @@ fn render_text_event<W: Write>(
             let pretty = serde_json::from_str::<serde_json::Value>(&arguments)
                 .map(|v| serde_json::to_string_pretty(&v).unwrap_or(arguments.clone()))
                 .unwrap_or(arguments);
+            let pretty = sanitize_terminal_text(&pretty);
             writeln!(stdout, "\x1b[2m  args:\x1b[0m {pretty}").ok();
         }
         AgentEvent::ToolResult {
@@ -187,6 +190,7 @@ fn render_text_event<W: Write>(
                     .is_some_and(|name| name == "ask_user_question")
             {
                 if let Some(rendered) = opencli_core::tools::ask::render_ask_envelope(&output) {
+                    let rendered = sanitize_terminal_text(&rendered);
                     writeln!(stdout, "\n{rendered}").ok();
                     return TextEventOutcome::Continue;
                 }
@@ -199,6 +203,7 @@ fn render_text_event<W: Write>(
                 return TextEventOutcome::Continue;
             }
             let prefix = if error { "✗" } else { "✓" };
+            let output = sanitize_terminal_text(&output);
             let mut snippet = output.lines().take(20).collect::<Vec<_>>().join("\n");
             if output.lines().count() > 20 {
                 snippet.push_str("\n…");
@@ -215,12 +220,19 @@ fn render_text_event<W: Write>(
         AgentEvent::PlanExitRequested { plan } => {
             writeln!(
                 stdout,
-                "\nPlan ready for approval:\n{plan}\n\nHeadless mode stops at the approved-plan boundary. Run the TUI to approve, or continue with a follow-up prompt after reviewing the plan."
+                "\nPlan ready for approval:\n{}\n\nHeadless mode stops at the approved-plan boundary. Run the TUI to approve, or continue with a follow-up prompt after reviewing the plan.",
+                sanitize_terminal_text(&plan)
             )
             .ok();
         }
         AgentEvent::GoalStatusUpdated { status, summary } => {
-            writeln!(stdout, "\nGoal status: {status}\n{summary}").ok();
+            writeln!(
+                stdout,
+                "\nGoal status: {}\n{}",
+                sanitize_terminal_text(&status),
+                sanitize_terminal_text(&summary)
+            )
+            .ok();
         }
         AgentEvent::TurnComplete => {
             writeln!(stdout).ok();
@@ -230,6 +242,8 @@ fn render_text_event<W: Write>(
             return TextEventOutcome::Error(message);
         }
         AgentEvent::FallbackSwitched { from, to, .. } => {
+            let from = sanitize_terminal_text(&from);
+            let to = sanitize_terminal_text(&to);
             writeln!(
                 stdout,
                 "\n\x1b[2m⚠ {from} rate-limited/overloaded — switched to fallback model {to}\x1b[0m"
@@ -246,6 +260,62 @@ fn suppress_headless_control_tool_body(name: &str) -> bool {
         name,
         "ask_user_question" | "enter_plan_mode" | "exit_plan_mode"
     )
+}
+
+fn sanitize_terminal_text(text: &str) -> Cow<'_, str> {
+    if !text
+        .bytes()
+        .any(|byte| (byte < 0x20 && byte != b'\n') || byte == 0x7f)
+    {
+        return Cow::Borrowed(text);
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut col = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    while let Some(&p) = chars.peek() {
+                        chars.next();
+                        if ('\u{40}'..='\u{7e}').contains(&p) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    while let Some(p) = chars.next() {
+                        if p == '\u{07}' {
+                            break;
+                        }
+                        if p == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\t' => {
+                let spaces = 4 - (col % 4);
+                out.extend(std::iter::repeat_n(' ', spaces));
+                col += spaces;
+            }
+            '\n' => {
+                out.push('\n');
+                col = 0;
+            }
+            '\r' | '\u{00}'..='\u{08}' | '\u{0b}'..='\u{1f}' | '\u{7f}' => {}
+            other => {
+                out.push(other);
+                col += 1;
+            }
+        }
+    }
+    Cow::Owned(out)
 }
 
 fn normalize_output_format(value: &str) -> Result<String> {
@@ -354,5 +424,67 @@ mod tests {
         assert!(text.contains("Plan ready for approval"));
         assert!(!text.contains("args:"));
         assert!(!text.contains("plan presented for approval"));
+    }
+
+    #[test]
+    fn text_renderer_sanitizes_untrusted_terminal_controls() {
+        let mut assistant = Vec::new();
+        let mut tool_names = HashMap::new();
+
+        render_text_event(
+            AgentEvent::AssistantTextDelta {
+                text: "\x1b[31mred\x1b[0m\x1b]2;owned-title\x07line\r\nok".to_string(),
+            },
+            &mut assistant,
+            &mut tool_names,
+        );
+
+        let assistant_text = String::from_utf8(assistant).unwrap();
+        assert!(!assistant_text.contains('\x1b'), "{assistant_text:?}");
+        assert!(!assistant_text.contains('\x07'), "{assistant_text:?}");
+        assert!(!assistant_text.contains('\r'), "{assistant_text:?}");
+        assert!(
+            !assistant_text.contains("owned-title"),
+            "{assistant_text:?}"
+        );
+        assert!(assistant_text.contains("red"));
+        assert!(assistant_text.contains("line\nok"));
+
+        let mut tool = Vec::new();
+        render_text_event(
+            AgentEvent::ToolCallStarted {
+                name: "run_shell".to_string(),
+                call_id: "call_1".to_string(),
+            },
+            &mut tool,
+            &mut tool_names,
+        );
+        render_text_event(
+            AgentEvent::ToolCallArgsDone {
+                call_id: "call_1".to_string(),
+                arguments: "bad\x1b]52;c;clipboard-secret\x07".to_string(),
+            },
+            &mut tool,
+            &mut tool_names,
+        );
+        render_text_event(
+            AgentEvent::ToolResult {
+                call_id: "call_1".to_string(),
+                output: "ok\x1b[2Jcleared\r\nnext".to_string(),
+                error: false,
+            },
+            &mut tool,
+            &mut tool_names,
+        );
+
+        let tool_text = String::from_utf8(tool).unwrap();
+        assert!(
+            tool_text.contains("\x1b[2m"),
+            "renderer-owned dim styling may remain"
+        );
+        assert!(!tool_text.contains("clipboard-secret"), "{tool_text:?}");
+        assert!(!tool_text.contains("\x1b[2J"), "{tool_text:?}");
+        assert!(!tool_text.contains('\r'), "{tool_text:?}");
+        assert!(tool_text.contains("cleared\nnext"));
     }
 }

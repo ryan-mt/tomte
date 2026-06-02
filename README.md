@@ -6,7 +6,7 @@
 
 Rust-fast · provider-agnostic · a drop-in for Claude Code — and it hatches a pixel companion.
 
-`0.0.1-beta.4` · MIT · built in 🦀 Rust
+`0.0.2` · MIT · built in 🦀 Rust
 
 </div>
 
@@ -73,7 +73,9 @@ Anthropic OAuth (Claude Pro/Max) is available after you acknowledge the ToS noti
 Environment keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are picked up automatically.
 
 OAuth uses PKCE with the callback `http://localhost:1455/auth/callback`. Tokens land in
-`$XDG_CONFIG_HOME/opencli/auth.json` (mode `0600`) and refresh themselves before they expire.
+`$XDG_CONFIG_HOME/opencli/auth.json` with owner-only permissions on Unix and refresh themselves
+before they expire. Non-Unix builds refuse to persist credentials until owner-only storage can
+be enforced there.
 
 ## Two ways to talk to it
 
@@ -88,7 +90,7 @@ opencli resume       # reopen with the session picker
 
 ```bash
 opencli chat "write a fibonacci function in Python"
-opencli chat --model gpt-5-pro --reasoning high "refactor module X"
+opencli chat --model gpt-5.5-pro --reasoning high "refactor module X"
 echo "read CLAUDE.md and summarize" | opencli chat
 
 opencli run --cwd /srv/project --prompt-file nightly-task.md   # scheduler-friendly alias
@@ -135,7 +137,7 @@ are discovered automatically.
 
 ```bash
 opencli config --show
-opencli config --set-model gpt-5-pro --set-reasoning high
+opencli config --set-model gpt-5.5-pro --set-reasoning high
 ```
 
 `$XDG_CONFIG_HOME/opencli/config.json`:
@@ -181,7 +183,7 @@ wraps it in subcommands (`login`, `chat`, `status`, `config`, `resume`, …) and
 
 ## Build from source
 
-**You'll need:** Rust stable (CI tracks the latest stable; this beta was verified with Rust
+**You'll need:** Rust stable (CI tracks the latest stable; this release was verified with Rust
 1.95.0) and `ripgrep` (recommended — powers the `grep` tool).
 
 ```bash
@@ -196,7 +198,7 @@ make unlink       # remove the link
 ```bash
 cargo run -- chat "hello"                            # headless one-shot
 cargo run                                            # interactive TUI
-cargo fmt --all -- --check                           # formatting gate
+cargo fmt --all --check                              # formatting gate
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace                               # the test suite
 make package                                         # local release archive + SHA256
@@ -208,7 +210,7 @@ chat/tool-call paths using the credentials already on the machine.
 
 ## Contributing
 
-Bug reports, ideas, and patches are all welcome — it's a young beta. Start with
+Bug reports, ideas, and patches are all welcome. Start with
 [CONTRIBUTING.md](CONTRIBUTING.md): it covers the dev setup, the exact CI gates
 to run locally (`cargo fmt`, `clippy -D warnings`, `cargo test`, `make smoke`),
 the Conventional-Commit style, and the PR flow. The short version: branch off
@@ -216,7 +218,13 @@ the Conventional-Commit style, and the PR flow. The short version: branch off
 
 ## Security
 
-- OAuth tokens refresh automatically; `auth.json` is written `0600`.
+- OAuth tokens refresh automatically; `auth.json` is written with owner-only permissions on Unix.
+- Project permission allow-lists reject symlinked `.opencli` paths and write with `O_NOFOLLOW`
+  on Unix, so an "allow in this project" decision cannot be redirected into another file.
+- Headless `chat` sanitizes terminal control sequences from model/tool text before writing to
+  stdout, while keeping opencli's own status styling.
+- Provider parse/SSE errors use bounded, auth-redacted excerpts instead of raw response bodies
+  or event payloads.
 - `run_shell` executes **directly on your machine** — there is no sandbox yet, so review any
   prompt that includes destructive commands. opencli flags obvious ones (`rm -rf` on system or
   home paths, `curl … | sh`, `mkfs`, raw block-device writes, force-pushes, …) and refuses them

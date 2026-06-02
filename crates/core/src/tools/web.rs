@@ -915,10 +915,10 @@ mod web_search_tests {
         // NAT64 well-known prefix (64:ff9b::/96) embedding loopback / link-local.
         assert!(blocked("64:ff9b::7f00:1")); // 127.0.0.1
         assert!(blocked("64:ff9b::a9fe:a9fe")); // 169.254.169.254 (cloud metadata)
-        // A public IPv4 under the same prefixes is not blocked (same as fetching
-        // that public v4 directly) — the re-check must not over-block.
+                                                // A public IPv4 under the same prefixes is not blocked (same as fetching
+                                                // that public v4 directly) — the re-check must not over-block.
         assert!(!blocked("64:ff9b::5db8:d822")); // 93.184.216.34 (example.com)
-        // A real, unrelated public v6 host is not blocked.
+                                                 // A real, unrelated public v6 host is not blocked.
         assert!(!blocked("2606:2800:220:1:248:1893:25c8:1946"));
     }
 

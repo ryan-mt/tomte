@@ -3459,6 +3459,35 @@ fn render_usage_report(app: &App) -> String {
 /// Render the visible chat blocks as a portable Markdown transcript for
 /// `/export`. Reasoning bodies and tool args/outputs are included so the
 /// export captures the same shape the user saw on screen.
+fn markdown_fence_for(content: &str) -> String {
+    let mut current_run = 0usize;
+    let mut max_run = 0usize;
+    for c in content.chars() {
+        if c == '`' {
+            current_run += 1;
+            max_run = max_run.max(current_run);
+        } else {
+            current_run = 0;
+        }
+    }
+    "`".repeat((max_run + 1).max(3))
+}
+
+fn push_markdown_fenced(out: &mut String, content: &str, language: Option<&str>) {
+    let fence = markdown_fence_for(content);
+    out.push_str(&fence);
+    if let Some(language) = language {
+        out.push_str(language);
+    }
+    out.push('\n');
+    out.push_str(content);
+    if !content.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&fence);
+    out.push_str("\n\n");
+}
+
 fn render_blocks_as_markdown(blocks: &[Block]) -> String {
     let mut out = String::new();
     out.push_str("# opencli conversation\n\n");
@@ -3481,9 +3510,9 @@ fn render_blocks_as_markdown(blocks: &[Block]) -> String {
                     out.push_str(&format!("_thought for {secs}s_\n\n"));
                 }
                 if !reasoning.is_empty() {
-                    out.push_str("<details><summary>reasoning</summary>\n\n```\n");
-                    out.push_str(reasoning);
-                    out.push_str("\n```\n\n</details>\n\n");
+                    out.push_str("<details><summary>reasoning</summary>\n\n");
+                    push_markdown_fenced(&mut out, reasoning, None);
+                    out.push_str("</details>\n\n");
                 }
                 if !text.is_empty() {
                     out.push_str(text);
@@ -3500,14 +3529,12 @@ fn render_blocks_as_markdown(blocks: &[Block]) -> String {
                 let marker = if *error { "❌" } else { "🔧" };
                 out.push_str(&format!("### {marker} tool: `{name}`\n\n"));
                 if !args.is_empty() {
-                    out.push_str("**args:**\n\n```json\n");
-                    out.push_str(args);
-                    out.push_str("\n```\n\n");
+                    out.push_str("**args:**\n\n");
+                    push_markdown_fenced(&mut out, args, Some("json"));
                 }
                 if let Some(o) = output {
-                    out.push_str("**output:**\n\n```\n");
-                    out.push_str(o);
-                    out.push_str("\n```\n\n");
+                    out.push_str("**output:**\n\n");
+                    push_markdown_fenced(&mut out, o, None);
                 }
             }
             Block::System(s) => {
@@ -3719,7 +3746,10 @@ fn point_in(r: ratatui::layout::Rect, col: u16, row: u16) -> bool {
 /// tail-following, or click a fleet row to toggle its detail. Mirrors the
 /// click targets the mouse-down handler used before drag selection existed.
 fn handle_left_click(app: &mut App, col: u16, row: u16) {
-    if app.jump_to_bottom_hint.is_some_and(|r| point_in(r, col, row)) {
+    if app
+        .jump_to_bottom_hint
+        .is_some_and(|r| point_in(r, col, row))
+    {
         app.auto_scroll = true;
     } else if let Some(id) = app
         .subagent_rows
@@ -4312,6 +4342,41 @@ mod tests {
         assert_eq!(resolved, nested.canonicalize().unwrap());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn markdown_export_preserves_fences_and_details_markers() {
+        let blocks = vec![
+            Block::Assistant {
+                text: "visible answer".to_string(),
+                reasoning: "```\n</details>\n".to_string(),
+                done: true,
+                thought_for_secs: None,
+                reasoning_started_at: None,
+            },
+            Block::Tool {
+                call_id: "call_1".to_string(),
+                name: "run_shell".to_string(),
+                args: "{\"cmd\":\"```\"}".to_string(),
+                output: Some("```\n</details>\n".to_string()),
+                error: false,
+            },
+        ];
+
+        let md = render_blocks_as_markdown(&blocks);
+
+        assert!(
+            md.contains("<details><summary>reasoning</summary>\n\n````\n```\n</details>\n````\n\n</details>"),
+            "{md}"
+        );
+        assert!(
+            md.contains("**args:**\n\n````json\n{\"cmd\":\"```\"}\n````\n\n"),
+            "{md}"
+        );
+        assert!(
+            md.contains("**output:**\n\n````\n```\n</details>\n````\n\n"),
+            "{md}"
+        );
     }
 
     #[test]

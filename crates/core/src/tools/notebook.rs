@@ -196,7 +196,10 @@ Parameters:\n\
                     ));
                 }
                 cells.remove(idx);
-                format!("Deleted cell `{cid}` (index {idx}) from {}", a.notebook_path)
+                format!(
+                    "Deleted cell `{cid}` (index {idx}) from {}",
+                    a.notebook_path
+                )
             }
             other => {
                 return Err(anyhow!(

@@ -81,7 +81,8 @@ pub(crate) fn handle_bang_shell(app: &mut App, bang_tx: &mpsc::Sender<BangResult
 /// and straightforward to unit-test. Split out from [`handle_bang_shell`] so the
 /// timeout can be exercised in tests without waiting the full ceiling.
 async fn run_bang_command(cmd: &str, cwd: &Path, timeout: Duration) -> BangResult {
-    let ctx = |body: &str| format!("[The user ran a shell command in the terminal]\n$ {cmd}\n{body}");
+    let ctx =
+        |body: &str| format!("[The user ran a shell command in the terminal]\n$ {cmd}\n{body}");
 
     #[cfg(windows)]
     let mut command = {

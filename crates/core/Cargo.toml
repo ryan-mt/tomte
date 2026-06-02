@@ -28,6 +28,7 @@ once_cell.workspace = true
 webbrowser.workspace = true
 axum.workspace = true
 regex = "1"
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use base64::Engine;
 use rand::RngCore;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
@@ -24,24 +24,17 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// retry attempt is bounded by it.
 const CREATE_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Best-effort scrub of `sk-…` / `Bearer …` substrings from an error body
-/// before it becomes part of an anyhow error string. The API has been
-/// observed to echo the submitted Authorization header back inside 401
-/// bodies; this prevents that echo from propagating into logs.
 fn redact_auth_in(body: &str) -> String {
-    let mut out = body.to_string();
-    for token in ["sk-", "sk_proj_", "Bearer "] {
-        while let Some(i) = out.find(token) {
-            let tail = &out[i + token.len()..];
-            let end = tail
-                .char_indices()
-                .find(|(_, c)| c.is_whitespace() || *c == '"' || *c == '}')
-                .map(|(j, _)| i + token.len() + j)
-                .unwrap_or(out.len());
-            out.replace_range(i..end, "<redacted>");
-        }
-    }
-    out
+    crate::sensitive::redact_auth_in(body)
+}
+
+fn parse_json_response(text: &str) -> Result<serde_json::Value> {
+    serde_json::from_str(text).map_err(|e| {
+        anyhow!(
+            "parse response: {e}; body: {}",
+            crate::sensitive::error_excerpt(text)
+        )
+    })
 }
 
 const API_BASE: &str = "https://api.openai.com/v1";
@@ -182,7 +175,7 @@ impl OpenAiClient {
         if !status.is_success() {
             return Err(anyhow!("OpenAI {} {}", status, redact_auth_in(&text)));
         }
-        serde_json::from_str(&text).with_context(|| format!("parse response: {text}"))
+        parse_json_response(&text)
     }
 
     fn apply_credential_defaults(&self, req: &mut ResponsesRequest) {
@@ -264,7 +257,7 @@ pub async fn raw_post<B: Serialize>(
     if !status.is_success() {
         return Err(anyhow!("OpenAI {} {}", status, redact_auth_in(&text)));
     }
-    serde_json::from_str(&text).with_context(|| format!("parse: {text}"))
+    parse_json_response(&text)
 }
 
 #[async_trait::async_trait]
@@ -284,7 +277,9 @@ impl crate::client::ProviderClient for OpenAiClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_openai_reasoning_effort, strip_unsendable_reasoning};
+    use super::{
+        normalize_openai_reasoning_effort, parse_json_response, strip_unsendable_reasoning,
+    };
     use crate::openai::models::{InputItem, MessageContent};
 
     #[test]
@@ -405,5 +400,23 @@ mod tests {
             normalize_openai_reasoning_effort("gpt-5.5", "medium", false),
             "medium"
         );
+    }
+
+    #[test]
+    fn parse_json_response_redacts_and_caps_error_body() {
+        let body = format!(
+            "{{\"error\":\"bad key sk-proj-secret and Bearer oauth-secret\",\"padding\":\"{}\"",
+            "x".repeat(512)
+        );
+
+        let err = parse_json_response(&body).expect_err("malformed JSON must fail");
+        let message = err.to_string();
+
+        assert!(!message.contains("sk-proj-secret"), "{message}");
+        assert!(!message.contains("oauth-secret"), "{message}");
+        assert!(!message.contains(&"x".repeat(256)), "{message}");
+        assert!(message.contains("<redacted>"), "{message}");
+        assert!(message.contains("truncated"), "{message}");
+        assert!(message.len() < 320, "{message}");
     }
 }

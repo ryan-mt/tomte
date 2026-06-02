@@ -82,6 +82,13 @@ pub enum ResponseStreamEvent {
     },
 }
 
+fn parse_sse_error(error: impl std::fmt::Display, data: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "parse SSE: {error}; data: {}",
+        crate::sensitive::error_excerpt(data)
+    )
+}
+
 impl StreamHandle {
     pub fn from_response(resp: reqwest::Response) -> Self {
         let (tx, rx) = mpsc::channel::<anyhow::Result<ResponseStreamEvent>>(256);
@@ -112,9 +119,7 @@ impl StreamHandle {
                                     }
                                 }
                                 Err(e) => {
-                                    let _ = tx
-                                        .send(Err(anyhow::anyhow!("parse SSE: {e}: {}", ev.data)))
-                                        .await;
+                                    let _ = tx.send(Err(parse_sse_error(e, &ev.data))).await;
                                     return;
                                 }
                             }
@@ -476,6 +481,24 @@ mod tests {
     use super::*;
     use axum::{routing::get, Router};
     use std::time::Duration;
+
+    #[test]
+    fn parse_sse_error_redacts_and_caps_event_data() {
+        let data = format!(
+            "{{\"error\":\"bad key sk-proj-secret and Bearer oauth-secret\",\"padding\":\"{}\"",
+            "x".repeat(512)
+        );
+
+        let err = parse_sse_error("expected value", &data);
+        let message = err.to_string();
+
+        assert!(!message.contains("sk-proj-secret"), "{message}");
+        assert!(!message.contains("oauth-secret"), "{message}");
+        assert!(!message.contains(&"x".repeat(256)), "{message}");
+        assert!(message.contains("<redacted>"), "{message}");
+        assert!(message.contains("truncated"), "{message}");
+        assert!(message.len() < 340, "{message}");
+    }
 
     #[tokio::test]
     async fn stream_reports_eof_before_terminal_event() {

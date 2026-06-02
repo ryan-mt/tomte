@@ -9,6 +9,11 @@
 
 ### Fixed
 
+- Project permission persistence now rejects a symlinked `.opencli` directory or `.opencli/permissions.json` file before saving an "allow in this project" rule; on Unix it writes the permission file with `O_NOFOLLOW` and owner-only mode, so the allow-list cannot be redirected into an arbitrary file through a project symlink.
+- Headless `chat` output now strips terminal control sequences from untrusted assistant text, tool arguments/results, plan text, goal status, and fallback model names while keeping opencli's own renderer styling, so a model/tool payload cannot rewrite the terminal, set titles, inject OSC clipboard data, or use carriage returns to corrupt the display.
+- `/export` Markdown now uses fences longer than any backtick run inside reasoning/tool payloads, so transcripts containing raw code fences or `</details>` text no longer break the exported document structure.
+- OpenAI and Anthropic successful-response parse errors, plus malformed SSE event errors, now include bounded, auth-redacted excerpts instead of dumping raw provider bodies/events that could contain echoed API keys, bearer tokens, or very large payloads.
+- Non-Unix auth persistence now fails with an explicit unsupported-platform error until owner-only credential file permissions can be enforced there, rather than silently storing tokens with inherited platform ACLs.
 - `!`-commands from the composer now run on a background task with a 120s timeout (killed on expiry) instead of blocking the event loop — a long-running or non-terminating command (dev server, `tail -f`) no longer freezes the whole TUI.
 - `@<path>` mentions are now confined to the workspace: an absolute path, a `..` escape, or a symlink resolving outside `cwd` is ignored instead of attaching out-of-tree file contents to the prompt.
 - `@`-expansion now scans only the user's own prompt, not the prepended output of a prior `!`-command, so a `@token` printed by a shell command no longer attaches an unrelated file.
