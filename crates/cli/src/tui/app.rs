@@ -753,11 +753,11 @@ pub fn pick_spinner_word() -> String {
 
 impl App {
     fn new() -> Self {
-        let config = config::load();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let config = config::load_for_cwd(&cwd);
         let auth_mode = auth::load_auth()
             .map(|a| auth::effective_mode_with_env(&a))
             .unwrap_or_else(|_| auth_mode_from_env().unwrap_or(AuthMode::None));
-        let cwd = std::env::current_dir().unwrap_or_default();
         let blocks = vec![Block::Welcome];
         let screen = initial_screen(auth_mode, has_supported_env_key());
         let mut app = Self {

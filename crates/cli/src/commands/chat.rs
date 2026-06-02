@@ -57,7 +57,7 @@ pub async fn run(
         anyhow::bail!("no prompt provided");
     }
 
-    let mut cfg = config::load();
+    let mut cfg = config::load_for_cwd(&std::env::current_dir().unwrap_or_default());
     if let Some(m) = model {
         // Accept an explicit `provider/model` spec from --model; store the bare
         // wire id (matches how config.json values are normalised on load).
