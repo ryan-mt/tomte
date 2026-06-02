@@ -143,11 +143,25 @@ fn prompt_secret(prompt: &str) -> Result<String> {
     // TTY: read with echo OFF so the secret isn't displayed as typed or left in
     // scrollback. Raw mode disables line editing, so handle Enter/Backspace and
     // Ctrl+C ourselves.
-    use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+    // RAII so a panic in `event::read()` can't return the shell stuck in raw
+    // mode (no echo). The explicit disable below handles the normal path; this
+    // is the panic/early-return net.
+    struct RawModeGuard;
+    impl Drop for RawModeGuard {
+        fn drop(&mut self) {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+    }
     crossterm::terminal::enable_raw_mode()?;
+    let _raw_guard = RawModeGuard;
     let mut buf = String::new();
     let outcome: Result<()> = loop {
         match event::read() {
+            // Ignore key-release/repeat events: terminals that emit them (Windows
+            // console, kitty enhancement) would otherwise double each typed char
+            // and corrupt the pasted/typed secret.
+            Ok(Event::Key(k)) if k.kind != KeyEventKind::Press => {}
             Ok(Event::Key(k)) => match (k.code, k.modifiers) {
                 (KeyCode::Enter, _) => break Ok(()),
                 (KeyCode::Char('c'), KeyModifiers::CONTROL) => {

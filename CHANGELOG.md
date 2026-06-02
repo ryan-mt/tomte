@@ -30,6 +30,7 @@
 - Clicking in the input area no longer toggles an off-screen sub-agent: the sub-agent panel only registers click targets for rows actually drawn inside its (capped) height.
 - Anthropic `redacted_thinking` blocks (reasoning the safety system encrypts) are no longer dropped from the stream: their opaque `data` is now captured and replayed verbatim ahead of the turn's tool call, so a redacted-thinking-then-tool turn no longer breaks the reasoning/tool_use chain and gets rejected on the next request.
 - An Anthropic response that stops with `stop_reason: refusal` (a safety classifier blocked the output mid-stream) now surfaces as an error instead of a silent, often-empty "successful" turn — matching how the OpenAI `content_filter` stop is handled.
+- The `login` API-key prompt now ignores key-release/repeat events, so on terminals that emit them (Windows console, kitty keyboard enhancement) a typed or pasted key is no longer doubled into a corrupted key; and it restores cooked-mode terminal via an RAII guard, so a panic while reading the key can't leave the shell stuck with echo off.
 
 ## 0.0.1-beta.4
 
