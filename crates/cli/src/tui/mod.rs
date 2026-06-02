@@ -2,6 +2,7 @@ mod app;
 mod buddy;
 mod clipboard;
 mod composer;
+mod context_view;
 mod input;
 mod login;
 mod picker;

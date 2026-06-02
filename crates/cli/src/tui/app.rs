@@ -198,6 +198,10 @@ pub enum Block {
         error: bool,
     },
     System(String),
+    /// Pre-styled, fixed-layout content (e.g. the `/context` report). The lines
+    /// are built once with their own colors/indentation and rendered verbatim,
+    /// so they don't go through the text-wrap path.
+    Rich(Vec<ratatui::text::Line<'static>>),
 }
 
 /// An in-progress `/buddy` hatch animation: a wobbling egg that cracks and
@@ -2663,7 +2667,16 @@ async fn handle_slash(app: &mut App, cmd: &str) {
             app.blocks.push(Block::System(render_usage_report(app)));
         }
         "context" | "ctx" => {
-            app.blocks.push(Block::System(render_context_report(app)));
+            let expanded = arg.trim().eq_ignore_ascii_case("all");
+            let messages = estimate_messages_tokens(&app.blocks);
+            let report = opencli_core::context_report::build(
+                &app.cwd,
+                &app.config,
+                messages,
+                app.tokens_used,
+            );
+            let lines = crate::tui::context_view::render(&report, expanded);
+            app.blocks.push(Block::Rich(lines));
         }
         "buddy" | "pet" => {
             let arg = arg.trim();
@@ -3102,68 +3115,29 @@ fn split_slash_command(cmd: &str) -> (&str, &str) {
     (head, arg)
 }
 
-/// `/context` report: the real provider-reported occupancy as the headline,
-/// plus a chars/4 estimate of where the *visible conversation* is spending
-/// context (tool I/O is usually the bulk — and the prime microcompaction
-/// target). The system prompt and tool schemas live in the agent layer and are
-/// not counted here, so the headline total is the source of truth.
-fn render_context_report(app: &App) -> String {
+/// chars/4 estimate of the visible conversation — user/assistant/reasoning/tool
+/// I/O and system notes on screen. Feeds the "Messages" category of the
+/// `/context` report; the prompt-side categories (system prompt, tool schemas,
+/// skills, …) are estimated in `opencli_core::context_report`.
+fn estimate_messages_tokens(blocks: &[Block]) -> u64 {
     fn est(s: &str) -> u64 {
         (s.chars().count() as u64).div_ceil(4)
     }
-    let limit = app.config.effective_context_limit();
-    let used = app.tokens_used;
-    let pct = used.saturating_mul(100).checked_div(limit).unwrap_or(0);
-
-    let (mut user, mut assistant, mut reasoning, mut tool_io, mut system) = (0u64, 0, 0, 0, 0);
-    for b in &app.blocks {
+    let mut total = 0u64;
+    for b in blocks {
         match b {
-            Block::User(t) => user += est(t),
+            Block::User(t) => total += est(t),
             Block::Assistant {
-                text, reasoning: r, ..
-            } => {
-                assistant += est(text);
-                reasoning += est(r);
-            }
+                text, reasoning, ..
+            } => total += est(text) + est(reasoning),
             Block::Tool { args, output, .. } => {
-                tool_io += est(args) + output.as_deref().map(est).unwrap_or(0);
+                total += est(args) + output.as_deref().map(est).unwrap_or(0);
             }
-            Block::System(t) => system += est(t),
-            Block::Welcome => {}
+            Block::System(t) => total += est(t),
+            Block::Welcome | Block::Rich(_) => {}
         }
     }
-    let visible = user + assistant + reasoning + tool_io + system;
-
-    let mut msg = String::new();
-    msg.push_str(&format!("Context window — model: {}\n", app.config.model));
-    msg.push_str(&format!(
-        "  Used: {used} / {limit} tokens ({pct}%)  {}\n",
-        ratio_bar(pct)
-    ));
-    msg.push_str("  Microcompaction sheds old tool output above 75%; auto-compact at 85%.\n");
-    if used == 0 {
-        msg.push_str(
-            "  (No turn has run yet — the real occupancy appears after the first response.)\n",
-        );
-    }
-    msg.push('\n');
-    msg.push_str("Estimated composition of the visible conversation (chars/4):\n");
-    let rows = [
-        ("Tool calls + output", tool_io),
-        ("Assistant text", assistant),
-        ("Reasoning", reasoning),
-        ("User messages", user),
-        ("System notes", system),
-    ];
-    for (label, toks) in rows {
-        let share = toks.saturating_mul(100).checked_div(visible).unwrap_or(0);
-        msg.push_str(&format!("  {label:<22} {toks:>8} tok  ({share:>2}%)\n"));
-    }
-    msg.push_str(&format!("  {:-<22} {visible:>8} tok\n", ""));
-    msg.push_str(
-        "  Note: estimates exclude the system prompt + tool schemas; the headline total above is the real provider-reported occupancy.",
-    );
-    msg
+    total
 }
 
 /// Shared git safety protocol injected into the `/commit` family so the agent
@@ -3210,14 +3184,6 @@ Steps:\n\
 5. Open a PR with `gh pr create` (fill in a clear title and body summarizing the change). If `gh` is not installed, stop after pushing and print the branch name plus the URL the user can use to open the PR manually.\n\n\
 {GIT_SAFETY_PROTOCOL}{extra}"
     )
-}
-
-/// Fixed-width `[████░░░░]` bar for a 0–100 percentage.
-fn ratio_bar(pct: u64) -> String {
-    const WIDTH: u64 = 20;
-    let filled = (pct.min(100) * WIDTH / 100) as usize;
-    let empty = WIDTH as usize - filled;
-    format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
 }
 
 fn goal_start_prompt(objective: &str) -> String {
@@ -3510,6 +3476,8 @@ fn render_blocks_as_markdown(blocks: &[Block]) -> String {
                 out.push_str(&s.replace('\n', "\n> "));
                 out.push_str("\n\n");
             }
+            // Live UI widgets (e.g. `/context`) aren't conversation content.
+            Block::Rich(_) => {}
         }
     }
     out
@@ -4446,15 +4414,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_slash_renders_window_report() {
+    async fn context_slash_renders_rich_report() {
         let mut app = App::new();
         handle_slash(&mut app, "context").await;
-        let Some(Block::System(text)) = app.blocks.last() else {
-            panic!("expected a system block from /context");
+        let Some(Block::Rich(lines)) = app.blocks.last() else {
+            panic!("expected a rich block from /context");
         };
-        assert!(text.contains("Context window"));
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Context Usage"));
         assert!(text.contains(&app.config.model));
-        assert!(text.contains("composition"));
+        assert!(text.contains("System prompt"));
+        assert!(text.contains("Skills"));
+        assert!(text.contains("/context all to expand"));
+    }
+
+    #[tokio::test]
+    async fn context_all_expands_and_drops_hint() {
+        let mut app = App::new();
+        handle_slash(&mut app, "context all").await;
+        let Some(Block::Rich(lines)) = app.blocks.last() else {
+            panic!("expected a rich block from /context all");
+        };
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Expanded view lists items and hides the "expand" hint.
+        assert!(!text.contains("/context all to expand"));
+    }
+
+    #[test]
+    fn rich_block_renders_to_terminal_buffer() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = App::new();
+        app.blocks.push(Block::Rich(vec![ratatui::text::Line::from(
+            "CTXMARKER-line",
+        )]));
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal
+            .draw(|f| crate::tui::ui::render(f, &mut app))
+            .unwrap();
+        let dump: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            dump.contains("CTXMARKER-line"),
+            "Block::Rich content must reach the terminal buffer"
+        );
     }
 
     #[tokio::test]
@@ -4603,17 +4619,6 @@ mod tests {
         assert!(p.contains("gh pr create"));
         assert!(p.contains("fixes #42"));
         assert!(p.contains("force-push"));
-    }
-
-    #[test]
-    fn ratio_bar_fills_proportionally_and_clamps() {
-        assert_eq!(ratio_bar(0), format!("[{}]", "░".repeat(20)));
-        assert_eq!(ratio_bar(100), format!("[{}]", "█".repeat(20)));
-        assert_eq!(ratio_bar(150), format!("[{}]", "█".repeat(20)));
-        assert_eq!(
-            ratio_bar(50),
-            format!("[{}{}]", "█".repeat(10), "░".repeat(10))
-        );
     }
 
     #[tokio::test]

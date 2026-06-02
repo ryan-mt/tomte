@@ -49,6 +49,18 @@ pub fn apply_to_system_prompt_with_globals(
     system_prompt.push_str(MEMORY_BLOCK_END);
 }
 
+/// Paths of every memory file currently applied to the system prompt for `cwd`,
+/// in prompt display order (global first, then project files walking up to the
+/// git root). Backs the `/context` report's "Memory files" section. Uses the
+/// same discovery as [`apply_to_system_prompt`], so the count stays in sync with
+/// what is actually injected.
+pub fn applied_files(cwd: &Path) -> Vec<PathBuf> {
+    collect_entries_with_globals(cwd, global_memory_dirs())
+        .into_iter()
+        .map(|entry| entry.path)
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MemoryEntry {
     path: PathBuf,

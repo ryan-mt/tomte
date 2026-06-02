@@ -768,6 +768,14 @@ fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 }
                 lines.push(Line::raw(""));
             }
+            // Pre-styled fixed-layout content (e.g. `/context`): pushed verbatim,
+            // no wrapping (the lines carry their own indent and colors).
+            Block::Rich(rich_lines) => {
+                for l in rich_lines {
+                    lines.push(l.clone());
+                }
+                lines.push(Line::raw(""));
+            }
         }
         i += 1;
     }
@@ -850,6 +858,9 @@ fn block_fingerprint(block: &Block) -> usize {
     match block {
         Block::Welcome => 0,
         Block::User(s) | Block::System(s) => s.len(),
+        // Rich blocks are built once and never mutated, so their line count is a
+        // stable fingerprint.
+        Block::Rich(lines) => lines.len(),
         Block::Assistant {
             text,
             reasoning,
