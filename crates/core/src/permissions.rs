@@ -107,6 +107,15 @@ fn shell_segments(cmd: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Program name of a shell word: quote chars removed, then the basename, so
+/// `"rm"`, `r''m`, `/bin/rm`, `'sudo'` all resolve to the program that actually
+/// runs. Mirrors the danger classifier's `shell_token_command_name` so the deny
+/// list and the danger gate agree on what a word executes.
+fn program_name(word: &str) -> String {
+    let literal: String = word.chars().filter(|c| !matches!(c, '"' | '\'')).collect();
+    literal.rsplit(['/', '\\']).next().unwrap_or("").to_string()
+}
+
 /// Program candidates one segment runs, peeling wrapper/interpreter prefixes:
 /// `sudo rm` → `["sudo", "rm"]`, `cargo build` → `["cargo"]`. Skips leading
 /// `VAR=val` assignments and a peeled wrapper's immediate `-flags`. The chain
@@ -130,6 +139,40 @@ fn segment_programs(segment: &str) -> Vec<&str> {
             continue; // keep peeling to reach the wrapped program
         }
         break;
+    }
+    out
+}
+
+/// Program candidates one segment runs for a DENY match — intentionally broad.
+/// Beyond the leading program it treats every later non-flag word as a
+/// candidate *once a wrapper has been seen*, because the wrapped program can sit
+/// behind a value-bearing flag (`sudo -u root rm`) or a positional argument
+/// (`timeout 5 rm`) that `segment_programs` mistakes for the program. Quotes are
+/// stripped via [`program_name`] so `"rm"`/`r''m` are caught too. A bare denied
+/// name passed as an argument to a wrapper (`sudo grep rm f`) may over-match,
+/// but deny erring broad only ever costs an extra prompt, never a silent run.
+fn segment_deny_programs(segment: &str) -> Vec<String> {
+    let mut words = segment.split_whitespace().peekable();
+    while words.peek().is_some_and(|w| is_assignment(w)) {
+        words.next();
+    }
+    let mut out = Vec::new();
+    let mut saw_wrapper = false;
+    for w in words {
+        if w.starts_with('-') {
+            continue; // a flag, or a flag's value we can't see — skip
+        }
+        let base = program_name(w);
+        if base.is_empty() {
+            continue;
+        }
+        let wrap = is_wrapper(&base);
+        out.push(base);
+        if wrap {
+            saw_wrapper = true;
+        } else if !saw_wrapper {
+            break; // no wrapper seen: only the leading program runs
+        }
     }
     out
 }
@@ -182,15 +225,22 @@ fn run_shell_rule_matches(prog: &str, args: &Value, mode: MatchMode) -> bool {
     else {
         return false;
     };
-    let segments = shell_segments(cmd);
     match mode {
-        // Broad: any program any segment runs (wrappers peeled) matches.
-        MatchMode::Deny => segments
-            .iter()
-            .any(|seg| segment_programs(seg).contains(&prog)),
+        // Broad: any program any segment runs (wrappers peeled, quotes stripped,
+        // every post-wrapper word scanned) matches. Command/process substitution
+        // and subshells are first exploded into separate segments so a hidden
+        // `$(rm …)`, `` `rm …` `` or `(rm …)` is still seen — deny must catch
+        // what the danger classifier (shell_token_command_name) catches.
+        MatchMode::Deny => {
+            let exposed = cmd.replace(['(', ')', '`'], "\n");
+            shell_segments(&exposed)
+                .iter()
+                .any(|seg| segment_deny_programs(seg).iter().any(|p| p.as_str() == prog))
+        }
         // Narrow: every segment must run exactly `prog` with no wrapper and no
         // command substitution, else fall through to a prompt.
         MatchMode::Allow => {
+            let segments = shell_segments(cmd);
             !segments.is_empty()
                 && segments.iter().all(|seg| {
                     let chain = segment_programs(seg);
@@ -458,6 +508,41 @@ mod tests {
                 "expected deny for: {cmd}"
             );
         }
+    }
+
+    #[test]
+    fn deny_run_shell_is_not_bypassed_by_quotes_value_flags_or_substitution() {
+        let perms = ProjectPermissions {
+            allow: vec![],
+            deny: vec!["run_shell(rm:*)".into()],
+        };
+        for cmd in [
+            "\"rm\" -rf /",          // quoted program name
+            "r''m -rf /",            // quotes inside the word
+            "sudo -u root rm -rf /", // value-bearing wrapper flag hides the program
+            "nice -n 19 rm -rf /",   // ditto
+            "timeout 5 rm -rf /",    // positional wrapper argument hides the program
+            "echo $(rm -rf /)",      // command substitution
+            "x`rm -rf /`",           // backtick substitution
+            "(rm -rf /)",            // subshell
+        ] {
+            assert_eq!(
+                decide(&perms, "run_shell", &json!({ "command": cmd })),
+                Decision::Deny,
+                "expected deny for: {cmd}"
+            );
+        }
+        // The wrapped-program name must still be matched exactly: a different
+        // program behind a wrapper is not spuriously denied.
+        assert_eq!(
+            decide(
+                &perms,
+                "run_shell",
+                &json!({ "command": "sudo -u root cat file" })
+            ),
+            Decision::Ask,
+            "unrelated program behind a wrapper must not be denied"
+        );
     }
 
     #[test]

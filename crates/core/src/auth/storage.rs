@@ -93,6 +93,12 @@ pub fn save_auth(record: &AuthRecord) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
+        // SECURITY LIMITATION: unlike the Unix path above (mode 0600), this has
+        // no portable way in std to restrict the file's permissions, so on
+        // Windows `auth.json` inherits the parent directory's ACL. Hardening
+        // this needs platform ACL APIs (e.g. windows-acl) and a Windows host to
+        // verify against; until then, non-Unix builds do not enforce
+        // owner-only access to the stored tokens.
         std::fs::write(&tmp, text.as_bytes())?;
     }
     std::fs::rename(&tmp, &path)?;

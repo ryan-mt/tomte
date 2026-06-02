@@ -3232,13 +3232,13 @@ async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, limit: u64)
         // keeps the /compact warning accurate. OpenAI omits the cache fields,
         // so this is a no-op there.
         let i = get("input_tokens")
-            + get("cache_read_input_tokens")
-            + get("cache_creation_input_tokens");
+            .saturating_add(get("cache_read_input_tokens"))
+            .saturating_add(get("cache_creation_input_tokens"));
         let o = get("output_tokens");
         let t = usage
             .get("total_tokens")
             .and_then(|v| v.as_u64())
-            .unwrap_or(i + o);
+            .unwrap_or(i.saturating_add(o));
         let _ = tx
             .send(AgentEvent::Usage {
                 input_tokens: i,
@@ -3251,11 +3251,14 @@ async fn emit_usage(response: &Value, tx: &mpsc::Sender<AgentEvent>, limit: u64)
         // context-window failure on the next turn. Checked first (narrower
         // condition) so the stronger event replaces — not supplements — the
         // 80% ContextWarning.
-        if i * 100 >= limit * 85 {
+        // Cast to u128 for the threshold math: `i` is an attacker-controlled
+        // token count, so `i * 100` would overflow u64 on a hostile `usage`
+        // (panic in debug, silent wrap in release that mis-fires the banners).
+        if i as u128 * 100 >= limit as u128 * 85 {
             let _ = tx
                 .send(AgentEvent::AutoCompactSuggested { used: i, limit })
                 .await;
-        } else if i * 10 >= limit * 8 {
+        } else if i as u128 * 10 >= limit as u128 * 8 {
             let _ = tx.send(AgentEvent::ContextWarning { used: i, limit }).await;
         }
         // A real request always reports a non-zero input count; `i == 0` means

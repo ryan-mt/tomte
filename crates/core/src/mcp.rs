@@ -30,7 +30,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
@@ -39,6 +39,40 @@ use crate::tools::{BuiltinTool, ToolContext};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Hard cap on a single JSON-RPC line from an MCP server. A server is untrusted
+/// (an external subprocess), and `Lines::next_line`/`read_until` buffer until a
+/// newline with no bound, so one newline-less line could exhaust memory before
+/// the per-result `cap_tool_output` ever runs. 16 MiB is generous for any
+/// legitimate tool result.
+const MAX_MCP_LINE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read one newline-delimited message, bounding its length so a malicious or
+/// buggy MCP server can't OOM the process with a single unterminated line.
+/// Returns `Ok(None)` at clean EOF; the trailing `\n` is consumed and stripped.
+async fn read_capped_line(reader: &mut BufReader<ChildStdout>) -> Result<Option<String>> {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            // EOF: surface any trailing unterminated bytes, else signal close.
+            return Ok((!buf.is_empty()).then(|| String::from_utf8_lossy(&buf).into_owned()));
+        }
+        let chunk_len = available.len();
+        if let Some(nl) = available.iter().position(|&b| b == b'\n') {
+            buf.extend_from_slice(&available[..nl]);
+            reader.consume(nl + 1);
+            return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+        }
+        buf.extend_from_slice(available);
+        reader.consume(chunk_len);
+        if buf.len() > MAX_MCP_LINE_BYTES {
+            return Err(anyhow!(
+                "MCP server sent a line larger than {MAX_MCP_LINE_BYTES} bytes; \
+                 aborting to avoid memory exhaustion"
+            ));
+        }
+    }
+}
 
 #[cfg(unix)]
 fn isolate_process_group(cmd: &mut Command) {
@@ -111,7 +145,7 @@ pub struct McpClient {
 
 struct McpState {
     stdin: ChildStdin,
-    lines: Lines<BufReader<ChildStdout>>,
+    reader: BufReader<ChildStdout>,
     next_id: u64,
     request_timeout: Duration,
     child_pid: Option<u32>,
@@ -183,10 +217,10 @@ impl McpClient {
                 }
             });
         }
-        let lines = BufReader::new(stdout).lines();
+        let reader = BufReader::new(stdout);
         let mut state = McpState {
             stdin,
-            lines,
+            reader,
             next_id: 1,
             request_timeout,
             child_pid,
@@ -338,10 +372,10 @@ impl McpState {
         // stall the turn. Inside, read until we see a response with our id,
         // skipping unrelated notifications and other responses.
         let request_timeout = self.request_timeout;
-        let lines = &mut self.lines;
+        let reader = &mut self.reader;
         let read = async {
             loop {
-                let Some(line) = lines.next_line().await? else {
+                let Some(line) = read_capped_line(reader).await? else {
                     return Err(anyhow!(
                         "MCP server closed stdout while awaiting `{method}`"
                     ));

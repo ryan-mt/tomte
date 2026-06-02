@@ -66,10 +66,16 @@ Parameters:\n\
             return Err(anyhow!("URL must start with http:// or https://"));
         }
         let url = parsed.to_string();
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| anyhow!("URL has no host: {url}"))?
+            .to_string();
         // SSRF guard: resolve the host and reject loopback / RFC1918 / link-local
         // ranges so the model can't be coaxed into hitting cloud metadata
-        // (169.254.169.254) or internal admin endpoints (127.0.0.1, 10.x).
-        validate_ssrf_safe(&url).await?;
+        // (169.254.169.254) or internal admin endpoints (127.0.0.1, 10.x). The
+        // validated IPs are pinned into the client below so the connect-time
+        // lookup can't rebind to an address we never checked.
+        let pinned = validate_ssrf_safe(&url).await?;
         let cap = a.max_bytes.unwrap_or(DEFAULT_MAX_BYTES).min(HARD_CAP_BYTES) as usize;
         let client = reqwest::Client::builder()
             .user_agent(concat!("opencli/", env!("CARGO_PKG_VERSION")))
@@ -78,6 +84,9 @@ Parameters:\n\
             // private address even though the initial host was public. We
             // surface 3xx + Location in the body so the model can choose.
             .redirect(reqwest::redirect::Policy::none())
+            // Pin the exact IPs we validated above; reqwest would otherwise
+            // resolve the host again at connect time (DNS-rebinding window).
+            .resolve_to_addrs(&host, &pinned)
             .build()?;
 
         // Retry transient failures: connection errors, DNS hiccups, 5xx.
@@ -279,12 +288,14 @@ fn is_transient(e: &reqwest::Error) -> bool {
 /// private (RFC1918), link-local (169.254.0.0/16 — AWS metadata),
 /// CGNAT, unspecified, and IPv6 unique-local / link-local addresses.
 ///
-/// Note: this only validates the initial host. Automatic redirects are
-/// disabled separately in the caller so a 302 cannot bypass the check.
-/// We do not defend against DNS rebinding (resolving twice and getting a
-/// different address); rebinding would require a determined attacker
-/// controlling DNS, which is outside the local-tool threat model.
-async fn validate_ssrf_safe(url_str: &str) -> Result<()> {
+/// Returns the validated socket addresses so the caller can PIN them into the
+/// request client (`resolve_to_addrs`). Without pinning, reqwest resolves the
+/// host a second time at connect and could land on an address we never checked
+/// (DNS rebinding); pinning the exact validated IPs closes that window.
+///
+/// Note: automatic redirects are disabled separately in the caller so a 302
+/// cannot bypass the check.
+async fn validate_ssrf_safe(url_str: &str) -> Result<Vec<std::net::SocketAddr>> {
     let parsed = url::Url::parse(url_str).with_context(|| format!("parse URL: {url_str}"))?;
     let host = parsed
         .host_str()
@@ -308,7 +319,7 @@ async fn validate_ssrf_safe(url_str: &str) -> Result<()> {
             ));
         }
     }
-    Ok(())
+    Ok(addrs)
 }
 
 /// Returns true for any IP we should refuse to fetch from a model-issued
@@ -447,7 +458,27 @@ impl Backend {
                 resp.status().as_u16()
             ));
         }
-        resp.text().await.context("read search response body")
+        // Cap the body during streaming like web_fetch. These hosts are fixed
+        // and trusted, but a misbehaving or compromised upstream (or a MITM)
+        // shouldn't be able to stream an unbounded body into memory. 8 MiB is
+        // far more than any real search-results page.
+        const SEARCH_MAX_BYTES: usize = 8 * 1024 * 1024;
+        use futures_util::StreamExt as _;
+        let mut stream = resp.bytes_stream();
+        let mut buf: Vec<u8> = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("read search response body")?;
+            let remaining = SEARCH_MAX_BYTES.saturating_sub(buf.len());
+            if remaining == 0 {
+                break;
+            }
+            let take = chunk.len().min(remaining);
+            buf.extend_from_slice(&chunk[..take]);
+            if take < chunk.len() {
+                break;
+            }
+        }
+        Ok(String::from_utf8_lossy(&buf).into_owned())
     }
 
     fn parse(self, html: &str) -> Vec<SearchResult> {
