@@ -111,6 +111,12 @@ pub async fn complete_manual_login(login: &ManualLogin, pasted_code: &str) -> Re
     if code.is_empty() {
         return Err(anyhow!("no authorization code provided"));
     }
+    // CSRF / authorization-code-injection guard: claude.ai echoes the state we
+    // generated back as `CODE#STATE`. Verify it matches THIS login's state
+    // before exchanging, so a code/state pair from a different (attacker-
+    // initiated) authorization can't be pasted in. (The state was previously
+    // generated but never checked — only forwarded into the token request.)
+    check_returned_state(code, &login.state)?;
     let tokens =
         exchange_code_for_tokens(MANUAL_REDIRECT_URI, &login.pkce, code, &login.state).await?;
     let expires_at = tokens.expires_in.and_then(|sec| {
@@ -136,6 +142,23 @@ pub async fn complete_manual_login(login: &ManualLogin, pasted_code: &str) -> Re
     record.last_refresh = Some(Utc::now());
     save_auth(&record)?;
     Ok(record)
+}
+
+/// Verify the OAuth `state` echoed back in a pasted `CODE#STATE` value against
+/// the state generated for this login. claude.ai appends the state after a `#`
+/// (and possibly more `&`-joined params). When a state is present it MUST match;
+/// when the paste carries no `#state` we can't check it client-side and proceed
+/// (the token request still binds our state server-side).
+fn check_returned_state(pasted: &str, expected: &str) -> Result<()> {
+    if let Some((_, rest)) = pasted.split_once('#') {
+        let returned = rest.split('&').next().unwrap_or(rest);
+        if !returned.is_empty() && returned != expected {
+            return Err(anyhow!(
+                "OAuth state mismatch — the pasted code is from a different login attempt. Start the login again."
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn token_http() -> Result<reqwest::Client> {
@@ -268,6 +291,18 @@ pub async fn ensure_fresh(record: &AuthRecord) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn returned_state_must_match_when_present() {
+        // Matching state in the pasted `CODE#STATE` → accepted.
+        assert!(check_returned_state("the-code#abc123", "abc123").is_ok());
+        // Extra &-joined params after the state are tolerated.
+        assert!(check_returned_state("the-code#abc123&foo=1", "abc123").is_ok());
+        // A different state (attacker-injected code/state) → rejected.
+        assert!(check_returned_state("the-code#evil", "abc123").is_err());
+        // No `#state` in the paste → can't verify client-side, proceed.
+        assert!(check_returned_state("just-the-code", "abc123").is_ok());
+    }
 
     #[test]
     fn builds_authorize_url_with_required_params() {
