@@ -134,6 +134,13 @@ const MAX_PARALLEL_TOOL_CALLS: usize = 8;
 /// item ids from growing the buffer map without bound.
 const MAX_ORPHAN_ARG_BUFFERS: usize = 256;
 
+/// Aggregate byte cap across all orphan argument buffers in one stream. The
+/// per-buffer cap (`MAX_TOOL_ARGUMENT_BYTES`, 2 MiB) times the count cap (256)
+/// still allows ~512 MiB of pinned memory on a malformed stream, so bound the
+/// total too — well above any legitimate batch of pre-`OutputItemAdded`
+/// fragments. Once reached, further orphan accumulation is dropped.
+const MAX_ORPHAN_ARG_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+
 /// Unknown/malformed tool calls are replayed as a plain user message instead of
 /// a provider function_call item. Keep model-controlled text inside that
 /// reminder bounded and inert.
@@ -1126,9 +1133,7 @@ impl Agent {
                                     })
                                     .await;
                             }
-                        } else if orphan_arg_buffers.contains_key(&item_id)
-                            || orphan_arg_buffers.len() < MAX_ORPHAN_ARG_BUFFERS
-                        {
+                        } else if orphan_args_has_room(&orphan_arg_buffers, &item_id) {
                             let _ = orphan_arg_buffers.entry(item_id).or_default().push(&delta);
                         }
                     }
@@ -1158,7 +1163,9 @@ impl Agent {
                                 }
                             }
                             None => {
-                                if !arguments.is_empty() {
+                                if !arguments.is_empty()
+                                    && orphan_args_has_room(&orphan_arg_buffers, &item_id)
+                                {
                                     orphan_arg_buffers
                                         .entry(item_id)
                                         .or_default()
@@ -2157,6 +2164,20 @@ fn function_call_ids(call_id: &str, item_id: &str) -> Option<(String, String)> {
         call_id.to_string()
     };
     Some((call_id, item_id))
+}
+
+/// Whether another orphan argument fragment may be accumulated for `item_id`.
+/// Bounds both the number of distinct buffers and their aggregate bytes so a
+/// malformed stream (endless unique ids, or endless fragments for one id)
+/// can't pin memory. An existing id stays writable up to the byte cap; a new
+/// id also needs a free slot under the count cap.
+fn orphan_args_has_room(
+    buffers: &std::collections::HashMap<String, ToolArgsBuffer>,
+    item_id: &str,
+) -> bool {
+    let total: usize = buffers.values().map(|b| b.text.len()).sum();
+    total < MAX_ORPHAN_ARG_TOTAL_BYTES
+        && (buffers.contains_key(item_id) || buffers.len() < MAX_ORPHAN_ARG_BUFFERS)
 }
 
 fn take_orphan_args(
@@ -3995,10 +4016,11 @@ mod function_call_id_tests {
         append_tool_result_history, approval_args_json, arguments_from_item,
         execute_parallel_tool_batch, function_call_ids, function_call_refs, history_tool_arguments,
         history_tool_name, history_tool_name_for_registry, input_with_todo_reminder,
-        is_parallel_safe_tool_call, is_parallel_safe_tool_name, safe_tool_error_message,
-        skip_incomplete_tool_calls_after_truncation, take_orphan_args, todo_reminder_text,
-        tool_name_from_item, Agent, AgentEvent, PendingCall, ToolArgsBuffer,
-        MAX_PARALLEL_TOOL_CALLS, MAX_TOOL_ARGUMENT_BYTES, SAFE_TOOL_HISTORY_ERROR_CHARS,
+        is_parallel_safe_tool_call, is_parallel_safe_tool_name, orphan_args_has_room,
+        safe_tool_error_message, skip_incomplete_tool_calls_after_truncation, take_orphan_args,
+        todo_reminder_text, tool_name_from_item, Agent, AgentEvent, PendingCall, ToolArgsBuffer,
+        MAX_ORPHAN_ARG_BUFFERS, MAX_ORPHAN_ARG_TOTAL_BYTES, MAX_PARALLEL_TOOL_CALLS,
+        MAX_TOOL_ARGUMENT_BYTES, SAFE_TOOL_HISTORY_ERROR_CHARS,
     };
     use crate::client::LlmClient;
     use crate::config::{Config, ProviderConfig};
@@ -4015,6 +4037,32 @@ mod function_call_id_tests {
         assert_eq!(buf.text, r#"{"path":"a.py","limit":null,"offset":null}"#);
         let v: serde_json::Value = serde_json::from_str(&buf.text).unwrap();
         assert!(v["limit"].is_null());
+    }
+
+    #[test]
+    fn orphan_args_bounded_by_count_and_total_bytes() {
+        use std::collections::HashMap;
+        let mut buffers: HashMap<String, ToolArgsBuffer> = HashMap::new();
+        // Empty map: room for a brand-new id.
+        assert!(orphan_args_has_room(&buffers, "a"));
+
+        // Fill to the count cap with tiny buffers.
+        for i in 0..MAX_ORPHAN_ARG_BUFFERS {
+            buffers.insert(format!("id{i}"), ToolArgsBuffer::default());
+        }
+        // A new id is refused at the count cap; an existing id still has room.
+        assert!(!orphan_args_has_room(&buffers, "new"));
+        assert!(orphan_args_has_room(&buffers, "id0"));
+
+        // Blow the aggregate byte cap with one fat buffer; now even an existing
+        // id is refused, so a single endless-fragment id can't pin memory.
+        let fat = ToolArgsBuffer {
+            text: "x".repeat(MAX_ORPHAN_ARG_TOTAL_BYTES),
+            ..Default::default()
+        };
+        buffers.insert("id0".to_string(), fat);
+        assert!(!orphan_args_has_room(&buffers, "id0"));
+        assert!(!orphan_args_has_room(&buffers, "new"));
     }
 
     #[test]
