@@ -309,7 +309,11 @@ mod tests {
             "glob",
         ];
         let s = suggest_tool_names("reaad_file", &tools);
-        assert_eq!(s.first().map(String::as_str), Some("read_file"), "got: {s:?}");
+        assert_eq!(
+            s.first().map(String::as_str),
+            Some("read_file"),
+            "got: {s:?}"
+        );
     }
 
     #[test]
@@ -317,7 +321,11 @@ mod tests {
         // A Claude-cased name the alias resolver missed should still suggest the
         // snake_case tool.
         let s = suggest_tool_names("Read_File", &["read_file", "run_shell"]);
-        assert_eq!(s.first().map(String::as_str), Some("read_file"), "got: {s:?}");
+        assert_eq!(
+            s.first().map(String::as_str),
+            Some("read_file"),
+            "got: {s:?}"
+        );
     }
 
     #[test]
