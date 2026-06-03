@@ -563,6 +563,11 @@ pub struct ToolContext {
     pub approval: ApprovalMode,
     pub require_approval: bool,
     pub auto_approve_edits: bool,
+    /// True when no interactive approver is attached to this run (headless
+    /// `chat`/`run`). Tools fail closed instead of trusting a model-supplied
+    /// confirmation: `run_shell` ignores `dangerous_override` here so a
+    /// prompt-injected model cannot self-clear the destructive-command guard.
+    pub non_interactive: bool,
     pub session: Arc<Mutex<SessionState>>,
     pub config: crate::config::Config,
     /// Session cwd requested by a tool such as `enter_worktree`. The Agent owns
@@ -584,6 +589,7 @@ impl ToolContext {
             approval,
             require_approval: false,
             auto_approve_edits: false,
+            non_interactive: false,
             session: Arc::new(Mutex::new(SessionState::default())),
             config: crate::config::Config::default(),
             cwd_override: Arc::new(Mutex::new(None)),

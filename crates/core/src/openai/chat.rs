@@ -783,7 +783,12 @@ impl ProviderClient for ChatCompletionsClient {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("{} {} {}", self.provider_id, status, text));
+            return Err(anyhow!(
+                "{} {} {}",
+                self.provider_id,
+                status,
+                crate::sensitive::redact_auth_in(&text)
+            ));
         }
         Ok(handle_chat_response(resp))
     }
@@ -793,7 +798,12 @@ impl ProviderClient for ChatCompletionsClient {
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
-            return Err(anyhow!("{} {} {}", self.provider_id, status, text));
+            return Err(anyhow!(
+                "{} {} {}",
+                self.provider_id,
+                status,
+                crate::sensitive::redact_auth_in(&text)
+            ));
         }
         serde_json::from_str(&text).map_err(|e| anyhow!("parse Chat Completions response: {e}"))
     }

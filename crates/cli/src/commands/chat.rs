@@ -9,6 +9,7 @@ use opencli_core::tools::ApprovalMode;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     prompt: String,
     model: Option<String>,
@@ -17,6 +18,7 @@ pub async fn run(
     plan_mode_required: bool,
     cwd: Option<std::path::PathBuf>,
     prompt_file: Option<std::path::PathBuf>,
+    dangerously_skip_permissions: bool,
 ) -> Result<()> {
     let mut prompt = prompt;
     // Prompt precedence: positional argument → --prompt-file → stdin.
@@ -76,10 +78,30 @@ pub async fn run(
 
     let client = LlmClient::for_config(&cfg).await?;
     let mut agent = Agent::new(client, cfg);
+    // This one-shot command has no interactive approver — the event loop below
+    // never answers an ApprovalRequest. Mark the run non-interactive so the gate
+    // fails closed (immediate deny) instead of blocking for the approval
+    // timeout, and so tools ignore model-supplied confirmations such as
+    // run_shell's `dangerous_override`.
+    agent.non_interactive = true;
     if plan_mode_required {
         agent.approval = ApprovalMode::Plan;
         agent.require_approval = true;
         agent.auto_approve_edits = false;
+    } else if dangerously_skip_permissions {
+        // Explicit operator opt-in: let side-effecting tools run without a
+        // prompt. The run_shell destructive-command guard still applies and
+        // stays non-overridable here, so a prompt-injected model still cannot
+        // run an obviously destructive command.
+        eprintln!(
+            "⚠ --dangerously-skip-permissions: side-effecting tools will run without approval"
+        );
+    } else {
+        // Safe default for unattended runs: require approval, which the
+        // non-interactive gate turns into an immediate deny for side-effecting
+        // tools (run_shell, file writes, MCP, …). Read-only tools still run, so
+        // summaries and inspections work headlessly.
+        agent.require_approval = true;
     }
     // Match the interactive TUI: load project/global memory and the skill
     // manifest so a one-shot `chat` sees the same context an interactive

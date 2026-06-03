@@ -439,6 +439,10 @@ Behaviour:\n\
         agent.approval = ctx.approval;
         agent.require_approval = ctx.require_approval;
         agent.auto_approve_edits = ctx.auto_approve_edits;
+        // A sub-agent has no approver of its own, so it inherits the parent's
+        // non-interactive posture: it must fail closed the same way and must not
+        // honor a model-supplied `dangerous_override` the parent would reject.
+        agent.non_interactive = ctx.non_interactive;
         agent.registry = Registry::filtered(&def.tools);
         if !def.system_prompt.trim().is_empty() {
             agent.system_prompt = def.system_prompt.clone();

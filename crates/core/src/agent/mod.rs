@@ -409,6 +409,11 @@ pub struct Agent {
     /// When true, file-edit tools auto-approve even though `require_approval`
     /// is on. Powers "accept edits" mode in the TUI; shell still prompts.
     pub auto_approve_edits: bool,
+    /// True when no human can answer an approval prompt (headless `chat`/`run`).
+    /// The gate then fails closed immediately for tools that would otherwise
+    /// prompt, instead of blocking for `APPROVAL_TIMEOUT` on a request nobody
+    /// will see; it also tells tools to ignore model-supplied confirmations.
+    pub non_interactive: bool,
     /// Input (context) tokens the provider reported for the most recent request,
     /// folded with cache-read/creation tokens. Drives proactive microcompaction:
     /// it is the only *accurate* measure of context occupancy we have (the
@@ -445,6 +450,7 @@ impl Agent {
             pending_approvals: Arc::new(Mutex::new(std::collections::HashMap::new())),
             require_approval: false,
             auto_approve_edits: false,
+            non_interactive: false,
             last_input_tokens: 0,
             history_seen_len: 0,
             cost_usage: Vec::new(),
@@ -1416,6 +1422,7 @@ impl Agent {
                 approval: self.approval,
                 require_approval: self.require_approval,
                 auto_approve_edits: self.auto_approve_edits,
+                non_interactive: self.non_interactive,
                 session: self.session.clone(),
                 config: self.config.clone(),
                 cwd_override: Arc::new(Mutex::new(None)),
@@ -1537,22 +1544,26 @@ impl Agent {
                                         && !is_effectively_read_only
                                         && !ALWAYS_AUTO_TOOLS.contains(&tool_name.as_str())
                                         && !auto_via_accept_edits;
-                                    let needs_gate = base_gate
-                                        && !matches!(decision, crate::permissions::Decision::Allow);
-                                    let approved = if needs_gate {
-                                        let diff_preview = t.compute_preview(&args, &ctx).await;
-                                        request_tool_approval(
-                                            &self.pending_approvals,
-                                            &tx,
-                                            &pc.call_id,
-                                            &tool_name,
-                                            approval_args_json(&args),
-                                            diff_preview,
-                                            APPROVAL_TIMEOUT,
-                                        )
-                                        .await
-                                    } else {
-                                        true
+                                    let approved = match approval_outcome(
+                                        self.non_interactive,
+                                        base_gate,
+                                        decision,
+                                    ) {
+                                        ApprovalOutcome::AutoRun => true,
+                                        ApprovalOutcome::Deny => false,
+                                        ApprovalOutcome::Prompt => {
+                                            let diff_preview = t.compute_preview(&args, &ctx).await;
+                                            request_tool_approval(
+                                                &self.pending_approvals,
+                                                &tx,
+                                                &pc.call_id,
+                                                &tool_name,
+                                                approval_args_json(&args),
+                                                diff_preview,
+                                                APPROVAL_TIMEOUT,
+                                            )
+                                            .await
+                                        }
                                     };
                                     match post_approval_tool_gate(
                                         &self.hooks,
@@ -1564,6 +1575,17 @@ impl Agent {
                                     {
                                         Ok(()) => runnable.push((pc.call_id.clone(), args, t)),
                                         Err(reason) => {
+                                            // A non-interactive run can't prompt,
+                                            // so replace the generic "denied by
+                                            // user" with an actionable hint.
+                                            let reason = if !approved && self.non_interactive {
+                                                format!(
+                                                    "Error: `{tool_name}` needs approval but this is a non-interactive run. \
+Re-run with `--dangerously-skip-permissions` to allow side-effecting tools, or run it interactively in the TUI."
+                                                )
+                                            } else {
+                                                reason
+                                            };
                                             precomputed.push((pc.call_id.clone(), reason, true));
                                         }
                                     };
@@ -2046,6 +2068,45 @@ fn preflight_tool_call(
     }
 
     ToolPreflight::Proceed { decision }
+}
+
+/// What the approval gate decides for one tool call, given the precomputed
+/// `base_gate` (true when the tool is side-effecting and the session would
+/// normally prompt) and the project-permission `decision`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalOutcome {
+    /// Run without prompting (read-only/auto tool, or an interactive allow rule).
+    AutoRun,
+    /// Refuse without running. Only happens in a non-interactive run, where no
+    /// human can approve and a persisted allow rule is not an unattended grant.
+    Deny,
+    /// Ask the human (interactive sessions only).
+    Prompt,
+}
+
+/// Decide a tool call's fate at the approval gate. Pure so it is unit-testable.
+///
+/// In a non-interactive run (`opencli chat`/`run` without
+/// `--dangerously-skip-permissions`) any side-effecting tool fails closed —
+/// even when a persisted `allow` rule matches. The allow store is populated by
+/// interactive "allow in this project" choices; honoring it with no human
+/// present is a separate trust decision, so an unattended run stays read-only
+/// unless the operator explicitly opts in (which clears `require_approval`, so
+/// `base_gate` is false here and the tool runs).
+fn approval_outcome(
+    non_interactive: bool,
+    base_gate: bool,
+    decision: crate::permissions::Decision,
+) -> ApprovalOutcome {
+    if !base_gate {
+        ApprovalOutcome::AutoRun
+    } else if non_interactive {
+        ApprovalOutcome::Deny
+    } else if matches!(decision, crate::permissions::Decision::Allow) {
+        ApprovalOutcome::AutoRun
+    } else {
+        ApprovalOutcome::Prompt
+    }
 }
 
 async fn post_approval_tool_gate(
@@ -4031,8 +4092,9 @@ mod permission_gate_tests {
     #[cfg(unix)]
     use super::post_approval_tool_gate;
     use super::{
-        effective_approval_for_tool, effective_tool_read_only, instructions_for_approval,
-        preflight_tool_call, project_permission_decision, ToolPreflight,
+        approval_outcome, effective_approval_for_tool, effective_tool_read_only,
+        instructions_for_approval, preflight_tool_call, project_permission_decision,
+        ApprovalOutcome, ToolPreflight,
     };
     #[cfg(unix)]
     use crate::hooks::{HookEntry, HookSet, HooksConfig};
@@ -4281,6 +4343,45 @@ mod permission_gate_tests {
             .unwrap();
 
         assert!(marker.exists(), "approved call did not run PreToolUse hook");
+    }
+
+    #[test]
+    fn approval_outcome_non_interactive_fails_closed_even_on_allow_rule() {
+        // Headless/unattended: a side-effecting tool (base_gate=true) is denied
+        // regardless of a persisted allow rule — an unattended run stays
+        // read-only unless the operator passes --dangerously-skip-permissions
+        // (which clears require_approval, making base_gate false → AutoRun).
+        assert_eq!(
+            approval_outcome(true, true, Decision::Allow),
+            ApprovalOutcome::Deny
+        );
+        assert_eq!(
+            approval_outcome(true, true, Decision::Ask),
+            ApprovalOutcome::Deny
+        );
+        // Read-only / auto / skip-permissions (base_gate=false) still runs.
+        assert_eq!(
+            approval_outcome(true, false, Decision::Ask),
+            ApprovalOutcome::AutoRun
+        );
+    }
+
+    #[test]
+    fn approval_outcome_interactive_prompts_unless_allowed() {
+        // Interactive: a persisted allow rule auto-runs; otherwise prompt the
+        // human. A read-only tool (base_gate=false) always auto-runs.
+        assert_eq!(
+            approval_outcome(false, true, Decision::Allow),
+            ApprovalOutcome::AutoRun
+        );
+        assert_eq!(
+            approval_outcome(false, true, Decision::Ask),
+            ApprovalOutcome::Prompt
+        );
+        assert_eq!(
+            approval_outcome(false, false, Decision::Ask),
+            ApprovalOutcome::AutoRun
+        );
     }
 }
 

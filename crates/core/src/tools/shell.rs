@@ -447,6 +447,13 @@ const ENV_DENYLIST_SUBSTRINGS: &[&str] = &[
     "GITHUB_",
     "GH_",
     "SUPABASE",
+    "PASSPHRASE",  // GPG/SSH key passphrases
+    "KUBECONFIG",  // path to a kube credentials file
+    "DOCKER_AUTH", // DOCKER_AUTH_CONFIG embeds registry creds
+    "NETRC",       // points at ~/.netrc (login:password pairs)
+    "SSH_AUTH",    // SSH_AUTH_SOCK — live ssh-agent socket (auth without a key)
+    "SSH_AGENT",   // SSH_AGENT_PID and friends
+    "GPG_AGENT",   // GPG_AGENT_INFO — live gpg-agent socket
 ];
 
 /// Whether an env var name looks secret enough to scrub before spawning a child
@@ -546,8 +553,23 @@ Parameters:\n\
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: ShellArgs = super::parse_args("run_shell", args)?;
         if let Some(reason) = classify_danger(&a.command) {
-            if !a.dangerous_override.unwrap_or(false) {
-                return Err(anyhow!("refused: {reason}. Confirm with the user first, then retry with `dangerous_override: true`. Command was: {}", a.command));
+            // `dangerous_override` is supplied by the model, so it only clears
+            // the destructive-command guard when a human is in the loop — in an
+            // interactive session the approval gate has already shown and
+            // approved this exact command. A non-interactive run can't get that
+            // confirmation, so a prompt-injected model cannot self-override:
+            // the command is refused outright.
+            let overridden = a.dangerous_override.unwrap_or(false) && !ctx.non_interactive;
+            if !overridden {
+                let hint = if ctx.non_interactive {
+                    "This is a non-interactive run; destructive commands are refused and cannot be overridden by the model."
+                } else {
+                    "Confirm with the user first, then retry with `dangerous_override: true`."
+                };
+                return Err(anyhow!(
+                    "refused: {reason}. {hint} Command was: {}",
+                    a.command
+                ));
             }
             tracing::warn!(command = %a.command, reason, "run_shell.dangerous_override_used");
         }
@@ -988,10 +1010,28 @@ mod tests {
             "PGPASSWORD",
             "MY_WEBHOOK_URL",
             "SENTRY_DSN",
+            "KUBECONFIG",
+            "DOCKER_AUTH_CONFIG",
+            "GPG_PASSPHRASE",
+            "NETRC",
+            "SSH_AUTH_SOCK",
+            "SSH_AGENT_PID",
         ] {
             assert!(is_secret_env_name(name), "should scrub {name}");
         }
-        for name in ["PATH", "HOME", "LANG", "PWD", "OLDPWD", "SHELL", "TERM"] {
+        // Benign session/info vars must survive (a child may legitimately use
+        // them); only the agent socket itself is stripped.
+        for name in [
+            "PATH",
+            "HOME",
+            "LANG",
+            "PWD",
+            "OLDPWD",
+            "SHELL",
+            "TERM",
+            "SSH_CONNECTION",
+            "SSH_CLIENT",
+        ] {
             assert!(!is_secret_env_name(name), "should NOT scrub {name}");
         }
     }
@@ -1002,6 +1042,7 @@ mod tests {
             approval: ApprovalMode::Auto,
             require_approval: false,
             auto_approve_edits: false,
+            non_interactive: false,
             session: Arc::new(Mutex::new(SessionState::default())),
             config: crate::config::Config::default(),
             cwd_override: Arc::new(Mutex::new(None)),
@@ -1653,6 +1694,7 @@ mod tests {
             approval: ApprovalMode::Auto,
             require_approval: false,
             auto_approve_edits: false,
+            non_interactive: false,
             session: Arc::new(Mutex::new(SessionState::default())),
             config: crate::config::Config::default(),
             cwd_override: Arc::new(Mutex::new(None)),
@@ -1666,6 +1708,35 @@ mod tests {
             .await
             .unwrap();
         assert!(out.contains("exit_code:"));
+    }
+
+    #[tokio::test]
+    async fn run_shell_ignores_model_override_in_non_interactive_run() {
+        // In a headless run a prompt-injected model could set dangerous_override
+        // itself, so it must NOT clear the destructive-command guard. The command
+        // is refused outright (never executed) even with the override set.
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext {
+            cwd: tmp.path().to_path_buf(),
+            approval: ApprovalMode::Auto,
+            require_approval: false,
+            auto_approve_edits: false,
+            non_interactive: true,
+            session: Arc::new(Mutex::new(SessionState::default())),
+            config: crate::config::Config::default(),
+            cwd_override: Arc::new(Mutex::new(None)),
+            events: None,
+        };
+        let err = RunShell
+            .execute(
+                json!({"command": "git reset --hard HEAD", "timeout_ms": 5000, "run_in_background": false, "dangerous_override": true}),
+                &ctx,
+            )
+            .await
+            .expect_err("destructive command must be refused in a non-interactive run");
+        let msg = err.to_string();
+        assert!(msg.contains("refused"), "got: {msg}");
+        assert!(msg.contains("non-interactive"), "got: {msg}");
     }
 
     #[test]

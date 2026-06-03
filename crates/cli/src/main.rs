@@ -66,6 +66,12 @@ enum Command {
         /// Read the prompt from this file instead of the argument/stdin.
         #[arg(long)]
         prompt_file: Option<std::path::PathBuf>,
+        /// Allow side-effecting tools (run_shell, file writes, MCP, …) to run
+        /// without an approval prompt in this headless run. DANGEROUS: a
+        /// prompt-injected model can then execute arbitrary commands. Without
+        /// it, an unattended run is read-only — side-effecting tools are denied.
+        #[arg(long)]
+        dangerously_skip_permissions: bool,
     },
     /// Open the TUI with the resume-session picker open
     Resume,
@@ -158,6 +164,7 @@ async fn main() -> Result<()> {
             output_format,
             cwd,
             prompt_file,
+            dangerously_skip_permissions,
         }) => {
             commands::chat::run(
                 prompt.join(" "),
@@ -167,6 +174,7 @@ async fn main() -> Result<()> {
                 cli.plan_mode_required,
                 cwd,
                 prompt_file,
+                dangerously_skip_permissions,
             )
             .await
         }
@@ -234,6 +242,38 @@ mod tests {
                 assert_eq!(prompt_file, Some(std::path::PathBuf::from("task.md")));
             }
             other => panic!("expected chat command via `run` alias, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dangerously_skip_permissions_defaults_off_and_parses_when_set() {
+        let default_cli = Cli::try_parse_from(["opencli", "chat", "hi"]).unwrap();
+        match default_cli.command {
+            Some(Command::Chat {
+                dangerously_skip_permissions,
+                ..
+            }) => assert!(
+                !dangerously_skip_permissions,
+                "unattended runs must default to the safe (gated) posture"
+            ),
+            other => panic!("expected chat command, got {other:?}"),
+        }
+
+        let opt_in = Cli::try_parse_from([
+            "opencli",
+            "run",
+            "--dangerously-skip-permissions",
+            "--cwd",
+            "/tmp/p",
+            "hi",
+        ])
+        .unwrap();
+        match opt_in.command {
+            Some(Command::Chat {
+                dangerously_skip_permissions,
+                ..
+            }) => assert!(dangerously_skip_permissions),
+            other => panic!("expected chat command, got {other:?}"),
         }
     }
 
