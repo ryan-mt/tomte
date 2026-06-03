@@ -1577,14 +1577,15 @@ impl Agent {
                                     {
                                         Ok(()) => runnable.push((pc.call_id.clone(), args, t)),
                                         Err(reason) => {
-                                            // A non-interactive run can't prompt,
-                                            // so replace the generic "denied by
-                                            // user" with an actionable hint.
+                                            // A non-interactive run can't prompt.
+                                            // Steer the model to a read-only tool
+                                            // it CAN run (the common case is it
+                                            // reached for `run_shell` on a task a
+                                            // read tool handles), and tell the
+                                            // operator how to allow side effects —
+                                            // rather than a dead-end "denied".
                                             let reason = if !approved && self.non_interactive {
-                                                format!(
-                                                    "Error: `{tool_name}` needs approval but this is a non-interactive run. \
-Re-run with `--dangerously-skip-permissions` to allow side-effecting tools, or run it interactively in the TUI."
-                                                )
+                                                non_interactive_blocked_message(&tool_name)
                                             } else {
                                                 reason
                                             };
@@ -1951,6 +1952,20 @@ fn cap_precomputed_outputs(precomputed: &mut [(String, String, bool)]) {
     for (_, output, _) in precomputed {
         *output = cap_tool_output(std::mem::take(output)).0;
     }
+}
+
+/// Message for a side-effecting tool blocked in a non-interactive (read-only)
+/// run. Steers the *model* to a read-only tool it can actually run — the common
+/// case is it reached for `run_shell` on a task `read_file`/`grep`/`glob` can do
+/// — and tells the *operator* how to allow side effects, so a headless run
+/// recovers a read-only goal instead of dead-ending on "denied". Verified live:
+/// `gpt-5.5` retries with `list_dir` after reading this.
+fn non_interactive_blocked_message(tool_name: &str) -> String {
+    format!(
+        "Error: `{tool_name}` is a side-effecting tool and is blocked in this non-interactive (read-only) run. \
+If your goal is read-only, use a read-only tool instead — `read_file`, `list_dir`, `grep`, or `glob`. \
+(To allow side-effecting tools, the operator must re-run with `--dangerously-skip-permissions`.)"
+    )
 }
 
 /// `"\n<schema hint>"` for a tool the registry can resolve, else `""`. Appended
@@ -4540,6 +4555,21 @@ mod permission_gate_tests {
         assert_eq!(
             approval_outcome(false, false, Decision::Ask),
             ApprovalOutcome::AutoRun
+        );
+    }
+
+    #[test]
+    fn non_interactive_block_message_steers_model_to_read_only_tools() {
+        // Verified live: gpt-5.5 reads this and retries with `list_dir` instead
+        // of dead-ending. Guard the actionable content against regressions.
+        let m = super::non_interactive_blocked_message("run_shell");
+        assert!(m.contains("run_shell"), "names the blocked tool: {m}");
+        for t in ["read_file", "list_dir", "grep", "glob"] {
+            assert!(m.contains(t), "should point the model at `{t}`: {m}");
+        }
+        assert!(
+            m.contains("--dangerously-skip-permissions"),
+            "tells the operator how to allow side effects: {m}"
         );
     }
 }
