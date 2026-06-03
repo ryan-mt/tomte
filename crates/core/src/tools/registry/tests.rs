@@ -301,6 +301,22 @@ fn assert_openai_strict_object_schema(schema: &Value, label: &str) {
     }
 }
 
+#[test]
+fn memory_tool_is_registered_and_advertised() {
+    let reg = Registry::standard();
+    assert!(
+        names(&reg).contains(&"memory"),
+        "standard set must include memory"
+    );
+    assert!(
+        def_names(&reg).iter().any(|n| n == "memory"),
+        "memory must be advertised to the provider"
+    );
+    // A sub-agent whitelist naming the tool resolves to the canonical builtin.
+    let filtered = Registry::filtered(&["memory".to_string()]);
+    assert!(names(&filtered).contains(&"memory"));
+}
+
 fn assert_schema_type_contains(schema: &Value, expected: &str) {
     assert!(
         schema_type_contains(schema.get("type"), expected),

@@ -300,7 +300,7 @@ pub(super) const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Tools that touch only session-local state (no FS, no shell). Safe to run
 /// without per-call approval even when `require_approval` is on.
-pub(super) const ALWAYS_AUTO_TOOLS: &[&str] = &["todo_write", "goal_update"];
+pub(super) const ALWAYS_AUTO_TOOLS: &[&str] = &["todo_write", "goal_update", "memory"];
 
 /// File-mutation tools auto-approved in "accept edits" mode.
 pub(super) const EDIT_TOOLS: &[&str] = &[

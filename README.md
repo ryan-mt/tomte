@@ -28,7 +28,7 @@ opencli chat "explain what this repo does, then add a test for the parser"
 - **Bring your own brain.** Sign in with a ChatGPT or Claude subscription (OAuth) *or* drop in
   an API key. Switch models mid-session with `/model`.
 - **A real tool belt, not a toy.** Files, shell, search, web, notebooks, sub-agents, todos,
-  plan mode — 25 tools, streamed and run in parallel where it's safe.
+  plan mode, persistent memory — 26 tools, streamed and run in parallel where it's safe.
 - **Code intelligence, zero setup.** The `lsp` tool gives you symbols, go-to-definition,
   references, and hover for Rust, TypeScript/JavaScript, Python, and Go — no language server
   to install.
@@ -110,6 +110,7 @@ when read-only:
 | **Web** | `web_fetch` · `web_search` |
 | **Flow** | `todo_write` · `goal_update` · `enter_plan_mode` · `exit_plan_mode` · `wait` |
 | **Agents** | `dispatch_agent` · `ask_user_question` · `skill` · `tool_search` |
+| **Memory** | `memory` |
 | **Git worktrees** | `enter_worktree` · `exit_worktree` |
 | **Notebooks** | `notebook_edit` |
 

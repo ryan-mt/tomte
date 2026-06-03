@@ -123,6 +123,15 @@ impl Agent {
         crate::memory::apply_to_system_prompt(&mut self.system_prompt, &self.cwd);
     }
 
+    /// Re-inject the project's agent-written memory index (`MEMORY.md`, or a
+    /// listing of saved notes) so memory saved with the `memory` tool survives
+    /// across sessions. No-ops when the store is empty. Like the skill manifest,
+    /// it is rebuilt as part of `refresh_system_context`, before that block so a
+    /// stray standalone call can't truncate later sections.
+    pub fn apply_memory_store(&mut self) {
+        crate::tools::memory::apply_store_to_prompt(&mut self.system_prompt, &self.cwd);
+    }
+
     /// Discover every installed skill (opencli + Claude Code + Codex + project)
     /// and append a compact manifest to the system prompt so the model knows
     /// what playbooks exist and can load any one on demand via the `skill`
@@ -152,6 +161,7 @@ impl Agent {
     pub fn refresh_system_context(&mut self) {
         self.system_prompt = default_system_prompt();
         self.apply_project_memory();
+        self.apply_memory_store();
         self.apply_skill_manifest();
         // The registry keeps its deferred MCP tools across a refresh, so the
         // rebuilt prompt must re-advertise them; otherwise their schemas stay

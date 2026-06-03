@@ -87,9 +87,11 @@ pub fn build(cwd: &Path, config: &Config, messages_tokens: u64, used_real: u64) 
     let custom_agents = est(&agent_manifest);
     let agent_names: Vec<String> = agents.into_iter().map(|a| a.name).collect();
 
-    // Inherited memory: estimate from the exact block that gets injected.
+    // Memory: estimate from the exact blocks that get injected — inherited
+    // files (CLAUDE.md/AGENTS.md) plus the agent-written memory-store index.
     let mut memory_block = String::new();
     crate::memory::apply_to_system_prompt(&mut memory_block, cwd);
+    crate::tools::memory::apply_store_to_prompt(&mut memory_block, cwd);
     let memory_files = est(&memory_block);
     let memory_paths = crate::memory::applied_files(cwd);
 

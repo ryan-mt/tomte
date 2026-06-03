@@ -190,11 +190,14 @@ pub(crate) async fn handle_hash_memory(
         Ok(()) => {
             app.blocks
                 .push(Block::System(format!("📝 remembered → {}", path.display())));
-            // Re-apply project memory so the note lands in this session's system
-            // prompt. With no agent yet it's applied on the first turn instead.
+            // Rebuild the system context so the note lands in this session's
+            // prompt. A full refresh (not a lone apply_project_memory) keeps the
+            // memory-store and skill blocks, which the inherited-memory re-apply
+            // would otherwise truncate. With no agent yet it's applied on the
+            // first turn instead.
             let mut guard = agent.lock().await;
             if let Some(a) = guard.as_mut() {
-                a.apply_project_memory();
+                a.refresh_system_context();
             }
         }
         Err(e) => app

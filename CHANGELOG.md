@@ -2,6 +2,7 @@
 
 ## 0.0.2
 
+- Added a `memory` tool — agent-writable, project-scoped notes that persist across sessions: the `MEMORY.md` index is re-injected into context each session, other notes load on demand. Sandboxed to a flat per-project store, auto-approved interactively, and disabled in headless runs.
 - Added Claude Code / Codex-style composer prefixes: `@<path>` attaches a file via a gitignore-aware typeahead, `!<command>` runs a shell command inline without a model turn (`!!` forces past the danger guard), and `#<note>` appends to the project `CLAUDE.md`.
 - Added left-drag text selection in the TUI — drag to highlight and copy on release (no Shift needed); handles wide CJK/emoji characters and clears on the next key, scroll, or click.
 - `/help` now documents composer history recall (↑/↓ on the first/last line) and the new left-drag selection.

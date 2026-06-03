@@ -3,6 +3,7 @@ pub mod dispatch;
 pub mod fs;
 pub mod goal;
 pub mod lsp;
+pub mod memory;
 pub mod notebook;
 pub mod plan;
 pub mod search;

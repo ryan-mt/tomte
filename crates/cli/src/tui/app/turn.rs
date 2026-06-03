@@ -59,6 +59,7 @@ pub async fn launch_turn(
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
             a.apply_project_memory();
+            a.apply_memory_store();
             a.apply_skill_manifest();
             a.load_mcp().await.ok();
             *guard = Some(a);

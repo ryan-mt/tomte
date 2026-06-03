@@ -109,6 +109,7 @@ pub async fn run(
     // manifest so a one-shot `chat` sees the same context an interactive
     // session would (skills become loadable via the `skill` tool).
     agent.apply_project_memory();
+    agent.apply_memory_store();
     agent.apply_skill_manifest();
     // Best-effort: spawn MCP servers configured in settings.json. A
     // misconfigured server logs a warning but does not abort the turn.

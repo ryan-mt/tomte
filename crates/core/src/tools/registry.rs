@@ -5,8 +5,8 @@
 use crate::openai::Tool;
 
 use super::{
-    ask, dispatch, fs, goal, lsp, notebook, plan, search, shell, skill, todo, tool_search, wait,
-    web, worktree, BuiltinTool,
+    ask, dispatch, fs, goal, lsp, memory, notebook, plan, search, shell, skill, todo, tool_search,
+    wait, web, worktree, BuiltinTool,
 };
 
 pub struct Registry {
@@ -42,6 +42,7 @@ impl Registry {
                 Box::new(web::WebFetch),
                 Box::new(web::WebSearch),
                 Box::new(lsp::Lsp),
+                Box::new(memory::Memory),
                 Box::new(notebook::NotebookEdit),
                 Box::new(plan::EnterPlanMode),
                 Box::new(plan::ExitPlanMode),
@@ -159,6 +160,7 @@ impl Registry {
                 "web_fetch" => Box::new(web::WebFetch),
                 "web_search" => Box::new(web::WebSearch),
                 "lsp" => Box::new(lsp::Lsp),
+                "memory" => Box::new(memory::Memory),
                 "notebook_edit" => Box::new(notebook::NotebookEdit),
                 "enter_plan_mode" => Box::new(plan::EnterPlanMode),
                 "exit_plan_mode" => Box::new(plan::ExitPlanMode),
@@ -262,6 +264,7 @@ fn canonical_tool_name(name: &str) -> Option<&'static str> {
         "web_search" | "websearch" => Some("web_search"),
         "lsp" | "lsptool" => Some("lsp"),
         "notebook_edit" | "notebookedit" => Some("notebook_edit"),
+        "memory" | "update_memory" | "updatememory" | "memories" => Some("memory"),
         "skill" | "load_skill" | "loadskill" => Some("skill"),
         "ask_user_question" | "askuserquestion" => Some("ask_user_question"),
         "wait" | "sleep" => Some("wait"),
