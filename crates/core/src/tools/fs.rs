@@ -1100,6 +1100,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bad_args_surface_as_arg_schema_error() {
+        // `path` is a required string; a number makes serde reject the call. The
+        // agent relies on this being an ArgSchemaError (not a runtime error like
+        // "file not found") to attach a schema hint, so verify the type survives
+        // the tool boundary.
+        let tmp = tempfile::tempdir().unwrap();
+        let err = ReadFile
+            .execute(json!({"path": 123}), &ctx(tmp.path().to_path_buf()))
+            .await
+            .expect_err("a non-string path must be rejected");
+        assert!(
+            err.downcast_ref::<crate::tools::ArgSchemaError>().is_some(),
+            "expected ArgSchemaError, got: {err}"
+        );
+        assert!(err.to_string().contains("argument schema mismatch"));
+    }
+
+    #[tokio::test]
     async fn atomic_write_removes_temp_on_failed_swap() {
         let dir = tempfile::tempdir().unwrap();
         // Make the destination an existing directory so `rename(file -> dir)`

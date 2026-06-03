@@ -1490,20 +1490,22 @@ impl Agent {
                             error = %e,
                             "tool.args.invalid_json"
                         );
+                        let hint = schema_hint_suffix(&self.registry, tool_call_name);
                         precomputed.push((
                             pc.call_id.clone(),
                             format!(
-                                "Error: tool `{}` arguments are not valid JSON ({e}). Received: {preview}",
+                                "Error: tool `{}` arguments are not valid JSON ({e}). Received: {preview}{hint}",
                                 tool_call_name
                             ),
                             true,
                         ));
                     }
                     Ok(args) if !args.is_object() => {
+                        let hint = schema_hint_suffix(&self.registry, tool_call_name);
                         precomputed.push((
                             pc.call_id.clone(),
                             format!(
-                                "Error: tool `{tool_call_name}` arguments must be a JSON object, got {}",
+                                "Error: tool `{tool_call_name}` arguments must be a JSON object, got {}{hint}",
                                 json_type_label(&args)
                             ),
                             true,
@@ -1849,7 +1851,23 @@ async fn execute_builtin_tool_call(
     let res = tokio::time::timeout(timeout, tool.execute(args, &ctx)).await;
     let (output, is_err) = match res {
         Ok(Ok(s)) => (s, false),
-        Ok(Err(e)) => (format!("Error: {e}"), true),
+        Ok(Err(e)) => {
+            // An argument-schema mismatch gets a compact summary of the tool's
+            // expected arguments appended, so the model can fix the shape and
+            // retry within the same turn instead of guessing. Runtime errors
+            // (e.g. "file not found") are passed through unchanged.
+            let msg = if e.downcast_ref::<crate::tools::ArgSchemaError>().is_some() {
+                let hint = crate::tools::schema_hint(&tool_name, &tool.parameters_schema());
+                if hint.is_empty() {
+                    format!("Error: {e}")
+                } else {
+                    format!("Error: {e}\n{hint}\nFix the arguments and call `{tool_name}` again.")
+                }
+            } else {
+                format!("Error: {e}")
+            };
+            (msg, true)
+        }
         Err(_) => (
             format!(
                 "Error: tool `{tool_name}` exceeded the {}s hard timeout and was aborted",
@@ -1916,6 +1934,18 @@ fn cap_precomputed_outputs(precomputed: &mut [(String, String, bool)]) {
     for (_, output, _) in precomputed {
         *output = cap_tool_output(std::mem::take(output)).0;
     }
+}
+
+/// `"\n<schema hint>"` for a tool the registry can resolve, else `""`. Appended
+/// to an argument-level error raised before dispatch (invalid JSON, non-object
+/// args) so the model sees the tool's expected shape next to the parse failure.
+fn schema_hint_suffix(registry: &crate::tools::Registry, tool_name: &str) -> String {
+    registry
+        .find(tool_name)
+        .map(|t| crate::tools::schema_hint(t.name(), &t.parameters_schema()))
+        .filter(|h| !h.is_empty())
+        .map(|h| format!("\n{h}"))
+        .unwrap_or_default()
 }
 
 fn is_parallel_safe_tool_call(tool: &dyn crate::tools::BuiltinTool, args: &Value) -> bool {
@@ -4009,6 +4039,118 @@ mod tool_result_tests {
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
+    }
+
+    /// Fails its `parse_args` step so the agent should append a schema hint.
+    struct SchemaTool;
+
+    #[async_trait]
+    impl BuiltinTool for SchemaTool {
+        fn name(&self) -> &'static str {
+            "schema_tool"
+        }
+        fn description(&self) -> &'static str {
+            "validates args for tests"
+        }
+        fn parameters_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "Where to look."}},
+                "required": ["path"]
+            })
+        }
+        async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<String> {
+            #[derive(serde::Deserialize)]
+            #[allow(dead_code)]
+            struct A {
+                path: String,
+            }
+            let _: A = crate::tools::parse_args("schema_tool", args)?;
+            Ok("ok".to_string())
+        }
+    }
+
+    /// Always errors at runtime (after args parse), so no schema hint applies.
+    struct RuntimeErrTool;
+
+    #[async_trait]
+    impl BuiltinTool for RuntimeErrTool {
+        fn name(&self) -> &'static str {
+            "runtime_err"
+        }
+        fn description(&self) -> &'static str {
+            "always fails at runtime"
+        }
+        fn parameters_schema(&self) -> Value {
+            json!({"type": "object", "properties": {"x": {"type": "string"}}})
+        }
+        async fn execute(&self, _args: Value, _ctx: &ToolContext) -> Result<String> {
+            Err(anyhow::anyhow!("file not found: /nope"))
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_builtin_tool_call_appends_schema_hint_on_arg_error() {
+        // A schema mismatch must surface the original error AND a summary of the
+        // tool's expected arguments + a retry nudge — the exact text the model
+        // sees on the event channel, so it can self-correct within the turn.
+        let (tx, mut rx) = mpsc::channel(4);
+        let ctx = ToolContext::new(std::env::current_dir().unwrap(), ApprovalMode::OnRequest);
+        let (_, output, is_err) = execute_builtin_tool_call(
+            "call_bad".to_string(),
+            json!({"path": 5}), // wrong type → ArgSchemaError
+            &SchemaTool,
+            ctx,
+            tx,
+            Arc::new(crate::hooks::HookSet::default()),
+        )
+        .await;
+
+        assert!(is_err);
+        assert!(output.contains("argument schema mismatch"), "got: {output}");
+        assert!(
+            output.contains("Expected arguments for `schema_tool`"),
+            "got: {output}"
+        );
+        assert!(
+            output.contains("path (string, required): Where to look."),
+            "got: {output}"
+        );
+        assert!(
+            output.contains("Fix the arguments and call `schema_tool` again."),
+            "got: {output}"
+        );
+        match rx.recv().await.unwrap() {
+            AgentEvent::ToolResult { output, error, .. } => {
+                assert!(error);
+                assert!(output.contains("Expected arguments for `schema_tool`"));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_builtin_tool_call_leaves_runtime_error_unchanged() {
+        // A non-argument (runtime) error must pass through verbatim — attaching a
+        // schema hint there would be noise and could mislead the model.
+        let (tx, _rx) = mpsc::channel(4);
+        let ctx = ToolContext::new(std::env::current_dir().unwrap(), ApprovalMode::OnRequest);
+        let (_, output, is_err) = execute_builtin_tool_call(
+            "call_rt".to_string(),
+            json!({}),
+            &RuntimeErrTool,
+            ctx,
+            tx,
+            Arc::new(crate::hooks::HookSet::default()),
+        )
+        .await;
+
+        assert!(is_err);
+        assert!(output.contains("file not found"), "got: {output}");
+        assert!(
+            !output.contains("Expected arguments"),
+            "a runtime error must not get a schema hint; got: {output}"
+        );
     }
 }
 

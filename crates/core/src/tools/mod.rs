@@ -14,15 +14,24 @@ pub mod wait;
 pub mod web;
 pub mod worktree;
 
-/// Deserialize a tool's `Value` arguments into the tool's typed struct,
-/// prefixing the error with `tool <name>` so the model receives an actionable
-/// hint instead of a bare serde message.
+mod validate;
+pub use validate::{schema_hint, ArgSchemaError};
+
+/// Deserialize a tool's `Value` arguments into the tool's typed struct. A
+/// failure is wrapped in [`ArgSchemaError`] (whose `Display` is the familiar
+/// `tool <name> argument schema mismatch: …`) so the agent can tell an
+/// argument-shape error apart from a runtime error and append a schema hint for
+/// the model to self-correct from.
 pub fn parse_args<T: serde::de::DeserializeOwned>(
     tool: &str,
     args: serde_json::Value,
 ) -> anyhow::Result<T> {
-    serde_json::from_value::<T>(args)
-        .map_err(|e| anyhow::anyhow!("tool `{tool}` argument schema mismatch: {e}"))
+    serde_json::from_value::<T>(args).map_err(|e| {
+        anyhow::Error::new(ArgSchemaError {
+            tool: tool.to_string(),
+            detail: e.to_string(),
+        })
+    })
 }
 
 pub fn deserialize_bool<'de, D>(deserializer: D) -> std::result::Result<bool, D::Error>
