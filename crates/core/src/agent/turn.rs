@@ -1,0 +1,236 @@
+//! Split out of `agent` (impl Agent block); logic unchanged.
+
+use super::*;
+
+impl Agent {
+    /// Drive one full turn: send the current history, process tool calls until
+    /// the model produces final assistant text. Emits events through `tx`.
+    ///
+    /// Thin wrapper so the `Stop` hook fires on EVERY exit — success or error —
+    /// per its documented contract. The inner loop has several early error
+    /// returns (idle timeout, stream error, response.failed); firing here covers
+    /// all of them instead of only the clean-completion path.
+    pub async fn run_turn(&mut self, tx: mpsc::Sender<AgentEvent>) -> Result<()> {
+        let result = self.run_turn_inner(tx.clone()).await;
+        if let Err(e) = &result {
+            let _ = tx
+                .send(AgentEvent::Error {
+                    message: e.to_string(),
+                })
+                .await;
+        }
+        self.hooks.fire_stop().await;
+        result
+    }
+
+    /// Replace the entire conversation history with one model-generated summary
+    /// message, reclaiming context-window space. Provider-agnostic: it operates
+    /// on `self.history` before any request is built, so every model benefits.
+    ///
+    /// On a trivially short history, an empty summary, or a stream error,
+    /// `self.history` is left UNTOUCHED and an `Err` is returned. On success
+    /// returns the number of history items that were compacted away.
+    pub async fn compact_history(&mut self) -> Result<usize> {
+        let original_len = self.history.len();
+        if !should_compact(original_len) {
+            return Err(anyhow::anyhow!(
+                "nothing to compact — conversation is already short"
+            ));
+        }
+
+        // One-off summary request from the CURRENT history plus a summarize
+        // instruction. Deliberately built WITHOUT `.with_tools(...)`: the
+        // summary turn must not start editing files or running commands.
+        let mut input = self.history.clone();
+        input.push(InputItem::Message {
+            role: "user".to_string(),
+            content: vec![MessageContent::text(COMPACT_PROMPT)],
+        });
+        let request = ResponsesRequest::new(self.config.model.clone(), input)
+            .with_instructions(self.system_prompt.clone())
+            .with_reasoning(self.config.reasoning_effort.clone())
+            .with_verbosity(self.config.verbosity.clone());
+
+        let summary = self.collect_text(request).await?;
+        if summary.trim().is_empty() {
+            return Err(anyhow::anyhow!("compaction produced an empty summary"));
+        }
+
+        self.history = compacted_history(&summary);
+        Ok(original_len)
+    }
+
+    /// Proactively shed stale tool-output bulk when the last request's context
+    /// occupancy crossed [`MICROCOMPACT_PCT`]% of the window. Cheaper and far
+    /// less lossy than the full-summary `/compact` fallback (which the TUI fires
+    /// at 85%): it keeps every message, reasoning block, and the most recent
+    /// tool results, dropping only old, already-acted-on tool outputs — the
+    /// bulkiest, lowest-value content. Mirrors Claude Code's `clear_tool_uses`
+    /// context-editing strategy. A no-op unless `auto_compact` is on and we are
+    /// genuinely near the limit, so it almost never costs a prompt-cache miss.
+    /// Scoped to `history_seen_len` so it can never clear the just-produced batch
+    /// of a multi-tool response before the model has been shown those results.
+    pub(super) fn microcompact_tool_outputs(&mut self) {
+        if !self.config.auto_compact {
+            return;
+        }
+        let limit = self.config.effective_context_limit();
+        if limit == 0 || self.last_input_tokens.saturating_mul(100) < limit * MICROCOMPACT_PCT {
+            return;
+        }
+        // Only shed within the prefix the model has already seen; outputs the
+        // current turn appended but hasn't sent back yet must stay intact.
+        let seen = self.history_seen_len.min(self.history.len());
+        let cleared = clear_stale_tool_outputs(
+            &mut self.history[..seen],
+            MICROCOMPACT_KEEP_RECENT,
+            MICROCOMPACT_MIN_OUTPUT_BYTES,
+        );
+        if cleared > 0 {
+            tracing::info!(
+                cleared,
+                input_tokens = self.last_input_tokens,
+                limit,
+                "microcompacted stale tool outputs to conserve context"
+            );
+        }
+    }
+
+    /// Last-ditch context relief when a request was already rejected for
+    /// overflowing the window: clear every tool output but the two most recent,
+    /// regardless of size. Free (no model call, so it cannot itself overflow) and
+    /// usually sufficient because tool outputs dominate a long session's context.
+    /// Returns whether it actually freed anything — `false` means the bulk is in
+    /// messages/reasoning we won't auto-drop, so the caller surfaces the error.
+    pub(super) fn emergency_shed_context(&mut self) -> bool {
+        clear_stale_tool_outputs(&mut self.history, 2, 0) > 0
+    }
+
+    /// Try to recover from a context-overflow rejection without failing the
+    /// turn: if recoveries aren't exhausted, the message looks like an overflow,
+    /// and shedding stale tool outputs actually frees space, shed and signal a
+    /// retry (bumping `recoveries`). Shared by the pre-stream send error and the
+    /// mid-stream `Failed`/`Error` paths, so every way a provider surfaces
+    /// overflow — a 4xx before the stream, or an error event during it — gets the
+    /// same auto-recovery instead of only the pre-stream case.
+    pub(super) fn try_recover_overflow(&mut self, message: &str, recoveries: &mut usize) -> bool {
+        if *recoveries < MAX_OVERFLOW_RECOVERIES
+            && is_context_overflow_message(message)
+            && self.emergency_shed_context()
+        {
+            *recoveries += 1;
+            tracing::warn!(
+                attempt = *recoveries,
+                "context overflow — shed stale tool outputs and retrying turn"
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Try to fail over to a configured fallback model when the active one is
+    /// rate-limited / its provider is overloaded. Returns `true` (and swaps
+    /// `self.client`/`self.config.model`, emitting [`AgentEvent::FallbackSwitched`])
+    /// when a usable fallback was adopted, so the caller retries the turn; `false`
+    /// otherwise (the error then surfaces as today).
+    ///
+    /// Provider-agnostic by construction: it knows nothing about specific models.
+    /// Guards: only a genuine overload error (never a fatal 4xx, refusal, or
+    /// context overflow); bounded by [`MAX_FALLBACK_ATTEMPTS`]; each candidate is
+    /// built via [`LlmClient::for_config`], which fails for a built-in provider
+    /// with no stored credential — such an unusable fallback is skipped rather
+    /// than turning a clear rate-limit into a confusing auth error.
+    pub(super) async fn try_fail_over(
+        &mut self,
+        error: &str,
+        tried: &mut Vec<String>,
+        attempts: &mut usize,
+        tx: &mpsc::Sender<AgentEvent>,
+    ) -> bool {
+        if *attempts >= MAX_FALLBACK_ATTEMPTS {
+            return false;
+        }
+        // Only an overload/rate-limit warrants switching models — a fatal error
+        // (bad request, auth, model-not-found, refusal) or a context overflow
+        // would not be helped by another model.
+        if !crate::fallback::is_quota_or_overload(error) || is_context_overflow_message(error) {
+            return false;
+        }
+        while let Some(candidate) = crate::fallback::next_fallback(&self.config, tried) {
+            tried.push(candidate.clone());
+            let mut trial = self.config.clone();
+            trial.model = candidate.clone();
+            match LlmClient::for_config(&trial).await {
+                Ok(client) => {
+                    let from = std::mem::replace(&mut self.config.model, candidate.clone());
+                    self.client = client;
+                    *attempts += 1;
+                    tracing::warn!(%from, to = %candidate, "model overloaded — failing over");
+                    let _ = tx
+                        .send(AgentEvent::FallbackSwitched {
+                            from,
+                            to: candidate,
+                            reason: error.to_string(),
+                        })
+                        .await;
+                    return true;
+                }
+                // Unbuildable (e.g. a built-in provider with no stored
+                // credential) — skip and try the next configured fallback.
+                Err(_) => continue,
+            }
+        }
+        false
+    }
+
+    /// Drive a request through the streaming path and return the accumulated
+    /// assistant text. A minimal recv loop for tool-free turns (used by
+    /// `compact_history`): it handles only text and terminal events. It does
+    /// NOT call `emit_usage`, so the summary turn's large input doesn't re-fire
+    /// the 85% context warning while we are in the middle of compacting.
+    pub(super) async fn collect_text(&self, request: ResponsesRequest) -> Result<String> {
+        let mut handle = self.client.stream(request).await?;
+        let mut text = String::new();
+        loop {
+            let recv = tokio::time::timeout(STREAM_IDLE_TIMEOUT, handle.rx.recv()).await;
+            let ev = match recv {
+                Err(_) => {
+                    return Err(anyhow::anyhow!(
+                        "stream idle for {}s — connection may be stale, try again",
+                        STREAM_IDLE_TIMEOUT.as_secs()
+                    ));
+                }
+                Ok(None) => break,
+                Ok(Some(Err(e))) => return Err(e),
+                Ok(Some(Ok(v))) => v,
+            };
+            match ev {
+                ResponseStreamEvent::OutputTextDelta { delta, .. } => {
+                    text.push_str(&delta);
+                }
+                // Fall back to the block's full text only if no deltas arrived
+                // (some providers emit Done without deltas); otherwise keep the
+                // accumulated deltas.
+                ResponseStreamEvent::OutputTextDone { text: t, .. } if text.is_empty() => {
+                    text = t;
+                }
+                ResponseStreamEvent::Completed { .. } => break,
+                ResponseStreamEvent::Failed { response } => {
+                    let message = response
+                        .get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("response.failed (no message)")
+                        .to_string();
+                    return Err(anyhow::anyhow!("response.failed: {message}"));
+                }
+                ResponseStreamEvent::Error { message } => {
+                    return Err(anyhow::anyhow!(message));
+                }
+                _ => {}
+            }
+        }
+        Ok(text)
+    }
+}
