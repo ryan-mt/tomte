@@ -1594,11 +1594,28 @@ Re-run with `--dangerously-skip-permissions` to allow side-effecting tools, or r
                                 }
                             }
                         }
-                        None => precomputed.push((
-                            pc.call_id.clone(),
-                            format!("Error: unknown tool: {tool_call_name}"),
-                            true,
-                        )),
+                        None => {
+                            // The model named a tool that doesn't exist (often a
+                            // typo or a guessed name). Offer the closest real
+                            // tool name(s) so it can retry with a valid call.
+                            let suggestions = crate::tools::suggest_tool_names(
+                                tool_call_name,
+                                &self.registry.tool_names(),
+                            );
+                            let msg = if suggestions.is_empty() {
+                                format!("Error: unknown tool `{tool_call_name}`.")
+                            } else {
+                                let list = suggestions
+                                    .iter()
+                                    .map(|s| format!("`{s}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                format!(
+                                    "Error: unknown tool `{tool_call_name}`. Did you mean: {list}?"
+                                )
+                            };
+                            precomputed.push((pc.call_id.clone(), msg, true));
+                        }
                     },
                 }
             }

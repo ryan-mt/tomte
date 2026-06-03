@@ -15,7 +15,7 @@ pub mod web;
 pub mod worktree;
 
 mod validate;
-pub use validate::{schema_hint, ArgSchemaError};
+pub use validate::{schema_hint, suggest_tool_names, ArgSchemaError};
 
 /// Deserialize a tool's `Value` arguments into the tool's typed struct. A
 /// failure is wrapped in [`ArgSchemaError`] (whose `Display` is the familiar
@@ -693,6 +693,13 @@ impl Registry {
                 self.tools.iter().find(|t| t.name() == canon)
             })
             .map(|b| b.as_ref())
+    }
+
+    /// Names of every built-in tool, for "did you mean" suggestions on an
+    /// unknown tool call. Includes deferred tools so a typo of a not-yet-loaded
+    /// tool still resolves to its real name.
+    pub fn tool_names(&self) -> Vec<&'static str> {
+        self.tools.iter().map(|t| t.name()).collect()
     }
 
     /// Build a registry that contains only the named built-in tools.

@@ -144,6 +144,50 @@ fn clean_desc(desc: &str) -> String {
     format!("{truncated}…")
 }
 
+/// Up to three known tool names closest to `unknown` by edit distance, for a
+/// "did you mean" hint when the model calls a tool that doesn't exist. Only
+/// genuinely-close names qualify (≤ `max(2, len/3)` edits), so a typo like
+/// `reaad_file` surfaces `read_file` while an unrelated name suggests nothing
+/// (better silent than misleading).
+pub fn suggest_tool_names(unknown: &str, candidates: &[&str]) -> Vec<String> {
+    let target = unknown.trim().to_ascii_lowercase();
+    if target.is_empty() {
+        return Vec::new();
+    }
+    let mut scored: Vec<(usize, &str)> = candidates
+        .iter()
+        .map(|c| (levenshtein(&target, &c.to_ascii_lowercase()), *c))
+        .filter(|(dist, cand)| {
+            let budget = (target.len().max(cand.len()) / 3).max(2);
+            *dist <= budget
+        })
+        .collect();
+    // Closest first; ties broken alphabetically for a stable suggestion order.
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    scored
+        .into_iter()
+        .take(3)
+        .map(|(_, c)| c.to_string())
+        .collect()
+}
+
+/// Iterative Levenshtein edit distance (single-row DP). Inputs are tool names
+/// (tens of chars at most), so the O(n·m) cost is negligible.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b_chars.len()).collect();
+    let mut curr = vec![0usize; b_chars.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, &cb) in b_chars.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b_chars.len()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +296,45 @@ mod tests {
             "required": ["verbose"]
         });
         assert!(schema_hint("x", &schema).contains("verbose (boolean, optional)"));
+    }
+
+    #[test]
+    fn suggests_closest_tool_name_for_a_typo() {
+        let tools = [
+            "read_file",
+            "write_file",
+            "edit_file",
+            "run_shell",
+            "grep",
+            "glob",
+        ];
+        let s = suggest_tool_names("reaad_file", &tools);
+        assert_eq!(s.first().map(String::as_str), Some("read_file"), "got: {s:?}");
+    }
+
+    #[test]
+    fn matching_is_case_insensitive() {
+        // A Claude-cased name the alias resolver missed should still suggest the
+        // snake_case tool.
+        let s = suggest_tool_names("Read_File", &["read_file", "run_shell"]);
+        assert_eq!(s.first().map(String::as_str), Some("read_file"), "got: {s:?}");
+    }
+
+    #[test]
+    fn does_not_suggest_unrelated_names() {
+        assert!(suggest_tool_names("xyzzy", &["read_file", "run_shell", "grep"]).is_empty());
+    }
+
+    #[test]
+    fn blank_unknown_suggests_nothing() {
+        assert!(suggest_tool_names("   ", &["read_file"]).is_empty());
+    }
+
+    #[test]
+    fn levenshtein_matches_known_distances() {
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+        assert_eq!(levenshtein("", "abc"), 3);
+        assert_eq!(levenshtein("abc", ""), 3);
+        assert_eq!(levenshtein("abc", "abc"), 0);
     }
 }
