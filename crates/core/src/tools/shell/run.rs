@@ -16,8 +16,8 @@ use crate::tools::{BackgroundShellState, BgStatus, BuiltinTool, ToolContext};
 
 use super::danger::classify_danger;
 use super::support::{
-    append_capped, bash_id, configure_platform_shell, format_capped_stream, is_secret_env_name,
-    isolate_process_group, kill_process_group, now_ms, platform_shell_name, read_capped_output,
+    append_capped, bash_id, configure_platform_shell, format_capped_stream, isolate_process_group,
+    kill_process_group, now_ms, platform_shell_name, read_capped_output,
     FOREGROUND_OUTPUT_MAX_BYTES_PER_STREAM,
 };
 
@@ -175,11 +175,7 @@ Parameters:\n\
             .kill_on_drop(true);
         isolate_process_group(&mut cmd);
         // Strip likely-secret env vars before spawn so the LLM can't echo them.
-        for (k, _) in std::env::vars() {
-            if is_secret_env_name(&k) {
-                cmd.env_remove(&k);
-            }
-        }
+        crate::secret_env::scrub_secret_env(&mut cmd);
 
         if a.run_in_background.unwrap_or(false) {
             return spawn_background(cmd, &a.command, ctx).await;

@@ -77,6 +77,7 @@
 - Fixed a persisted `run_shell(<prog>:*)` allow rule silently auto-running a destructive command (force-push, `rm -rf`) the user never saw: a classifier-flagged command now always prompts for approval first — even under an allow rule or bypass/auto mode — and a non-interactive run refuses it outright.
 - Path-based `deny` rules can no longer be slipped past by an in-repo symlink or a case-variant: the gate re-checks `deny` against the symlink-resolved real path (so `link -> .git/config` is still blocked), and path globs fold case on case-insensitive filesystems (macOS/Windows).
 - `write_file` re-resolves its target after creating parent directories, so a parent component swapped for an out-of-sandbox symlink in the TOCTOU window after the first path check can no longer redirect the write outside the working tree.
+- MCP servers and lifecycle hooks now get `run_shell`'s secret-env scrub: inherited API keys, tokens, and live agent sockets are stripped before spawn so a third-party MCP package or a hook can't exfiltrate them. Pass a server's needed secret via its explicit `env` map.
 
 ## 0.0.1-beta.4
 

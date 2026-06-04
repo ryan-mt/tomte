@@ -175,11 +175,17 @@ impl McpClient {
     ) -> Result<Self> {
         let mut cmd = Command::new(&config.command);
         cmd.args(&config.args)
-            .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // Scrub inherited secret env (API keys, tokens, live agent sockets) the
+        // server has no business seeing — like run_shell — then re-apply the
+        // server's explicit `env` map so an operator can still pass it an
+        // intended secret. A third-party `npx -y` server otherwise inherits
+        // every credential in the agent's environment.
+        crate::secret_env::scrub_secret_env(&mut cmd);
+        cmd.envs(&config.env);
         isolate_process_group(&mut cmd);
 
         let mut child = cmd.spawn().map_err(|e| {

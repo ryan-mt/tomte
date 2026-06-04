@@ -87,48 +87,6 @@ impl BackgroundShellState {
     }
 }
 
-/// Env vars whose names contain any of these substrings are scrubbed from the
-/// child's environment. Prevents the LLM from exfiltrating tokens via
-/// `env | curl …`. Substring match (case-insensitive) catches the long tail
-/// of `*_TOKEN`, `*_KEY`, `*_SECRET`, etc.
-const ENV_DENYLIST_SUBSTRINGS: &[&str] = &[
-    "TOKEN",
-    "SECRET",
-    "PASSWORD",
-    "PASSWD",
-    "_PWD", // *_PWD (e.g. MYSQL_PWD); not bare PWD/OLDPWD (no `_PWD` substring)
-    "API_KEY",
-    "APIKEY",
-    "ACCESS_KEY",
-    "PRIVATE_KEY",
-    "_KEY", // the long tail of *_KEY the comment promised (FOO_KEY, STRIPE_KEY)
-    "CREDENTIALS",
-    "DATABASE_URL", // routinely embeds inline creds (postgres://user:pass@host/db)
-    "_DSN",         // SENTRY_DSN and friends carry a secret
-    "WEBHOOK",      // webhook URLs are bearer-secret endpoints
-    "OPENAI",
-    "ANTHROPIC",
-    "AWS_",
-    "GOOGLE_",
-    "GITHUB_",
-    "GH_",
-    "SUPABASE",
-    "PASSPHRASE",  // GPG/SSH key passphrases
-    "KUBECONFIG",  // path to a kube credentials file
-    "DOCKER_AUTH", // DOCKER_AUTH_CONFIG embeds registry creds
-    "NETRC",       // points at ~/.netrc (login:password pairs)
-    "SSH_AUTH",    // SSH_AUTH_SOCK — live ssh-agent socket (auth without a key)
-    "SSH_AGENT",   // SSH_AGENT_PID and friends
-    "GPG_AGENT",   // GPG_AGENT_INFO — live gpg-agent socket
-];
-
-/// Whether an env var name looks secret enough to scrub before spawning a child
-/// shell. Case-insensitive substring match over [`ENV_DENYLIST_SUBSTRINGS`].
-pub(super) fn is_secret_env_name(name: &str) -> bool {
-    let upper = name.to_ascii_uppercase();
-    ENV_DENYLIST_SUBSTRINGS.iter().any(|p| upper.contains(p))
-}
-
 /// Per-stream cap on background-shell output retention. A command like
 /// `yes` or `dd if=/dev/urandom` previously filled memory at gigabytes
 /// per minute because the Vec<u8> was never truncated. We retain the
@@ -231,45 +189,6 @@ pub(super) fn drain_utf8(buf: &[u8], cursor: &mut usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn secret_env_names_are_scrubbed_without_eating_benign_ones() {
-        for name in [
-            "GITHUB_TOKEN",
-            "AWS_ACCESS_KEY_ID",
-            "OPENAI_API_KEY",
-            "DATABASE_URL",
-            "STRIPE_KEY",
-            "FOO_KEY",
-            "MYSQL_PWD",
-            "PGPASSWORD",
-            "MY_WEBHOOK_URL",
-            "SENTRY_DSN",
-            "KUBECONFIG",
-            "DOCKER_AUTH_CONFIG",
-            "GPG_PASSPHRASE",
-            "NETRC",
-            "SSH_AUTH_SOCK",
-            "SSH_AGENT_PID",
-        ] {
-            assert!(is_secret_env_name(name), "should scrub {name}");
-        }
-        // Benign session/info vars must survive (a child may legitimately use
-        // them); only the agent socket itself is stripped.
-        for name in [
-            "PATH",
-            "HOME",
-            "LANG",
-            "PWD",
-            "OLDPWD",
-            "SHELL",
-            "TERM",
-            "SSH_CONNECTION",
-            "SSH_CLIENT",
-        ] {
-            assert!(!is_secret_env_name(name), "should NOT scrub {name}");
-        }
-    }
 
     #[test]
     fn drain_utf8_keeps_split_multibyte_for_next_read() {

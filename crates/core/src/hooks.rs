@@ -357,6 +357,9 @@ async fn run_hook_with_timeout(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // Strip inherited secret env so a hook command can't exfiltrate API keys or
+    // tokens — its stdout is fed back into the model transcript.
+    crate::secret_env::scrub_secret_env(&mut cmd);
     isolate_process_group(&mut cmd);
 
     let mut child = cmd.spawn()?;
