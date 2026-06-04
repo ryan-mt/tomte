@@ -57,6 +57,11 @@ pub struct SubagentDefinition {
     pub system_prompt: String,
 }
 
+/// Max bytes for a subagent `<name>.md`. Cloned repos control the cwd-relative
+/// agent roots, so a planted multi-GB file (or a `/dev/zero` symlink) must not
+/// OOM the CLI when definitions are enumerated at startup.
+const MAX_SUBAGENT_BYTES: u64 = 1024 * 1024;
+
 pub fn subagents_dir() -> PathBuf {
     crate::config::config_dir().join("agents")
 }
@@ -107,7 +112,7 @@ pub fn load_all(cwd: &Path) -> Vec<SubagentDefinition> {
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
             }
-            match std::fs::read_to_string(&path) {
+            match crate::config::read_text_file_capped(&path, MAX_SUBAGENT_BYTES) {
                 Ok(text) => match parse(&text, &path) {
                     // First root wins: don't overwrite a name already seen.
                     Ok(def) => {
@@ -139,7 +144,7 @@ pub fn load_by_name(cwd: &Path, name: &str) -> Result<SubagentDefinition> {
         let path = root.join(format!("{name}.md"));
         // A readable file ends the search: surface its parse result (so a
         // malformed definition reports its own error rather than NotFound).
-        if let Ok(text) = std::fs::read_to_string(&path) {
+        if let Ok(text) = crate::config::read_text_file_capped(&path, MAX_SUBAGENT_BYTES) {
             return parse(&text, &path);
         }
     }

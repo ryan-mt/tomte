@@ -340,20 +340,42 @@ fn overlay_project_config(mut cfg: Config, cwd: &Path) -> Config {
     cfg
 }
 
+/// Read an attacker-influenceable text file bounded to `max_bytes` and
+/// restricted to a regular file. `metadata` follows symlinks, so a symlink to
+/// `/dev/zero` resolves to a character device (not a regular file) and is
+/// rejected, and a multi-GB planted file is rejected by the size cap — either
+/// would otherwise exhaust memory in `read_to_string`. Returns `NotFound` when
+/// absent so callers can distinguish "missing" from "rejected".
+pub(crate) fn read_text_file_capped(path: &Path, max_bytes: u64) -> std::io::Result<String> {
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    if meta.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} exceeds the {max_bytes} byte cap", path.display()),
+        ));
+    }
+    std::fs::read_to_string(path)
+}
+
 /// Read a project config file, bounded to a sane size — it is attacker-influenced
 /// (it ships in cloned repos) and a real config is tiny. Returns `None` when the
 /// file is absent, not a regular file, too large, or unreadable.
 fn read_project_config(path: &Path) -> Option<String> {
     const MAX_PROJECT_CONFIG_BYTES: u64 = 64 * 1024;
-    let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() {
-        return None;
+    match read_text_file_capped(path, MAX_PROJECT_CONFIG_BYTES) {
+        Ok(s) => Some(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            tracing::warn!(config = %path.display(), error = %e, "project config.json unreadable or too large; ignoring it");
+            None
+        }
     }
-    if meta.len() > MAX_PROJECT_CONFIG_BYTES {
-        tracing::warn!(config = %path.display(), "project config.json too large; ignoring it");
-        return None;
-    }
-    std::fs::read_to_string(path).ok()
 }
 
 /// Apply a validated project overlay onto `cfg`. Model names are normalized and

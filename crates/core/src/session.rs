@@ -241,10 +241,15 @@ fn unique_tmp_path(path: &Path) -> PathBuf {
     path.with_extension(format!("tmp.{}.{}.{}", std::process::id(), now, seq))
 }
 
+/// Upper bound on a session file we'll read into memory. Generous for a long
+/// real conversation, but stops a planted multi-GB file or a symlink to
+/// `/dev/zero` in the sessions dir from OOMing the CLI on load/list.
+const MAX_SESSION_BYTES: u64 = 64 * 1024 * 1024;
+
 pub fn load(cwd: &Path, id: &str) -> std::io::Result<SessionRecord> {
     validate_session_id(id)?;
     let path = sessions_dir_for(cwd).join(format!("{id}.json"));
-    let text = std::fs::read_to_string(&path)?;
+    let text = crate::config::read_text_file_capped(&path, MAX_SESSION_BYTES)?;
     serde_json::from_str(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
@@ -260,7 +265,7 @@ pub fn list(cwd: &Path) -> Vec<SessionMeta> {
         if path.extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(text) = crate::config::read_text_file_capped(&path, MAX_SESSION_BYTES) else {
             continue;
         };
         if let Ok(rec) = serde_json::from_str::<SessionRecord>(&text) {

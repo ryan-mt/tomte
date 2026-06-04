@@ -7,6 +7,25 @@ fn write_project_config(cwd: &Path, body: &str) {
 }
 
 #[test]
+fn read_text_file_capped_enforces_bounds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let small = tmp.path().join("small.txt");
+    std::fs::write(&small, "hello").unwrap();
+    assert_eq!(read_text_file_capped(&small, 1024).unwrap(), "hello");
+    // Over the cap → rejected (would otherwise read an arbitrarily large file).
+    let big = tmp.path().join("big.txt");
+    std::fs::write(&big, vec![b'x'; 2048]).unwrap();
+    assert!(read_text_file_capped(&big, 1024).is_err());
+    // Missing → NotFound, so callers can distinguish "absent" from "rejected".
+    let err = read_text_file_capped(&tmp.path().join("nope.txt"), 1024).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    // A character device (`/dev/zero`) is not a regular file → rejected, so
+    // read_to_string can't spin forever filling memory.
+    #[cfg(unix)]
+    assert!(read_text_file_capped(std::path::Path::new("/dev/zero"), u64::MAX).is_err());
+}
+
+#[test]
 fn project_config_overrides_safe_fields_only() {
     let tmp = tempfile::tempdir().unwrap();
     write_project_config(

@@ -76,6 +76,11 @@ const MAX_SKILL_DEPTH: usize = 6;
 /// is a backstop, not a target.
 pub const MANIFEST_MAX: usize = 600;
 
+/// Max bytes for a `SKILL.md`. It lives under cwd-relative roots a cloned repo
+/// controls and is read at startup, so a planted multi-GB file (or a symlink to
+/// `/dev/zero`) must not OOM the CLI before the user acts.
+const MAX_SKILL_BYTES: u64 = 1024 * 1024;
+
 /// Ordered skill root directories, most-specific first. The first directory
 /// that defines a given skill `name` wins, so a project or opencli-native
 /// skill can shadow a global one. Includes the skill libraries of other
@@ -164,7 +169,7 @@ pub(crate) fn discover_in(roots: &[PathBuf]) -> Vec<SkillEntry> {
         collect_skill_files(root, &mut files);
         files.sort();
         for path in files {
-            let text = match std::fs::read_to_string(&path) {
+            let text = match crate::config::read_text_file_capped(&path, MAX_SKILL_BYTES) {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "skill read failed");
@@ -226,7 +231,7 @@ pub(crate) fn load_body_from(roots: &[PathBuf], name: &str) -> Result<(PathBuf, 
         .into_iter()
         .find(|e| e.name == name)
         .ok_or_else(|| anyhow!("skill `{name}` not found"))?;
-    let text = std::fs::read_to_string(&entry.path)
+    let text = crate::config::read_text_file_capped(&entry.path, MAX_SKILL_BYTES)
         .with_context(|| format!("read skill {}", entry.path.display()))?;
     let skill = parse(&text, &entry.path)?;
     let dir = entry
