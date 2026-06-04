@@ -60,11 +60,28 @@ fn non_unix_secure_auth_storage_error() -> std::io::Error {
     )
 }
 
+/// Best-effort: tighten the credential file to owner-only (`0o600`) if it's
+/// group- or world-accessible. `save_auth` always writes `0o600`, but a file
+/// restored from a backup, copied with `cp -p`, or placed via `XDG_CONFIG_HOME`
+/// redirection can land readable by other local users; `load_auth` closes that
+/// on read, mirroring `config::create_dir_secure`'s directory repair.
+#[cfg(unix)]
+fn repair_owner_only(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.permissions().mode() & 0o077 != 0 {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
 pub fn load_auth() -> Result<AuthRecord> {
     let path = auth_file();
     if !path.exists() {
         return Ok(AuthRecord::default());
     }
+    #[cfg(unix)]
+    repair_owner_only(&path);
     let text = std::fs::read_to_string(&path)?;
     if text.trim().is_empty() {
         return Ok(AuthRecord::default());
@@ -365,5 +382,32 @@ mod logout_tests {
                 .contains("secure auth storage requires owner-only file permissions"),
             "{err}"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod perm_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn repair_owner_only_tightens_group_world_bits() {
+        let path =
+            std::env::temp_dir().join(format!("tomte-auth-perm-{}.json", rand::random::<u64>()));
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        repair_owner_only(&path);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "a group/world-readable credential file must be tightened to 0o600"
+        );
+        // Idempotent on an already-tight file.
+        repair_owner_only(&path);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }
