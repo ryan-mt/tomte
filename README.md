@@ -2,9 +2,9 @@
 
 # `tomte`
 
-**A coding agent that lives in your terminal.**
+**A calm, multi-model coding agent for your terminal.**
 
-Rust-fast · provider-agnostic · a drop-in for Claude Code — and it hatches a pixel companion.
+Rust-fast · runs any model · quiet and surgical — and it hatches a pixel companion.
 
 `0.0.2` · MIT · built in 🦀 Rust
 

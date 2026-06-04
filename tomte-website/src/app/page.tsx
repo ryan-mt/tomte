@@ -20,7 +20,7 @@ export default function Home() {
         <div className="mx-auto max-w-[1200px] px-5 pb-16 pt-16 sm:px-8 sm:pb-24 sm:pt-24">
           <p className="mono-label">Open-source coding agent for your terminal</p>
           <h1 className="mt-5 max-w-[22ch] font-display text-[2.9rem] font-extrabold leading-[0.92] tracking-[-0.035em] text-ink sm:text-[4.25rem]">
-            A coding agent that lives in your terminal.
+            {site.headline}
           </h1>
           <p className="mt-6 max-w-xl text-[1.1875rem] leading-relaxed text-ink-2">
             {site.subhead}

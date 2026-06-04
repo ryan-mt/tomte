@@ -15,7 +15,7 @@ export function Footer() {
               <span className="mb-[3px] inline-block h-[19px] w-[10px] bg-ink" aria-hidden="true" />
             </div>
             <p className="mt-4 max-w-xs text-[16px] leading-snug text-ink-2">
-              A coding agent that lives in your terminal. One binary, any model.
+              A calm coding agent for your terminal. One binary, any model.
             </p>
             <p className="mt-4 font-mono text-[11px] uppercase tracking-[0.16em] text-ink-3">
               Rust. Provider-agnostic. MIT.

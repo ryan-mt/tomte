@@ -16,10 +16,10 @@ export const site = {
   wordmark: "tomte",
   /** Latin-binomial conceit for the field-guide framing. */
   binomial: "Tomte terminalis",
-  headline: "A coding agent that lives in your terminal.",
+  headline: "A calm, multi-model coding agent for your terminal.",
   /** Hero subtext: <= 20 words, no em-dash. */
   subhead:
-    "Rust-fast and provider-agnostic. One open-source binary, a drop-in for Claude Code, at home in any repository.",
+    "Rust-fast and multi-model. One open-source binary, quiet and surgical, at home in any repository.",
   /** Longer one-paragraph description for meta + intro plates. */
   description:
     "Tomte is a single-binary coding agent for your terminal. Point it at OpenAI or Anthropic, drop it into any repository, and it reads, writes, runs, searches, and reasons through real work with a full tool belt and a terminal UI that stays out of the way.",
@@ -343,8 +343,8 @@ export const configFields: { key: string; desc: string }[] = [
 
 export const faq: { q: string; a: string }[] = [
   {
-    q: "Is it really a drop-in for Claude Code?",
-    a: "It is built to match the muscle memory: a terminal UI, slash commands, plan mode, composer prefixes, and inherited AGENTS.md and CLAUDE.md memory. The difference is that it is a single Rust binary and it is provider-agnostic.",
+    q: "Will my Claude Code or Codex setup work?",
+    a: "Yes. Tomte keeps the muscle memory you know: a terminal UI, slash commands, plan mode, composer prefixes, and inherited AGENTS.md and CLAUDE.md memory. It works with your existing setup rather than replacing it, and adds what they do not: one Rust binary, genuinely multi-model, and quiet by design.",
   },
   {
     q: "Do I need an API key?",

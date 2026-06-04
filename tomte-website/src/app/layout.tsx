@@ -28,7 +28,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "tomte: a coding agent that lives in your terminal",
+    default: "tomte: a calm, multi-model coding agent for your terminal",
     template: "%s · tomte",
   },
   description: site.description,
@@ -39,7 +39,7 @@ export const metadata: Metadata = {
     "coding agent",
     "terminal",
     "Rust CLI",
-    "Claude Code alternative",
+    "multi-model coding agent",
     "OpenAI",
     "Anthropic",
     "provider-agnostic",
