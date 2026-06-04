@@ -313,6 +313,17 @@ async fn spawn_background(
         tokio::spawn(async move {
             tokio::select! {
                 wait_result = child.wait() => {
+                    // Known, bounded limitation: if the command daemonized a
+                    // grandchild that inherited the stdout/stderr pipe (e.g.
+                    // `(sleep 999 &)`), the two reader tasks stay blocked on
+                    // read() until that grandchild exits or the session ends,
+                    // pinning their <=4 MiB buffers. We deliberately do NOT
+                    // kill_process_group here: child.wait() has already reaped the
+                    // group leader (pgid == pid), so the pgid may have been
+                    // recycled and signalling it could hit an unrelated process.
+                    // The kill arm below is safe only because it signals *before*
+                    // reaping. A correct unblock needs a drain-with-grace on the
+                    // readers; deferred as the leak is bounded and session-scoped.
                     let mut st = state.status.lock().await;
                     *st = match wait_result {
                         Ok(status) => BgStatus::Exited(status.code().unwrap_or(-1)),
