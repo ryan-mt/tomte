@@ -269,7 +269,10 @@ async fn session_record_roundtrips_resumable_runtime_state() {
     restored.restore_from(record);
     let session = restored.session.lock().await;
     assert_eq!(session.todos.len(), 1);
-    assert!(session.read_files.contains(&read_file));
+    // read_files is persisted (asserted above) but intentionally NOT restored: a
+    // tampered session must not pre-satisfy the read-before-overwrite guard, so
+    // the model has to read a file again this session before overwriting it.
+    assert!(session.read_files.is_empty());
     assert!(session.background_shells.is_empty());
     assert!(session.undo_stack.is_empty());
 }

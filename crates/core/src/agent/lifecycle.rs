@@ -106,7 +106,11 @@ impl Agent {
     pub fn restore_from(&mut self, record: crate::session::SessionRecord) {
         let mut state = SessionState::default();
         state.todos = record.state.todos;
-        state.read_files = record.state.read_files.into_iter().collect();
+        // Deliberately do NOT restore `read_files`. A tampered session file could
+        // pre-seed it to satisfy write_file/edit_file's read-before-overwrite
+        // guard — the runtime staleness snapshots (`read_file_meta`) are empty
+        // after resume, so set membership would be the only gate. Start empty so
+        // the model must actually read a file this session before overwriting it.
         self.cost_usage = record.state.usage;
         self.session = Arc::new(Mutex::new(state));
         self.history = record.history;
