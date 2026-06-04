@@ -46,6 +46,51 @@ async fn message_stop_emits_completed_once() {
 }
 
 #[tokio::test]
+async fn message_delta_usage_folds_all_fields_over_message_start() {
+    let app = Router::new().route(
+        "/",
+        get(|| async {
+            let events = vec![
+                Ok::<Event, Infallible>(Event::default().data(
+                    r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":10,"cache_read_input_tokens":5,"output_tokens":1}}}"#,
+                )),
+                Ok(Event::default().data(
+                    r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20,"cache_read_input_tokens":7}}"#,
+                )),
+                Ok(Event::default().data(r#"{"type":"message_stop"}"#)),
+            ];
+            Sse::new(stream::iter(events))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+    let mut handle = handle_from_response(resp);
+    let mut usage = None;
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+        .await
+        .unwrap()
+    {
+        if let ResponseStreamEvent::Completed { response } = event.unwrap() {
+            usage = response.get("usage").cloned();
+        }
+    }
+    server.abort();
+
+    let usage = usage.expect("a completed event carrying usage");
+    // input_tokens appears only in message_start — it must survive the merge.
+    assert_eq!(usage["input_tokens"], 10);
+    // output_tokens and the cache class are updated by message_delta (the old
+    // code merged only output_tokens, dropping the corrected cache count).
+    assert_eq!(usage["output_tokens"], 20);
+    assert_eq!(usage["cache_read_input_tokens"], 7);
+}
+
+#[tokio::test]
 async fn eof_before_message_stop_reports_error() {
     let app = Router::new().route(
         "/",

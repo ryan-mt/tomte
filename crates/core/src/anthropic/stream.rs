@@ -341,9 +341,19 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 }
                                 if let Some(u) = parsed.get("usage") {
                                     if let Some(existing) = last_usage.as_mut() {
-                                        if let Some(out) = u.get("output_tokens").cloned() {
-                                            if let Some(obj) = existing.as_object_mut() {
-                                                obj.insert("output_tokens".into(), out);
+                                        // message_delta carries the final cumulative
+                                        // usage; fold every field it reports over the
+                                        // message_start snapshot — not just
+                                        // output_tokens — so a corrected input or
+                                        // cache-class count isn't dropped (it skews
+                                        // /cost and the occupancy estimate). A field
+                                        // absent from the delta keeps its message_start
+                                        // value.
+                                        if let (Some(obj), Some(delta)) =
+                                            (existing.as_object_mut(), u.as_object())
+                                        {
+                                            for (k, v) in delta {
+                                                obj.insert(k.clone(), v.clone());
                                             }
                                         }
                                     } else {
