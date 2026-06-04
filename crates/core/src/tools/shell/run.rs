@@ -16,9 +16,8 @@ use crate::tools::{BackgroundShellState, BgStatus, BuiltinTool, ToolContext};
 
 use super::danger::classify_danger;
 use super::support::{
-    append_capped, bash_id, configure_platform_shell, format_capped_stream, isolate_process_group,
-    kill_process_group, now_ms, platform_shell_name, read_capped_output,
-    FOREGROUND_OUTPUT_MAX_BYTES_PER_STREAM,
+    append_capped, bash_id, format_capped_stream, isolate_process_group, kill_process_group,
+    now_ms, read_capped_output, FOREGROUND_OUTPUT_MAX_BYTES_PER_STREAM,
 };
 
 pub struct RunShell;
@@ -166,8 +165,7 @@ Parameters:\n\
             }
             tracing::warn!(command = %a.command, reason, "run_shell.dangerous_override_used");
         }
-        let mut cmd = Command::new(platform_shell_name());
-        configure_platform_shell(&mut cmd, &a.command);
+        let mut cmd = super::sandbox::shell_command(&a.command, &ctx.config, &ctx.cwd);
         cmd.current_dir(&ctx.cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

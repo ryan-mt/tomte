@@ -5,6 +5,7 @@
 mod danger;
 mod poll;
 mod run;
+pub mod sandbox;
 mod support;
 
 #[cfg(test)]

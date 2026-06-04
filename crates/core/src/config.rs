@@ -5,6 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+mod sandbox;
+pub use sandbox::SandboxConfig;
+
 const CONFIG_DIR_NAME: &str = "opencli";
 static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 // `ultracode` is Claude Code's top effort-menu entry. Per the Anthropic docs it
@@ -61,6 +64,9 @@ pub struct Config {
     /// loop — see that module.)
     #[serde(default)]
     pub fallback_models: Vec<String>,
+    /// OS-level sandbox for `run_shell` child processes — see [`SandboxConfig`].
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
 }
 
 /// Configuration for one OpenAI-compatible (`/v1/chat/completions`) provider.
@@ -193,6 +199,7 @@ impl Default for Config {
             default_permission_mode: default_permission_mode(),
             providers: HashMap::new(),
             fallback_models: Vec::new(),
+            sandbox: SandboxConfig::default(),
         }
     }
 }

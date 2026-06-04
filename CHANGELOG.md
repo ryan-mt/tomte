@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.3
+
+- Added an OS-level sandbox for `run_shell`: commands run under Landlock + seccomp (Linux) or `sandbox-exec` (macOS), confining file writes to the workspace and blocking outbound network by default — so an auto-approved or prompt-injected command can't escape the project or exfiltrate. Modes `read-only` / `workspace-write` (default) / `danger-full-access`; `opencli doctor` shows the active mode. Other platforms run unsandboxed with a warning.
+
 ## 0.0.2
 
 - Added a `memory` tool — agent-writable, project-scoped notes that persist across sessions: the `MEMORY.md` index is re-injected into context each session, other notes load on demand. Sandboxed to a flat per-project store, auto-approved interactively, and disabled in headless runs.

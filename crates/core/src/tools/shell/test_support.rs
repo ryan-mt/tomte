@@ -10,6 +10,11 @@ use crate::tools::{ApprovalMode, BuiltinTool, SessionState, ToolContext};
 use super::BashOutput;
 
 pub(super) fn ctx_at(cwd: std::path::PathBuf) -> ToolContext {
+    // These tests exercise run_shell mechanics, not the OS sandbox. Under the
+    // default `workspace-write` mode run_shell re-execs the *test* binary as the
+    // sandbox helper (which doesn't understand `__sandbox`), so disable it here.
+    let mut config = crate::config::Config::default();
+    config.sandbox.mode = "danger-full-access".to_string();
     ToolContext {
         cwd,
         approval: ApprovalMode::Auto,
@@ -17,7 +22,7 @@ pub(super) fn ctx_at(cwd: std::path::PathBuf) -> ToolContext {
         auto_approve_edits: false,
         non_interactive: false,
         session: Arc::new(Mutex::new(SessionState::default())),
-        config: crate::config::Config::default(),
+        config,
         cwd_override: Arc::new(Mutex::new(None)),
         events: None,
     }

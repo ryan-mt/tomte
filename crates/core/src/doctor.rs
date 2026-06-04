@@ -163,6 +163,7 @@ pub fn diagnose(cwd: &Path) -> Report {
             runtime_section(),
             auth_section(),
             config_section(cwd),
+            sandbox::section(),
             model_routing_section(cwd),
             mcp_section(),
             discovery_section(cwd),
@@ -467,6 +468,8 @@ fn plural(n: usize) -> &'static str {
         "s"
     }
 }
+
+mod sandbox;
 
 #[cfg(test)]
 mod tests;

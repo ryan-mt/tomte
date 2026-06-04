@@ -140,8 +140,20 @@ fn command_uses_json_output(command: &Option<Command>) -> bool {
     )
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // If we were re-launched as the OS-sandbox helper (`__sandbox …`), apply the
+    // sandbox to this process and exec the target command — this never returns on
+    // success. A normal launch returns immediately. This MUST run before the async
+    // runtime starts: the helper restricts itself with Landlock/seccomp and execs,
+    // which is only sound while the process is still single-threaded.
+    opencli_core::tools::shell::sandbox::maybe_exec_helper();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     let cli = Cli::parse();
 
     // `opencli` and `opencli resume` launch the full-screen TUI, which owns the
