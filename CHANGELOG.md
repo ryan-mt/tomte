@@ -72,6 +72,7 @@
 - OpenAI reasoning-effort normalization now pins every `-pro` model to `high`, not just `gpt-5-pro` — `gpt-5.5-pro` and future pro tiers were missing the clamp.
 - The OpenAI model list now matches the current API (`gpt-5.5`/`-pro`, `gpt-5.4`/`-mini`/`-nano`, `gpt-5.2`, `gpt-5`); removed ids auto-migrate to their closest equivalent on startup, and real models `gpt-5`/`gpt-5.2` are no longer force-migrated to the default.
 - Reorganized the codebase so every Rust source file is ≤500 lines: large modules (`agent`, `tui/app`, `tui/ui`, the `tools` set, `openai/chat`, `permissions`) are split into focused submodules and two oversized functions are decomposed. Pure internal refactor — no behavior change, same 731 tests pass.
+- `run_shell`'s danger guard now flags git's wider destructive surface — force-push via a `+refspec`/`--mirror`, remote-branch deletion (`push :branch`/`--delete`), `branch -D`, `update-ref -d`, `reflog expire`, `gc --prune=now`, `stash clear/drop`, and `filter-branch` — so none can auto-run unseen under a `git:*` allow rule.
 
 ## 0.0.1-beta.4
 
