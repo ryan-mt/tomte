@@ -94,6 +94,37 @@ fn parse_function_delta_accepts_call_id_and_arguments_delta() {
 }
 
 #[test]
+fn parse_incomplete_content_filter_surfaces_error() {
+    // A Responses-shaped endpoint that blocks output via `response.incomplete`
+    // with reason `content_filter` must surface an error, not finalize an empty
+    // "success" — parity with the Chat Completions content-filter path.
+    let ev = parse_event(
+        r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"content_filter"}}}"#,
+    )
+    .unwrap();
+    match ev {
+        ResponseStreamEvent::Error { message } => {
+            assert!(message.contains("content filter"), "got: {message}");
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_incomplete_max_tokens_finalizes_as_completed() {
+    // Running out of the output-token budget is a normal, usable completion —
+    // finalize what streamed rather than treating it as a block.
+    let ev = parse_event(
+        r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"#,
+    )
+    .unwrap();
+    assert!(
+        matches!(ev, ResponseStreamEvent::Completed { .. }),
+        "expected Completed, got {ev:?}"
+    );
+}
+
+#[test]
 fn parse_text_delta_accepts_text_alias() {
     let ev = parse_event(r#"{"type":"response.output_text.delta","item_id":"msg_1","text":"Hi"}"#)
         .unwrap();

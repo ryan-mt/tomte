@@ -307,6 +307,31 @@ fn parse_event(data: &str) -> anyhow::Result<ResponseStreamEvent> {
         "response.completed" => ResponseStreamEvent::Completed {
             response: value.get("response").cloned().unwrap_or(Value::Null),
         },
+        // A truncated completion. `content_filter` means the provider blocked the
+        // output — surface it as an error, mirroring the Chat Completions
+        // `finish_reason: content_filter` and Anthropic `refusal` paths so a
+        // Responses-shaped endpoint can't silently turn a blocked turn into an
+        // empty "success". Any other reason (e.g. `max_output_tokens`) is a
+        // normal, usable completion, so finalize what streamed instead.
+        "response.incomplete" => {
+            let reason = value
+                .get("response")
+                .and_then(|r| r.get("incomplete_details"))
+                .and_then(|d| d.get("reason"))
+                .and_then(|r| r.as_str())
+                .unwrap_or_default();
+            if reason == "content_filter" {
+                ResponseStreamEvent::Error {
+                    message: "response blocked by the provider content filter \
+                              (incomplete_details.reason: content_filter)"
+                        .to_string(),
+                }
+            } else {
+                ResponseStreamEvent::Completed {
+                    response: value.get("response").cloned().unwrap_or(Value::Null),
+                }
+            }
+        }
         // Codex/ChatGPT-backend in-stream quota event (some routes send the
         // snapshot here instead of, or alongside, the `x-codex-*` headers).
         "codex.rate_limits" => match crate::usage::parse_codex_rate_limit_event(&value) {
