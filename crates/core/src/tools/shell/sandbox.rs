@@ -3,8 +3,10 @@
 //! The permission layer decides *whether* a command may run; this layer decides
 //! *what it can touch once running*. They are orthogonal: even an allowed,
 //! bypass-mode, or `--dangerously-skip-permissions` command executes inside the
-//! sandbox, so a prompt-injected `curl … | sh` or `rm -rf ~` cannot reach the
-//! network or write outside the workspace.
+//! sandbox. On Linux and macOS that stops a prompt-injected `curl … | sh` or
+//! `rm -rf ~` from reaching the network or writing outside the workspace; on
+//! Windows the sandbox is best-effort process-tree cleanup only and does NOT
+//! confine the filesystem or network (see the per-OS notes below).
 //!
 //! Mechanism per OS:
 //!   - **Linux**: a re-exec helper (`<exe> __sandbox --policy <json> -- sh -c
