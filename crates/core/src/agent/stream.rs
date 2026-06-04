@@ -197,10 +197,44 @@ impl Agent {
                         if self.try_recover_overflow(&message, &mut overflow_recoveries) {
                             continue 'turn;
                         }
+                        // An overload that surfaces mid-stream *before any answer
+                        // text was committed* is as safe to fail over as a
+                        // pre-stream rejection: nothing usable was shown or appended
+                        // to history yet, so retrying on a fallback model can't
+                        // replay output. (Reasoning-only output doesn't count — see
+                        // `produced_output`.) Once text has streamed we surface the
+                        // error instead, to never duplicate a partial answer.
+                        if !produced_output
+                            && self
+                                .try_fail_over(
+                                    &message,
+                                    &mut fallback_tried,
+                                    &mut fallback_attempts,
+                                    &tx,
+                                )
+                                .await
+                        {
+                            continue 'turn;
+                        }
                         return Err(anyhow::anyhow!("response.failed: {message}"));
                     }
                     EventFlow::Errored(message) => {
                         if self.try_recover_overflow(&message, &mut overflow_recoveries) {
+                            continue 'turn;
+                        }
+                        // Same as `Failed`: a mid-stream overload error event (e.g.
+                        // Anthropic's `overloaded_error`) before any committed text
+                        // can transparently fail over to a fallback model.
+                        if !produced_output
+                            && self
+                                .try_fail_over(
+                                    &message,
+                                    &mut fallback_tried,
+                                    &mut fallback_attempts,
+                                    &tx,
+                                )
+                                .await
+                        {
                             continue 'turn;
                         }
                         return Err(anyhow::anyhow!(message));

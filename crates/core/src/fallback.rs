@@ -13,9 +13,10 @@
 //! into a confusing auth error), and it classifies fatal/overflow errors
 //! *before* overload — via [`is_quota_or_overload`] plus
 //! [`crate::agent::is_context_overflow_message`] — so a 400/401/refusal or a
-//! context overflow is never mistaken for "try a different model". It runs only
-//! on the pre-stream send error, never mid-stream, so a fail-over can't replay
-//! output already shown to the user.
+//! context overflow is never mistaken for "try a different model". It runs on
+//! the pre-stream send error and on a mid-stream `Failed`/`Error` event, but
+//! only until answer text has started streaming — past that point the error
+//! surfaces instead, so a fail-over can never replay output already shown.
 
 use crate::config::Config;
 
