@@ -5,6 +5,49 @@ use super::*;
 use crate::tools::BuiltinTool;
 use serde_json::json;
 
+#[cfg(unix)]
+#[tokio::test]
+async fn write_file_refuses_out_of_sandbox_parent_symlink() {
+    // A parent path component that is a symlink escaping the sandbox (as a
+    // swapped-in TOCTOU symlink would be) must make the write refuse, never
+    // landing outside cwd. resolve() rejects it; the post-create_dir_all
+    // re-resolve closes the same hole when the symlink appears after the first
+    // resolve.
+    let outside = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), cwd.path().join("escape")).unwrap();
+    let err = WriteFile
+        .execute(
+            json!({"path": "escape/pwned.txt", "content": "x"}),
+            &ctx(cwd.path().to_path_buf()),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("sandbox"), "got: {err}");
+    assert!(
+        !outside.path().join("pwned.txt").exists(),
+        "write escaped the sandbox through a symlinked parent"
+    );
+}
+
+#[tokio::test]
+async fn write_file_creates_nested_new_dirs() {
+    // The re-resolve after create_dir_all must not break the common case: a new
+    // file in a brand-new nested subdir still writes correctly.
+    let cwd = tempfile::tempdir().unwrap();
+    WriteFile
+        .execute(
+            json!({"path": "a/b/c/new.txt", "content": "hello"}),
+            &ctx(cwd.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(cwd.path().join("a/b/c/new.txt")).unwrap(),
+        "hello"
+    );
+}
+
 #[tokio::test]
 async fn write_file_refuses_unread_existing_file() {
     let dir = tempfile::tempdir().unwrap();

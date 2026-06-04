@@ -117,6 +117,12 @@ Parameters:\n\
                 .await
                 .with_context(|| format!("create parent dirs for {}", parent.display()))?;
         }
+        // TOCTOU guard: the first `resolve` appended still-missing path
+        // components literally, so a parent could have been swapped for an
+        // out-of-sandbox symlink between then and now. Re-resolve once the
+        // parent exists — `resolve` canonicalizes it and re-asserts sandbox
+        // containment, so the write can't escape via a swapped-in symlink.
+        let path = resolve(&ctx.cwd, &a.path)?;
         let tmp = path.with_extension(format!("write-{}.tmp", rand_suffix()));
         atomic_write_preserving_permissions(&path, &tmp, a.content.as_bytes()).await?;
         let (post_edit_mtime, post_edit_size) = snapshot_meta(&path);
