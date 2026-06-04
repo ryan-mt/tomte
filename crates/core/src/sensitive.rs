@@ -3,7 +3,22 @@ pub(crate) const ERROR_EXCERPT_CHARS: usize = 160;
 pub(crate) fn redact_auth_in(body: &str) -> String {
     let mut out = body.to_string();
     for token in ["sk-ant-", "sk_proj_", "sk-proj-", "sk-", "Bearer "] {
-        while let Some(start) = out.find(token) {
+        let mut search_from = 0;
+        while let Some(rel) = out[search_from..].find(token) {
+            let start = search_from + rel;
+            // Only treat the prefix as a real token start at a word boundary, so
+            // benign substrings (`disk-usage`, `risk-free`, `ask-them`) aren't
+            // mangled in error output. A real token always sits after a quote,
+            // `=`/`:`, whitespace, or the string start — never glued onto a
+            // preceding identifier character.
+            let preceded_by_ident = out[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+            if preceded_by_ident {
+                search_from = start + token.len();
+                continue;
+            }
             let tail = &out[start + token.len()..];
             let end = tail
                 .char_indices()
@@ -11,6 +26,7 @@ pub(crate) fn redact_auth_in(body: &str) -> String {
                 .map(|(offset, _)| start + token.len() + offset)
                 .unwrap_or(out.len());
             out.replace_range(start..end, "<redacted>");
+            search_from = start + "<redacted>".len();
         }
     }
     out
@@ -62,5 +78,23 @@ mod tests {
         assert!(red.contains("<redacted>"), "{red}");
         // A too-short / empty key is ignored (no over-redaction).
         assert_eq!(error_excerpt_redacting("hello world", ""), "hello world");
+    }
+
+    #[test]
+    fn redact_auth_in_respects_word_boundaries() {
+        // Real tokens (after a quote / `=` / space / string start) are redacted.
+        assert!(!redact_auth_in(r#"{"k":"sk-ant-api03-xyz"}"#).contains("api03"));
+        assert!(!redact_auth_in("Authorization: Bearer abc123def456").contains("abc123def456"));
+        assert!(!redact_auth_in("key=sk-proj-secret9").contains("secret9"));
+        // Benign substrings that merely share a prefix are left intact.
+        assert_eq!(
+            redact_auth_in("model gpt-5 disk-usage was high"),
+            "model gpt-5 disk-usage was high"
+        );
+        assert_eq!(
+            redact_auth_in("risk-free and brisk-walking"),
+            "risk-free and brisk-walking"
+        );
+        assert_eq!(redact_auth_in("ask-them later"), "ask-them later");
     }
 }
