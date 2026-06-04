@@ -161,7 +161,10 @@ pub(super) fn apply_limits(
         let start = offset.min(total);
         let mut end = total;
         if let Some(n) = head_limit {
-            end = (start + n).min(total);
+            // saturating: a model-supplied head_limit near usize::MAX would
+            // otherwise overflow `start + n` and wrap to `end < start`, panicking
+            // the `lines[start..end]` slice below.
+            end = start.saturating_add(n).min(total);
         }
         let mut out = lines[start..end].join("\n");
         if offset > 0 {
@@ -215,6 +218,15 @@ mod tests {
             normalize_search_output_line(r"src\lib.rs", "files_with_matches"),
             "src/lib.rs"
         );
+    }
+
+    #[test]
+    fn apply_limits_survives_overflowing_head_limit() {
+        // A head_limit near usize::MAX must not overflow `start + n` and panic
+        // the `lines[start..end]` slice.
+        let s = "a\nb\nc\nd";
+        let out = apply_limits(s, Some(usize::MAX), Some(1), 8192);
+        assert!(out.contains('b') && out.contains('d'));
     }
 
     #[tokio::test]
