@@ -73,6 +73,7 @@
 - The OpenAI model list now matches the current API (`gpt-5.5`/`-pro`, `gpt-5.4`/`-mini`/`-nano`, `gpt-5.2`, `gpt-5`); removed ids auto-migrate to their closest equivalent on startup, and real models `gpt-5`/`gpt-5.2` are no longer force-migrated to the default.
 - Reorganized the codebase so every Rust source file is ≤500 lines: large modules (`agent`, `tui/app`, `tui/ui`, the `tools` set, `openai/chat`, `permissions`) are split into focused submodules and two oversized functions are decomposed. Pure internal refactor — no behavior change, same 731 tests pass.
 - `run_shell`'s danger guard now flags git's wider destructive surface — force-push via a `+refspec`/`--mirror`, remote-branch deletion (`push :branch`/`--delete`), `branch -D`, `update-ref -d`, `reflog expire`, `gc --prune=now`, `stash clear/drop`, and `filter-branch` — so none can auto-run unseen under a `git:*` allow rule.
+- `run_shell`'s danger guard now also catches `rm -rf /*/` and `$VAR`/`~user`-rooted deletes, `find -delete`/`-exec rm`, and disk-wiping writes via `shred`/`wipefs`/`tee`/`truncate`/`cp` to a block device (now incl. `/dev/vd*`, `/dev/mmcblk*`, `/dev/disk*`).
 
 ## 0.0.1-beta.4
 
