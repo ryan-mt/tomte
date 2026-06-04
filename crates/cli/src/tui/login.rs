@@ -135,6 +135,25 @@ impl LoginScreen {
         }
     }
 
+    /// Handle a bracketed paste on the login screen. The terminal delivers a
+    /// paste as one `Event::Paste`, not per-char key presses, so without routing
+    /// it here the OAuth code or API key the user pastes is silently dropped.
+    /// Inserts into whichever field the current stage edits; other stages ignore.
+    pub async fn handle_paste_text(&mut self, text: &str) {
+        // These fields hold a single-line secret (an OAuth code or API key is
+        // one token), so strip CR/LF: a trailing newline from the copy would
+        // otherwise sit in the buffer and break the single-line render.
+        let cleaned: String = text.chars().filter(|&c| c != '\r' && c != '\n').collect();
+        if cleaned.is_empty() {
+            return;
+        }
+        match self.stage().await {
+            Stage::ApiKeyEntry { .. } => self.api_input.insert_str(&cleaned),
+            Stage::AnthropicPaste { .. } => self.paste_input.insert_str(&cleaned),
+            _ => {}
+        }
+    }
+
     async fn handle_pick(&mut self, key: KeyEvent) -> Result<bool> {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.prev(),

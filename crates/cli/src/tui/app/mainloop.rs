@@ -280,6 +280,13 @@ pub async fn main_loop(
                         }
                     }
                     Ok(Event::Resize(_, _)) => {}
+                    // Bracketed paste on the login screen: route the clipboard
+                    // into the active field (OAuth code / API key). Without this
+                    // a paste arrives as Event::Paste and is dropped, since the
+                    // Chat arm below ignores it.
+                    Ok(Event::Paste(text)) if app.screen == Screen::Login => {
+                        app.login.handle_paste_text(&text).await;
+                    }
                     // Bracketed paste: the whole clipboard arrives as one event,
                     // so multi-line text lands in the composer for editing
                     // instead of submitting on the first newline.

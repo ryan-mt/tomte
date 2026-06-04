@@ -128,3 +128,27 @@ async fn current_chatgpt_result_is_applied() {
         Stage::Success(AuthMode::OpenaiOauth)
     ));
 }
+
+#[tokio::test]
+async fn paste_routes_into_active_field_and_strips_newlines() {
+    // The bug: bracketed paste was dropped on the login screen, so pasting the
+    // Claude OAuth code did nothing. It must land in the active field.
+    let mut login = LoginScreen::new();
+    *login.stage.lock().await = Stage::AnthropicPaste { url: "x".into() };
+    // A trailing newline from the copy is stripped (single-line secret field).
+    login.handle_paste_text("abc123#state\r\n").await;
+    assert_eq!(login.paste_input.buffer, "abc123#state");
+
+    // The API-key stage routes to the API-key field instead.
+    let mut login2 = LoginScreen::new();
+    *login2.stage.lock().await = Stage::ApiKeyEntry {
+        provider: Provider::Anthropic,
+    };
+    login2.handle_paste_text("sk-ant-xyz").await;
+    assert_eq!(login2.api_input.buffer, "sk-ant-xyz");
+
+    // A stage with no input field ignores the paste (no panic, nothing stored).
+    let mut login3 = LoginScreen::new();
+    login3.handle_paste_text("ignored").await;
+    assert!(login3.api_input.is_empty() && login3.paste_input.is_empty());
+}

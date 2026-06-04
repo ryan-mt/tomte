@@ -294,7 +294,12 @@ async fn try_bind(port: u16) -> Result<(u16, tokio::net::TcpListener)> {
 }
 
 fn callback_redirect_uri(port: u16) -> String {
-    format!("http://{CALLBACK_HOST}:{port}/auth/callback")
+    // The OAuth client whitelists `http://localhost:<port>/auth/callback` by
+    // exact string match, so the redirect_uri MUST say `localhost` — even
+    // though the listener binds CALLBACK_HOST (127.0.0.1) for a stable IPv4
+    // socket that `localhost` resolves to. Sending 127.0.0.1 here makes the
+    // authorize request fail with `authorize_hydra_invalid_request`.
+    format!("http://localhost:{port}/auth/callback")
 }
 
 /// Build a reqwest client with a sane timeout and a strict no-redirect
@@ -513,10 +518,13 @@ mod tests {
     }
 
     #[test]
-    fn callback_redirect_uri_uses_same_ipv4_host_as_listener() {
+    fn callback_redirect_uri_uses_localhost_to_match_oauth_whitelist() {
+        // The OAuth client whitelists the `localhost` host literally; sending
+        // 127.0.0.1 is rejected as authorize_hydra_invalid_request even though
+        // the listener binds 127.0.0.1 (localhost resolves to it).
         assert_eq!(
             callback_redirect_uri(1455),
-            "http://127.0.0.1:1455/auth/callback"
+            "http://localhost:1455/auth/callback"
         );
     }
 }
