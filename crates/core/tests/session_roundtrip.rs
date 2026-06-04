@@ -106,8 +106,9 @@ fn session_save_load_list_and_missing_id() {
     {
         use std::os::unix::fs::PermissionsExt;
 
-        let session_file = session::sessions_dir_for(&cwd_a).join("alpha.json");
-        let mode = std::fs::metadata(session_file)
+        let session_dir = session::sessions_dir_for(&cwd_a);
+        let session_file = session_dir.join("alpha.json");
+        let mode = std::fs::metadata(&session_file)
             .unwrap()
             .permissions()
             .mode()
@@ -116,6 +117,14 @@ fn session_save_load_list_and_missing_id() {
             mode, 0o600,
             "session files must not be group/world-readable"
         );
+        // The directory itself must be owner-only too, or its slug/timing
+        // metadata leaks to other local users despite the 0o600 files.
+        let dir_mode = std::fs::metadata(&session_dir)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700, "session dir must be owner-only");
     }
 
     // --- list returns newest-first per cwd -------------------------------

@@ -198,8 +198,13 @@ impl Default for Config {
 }
 
 pub fn config_dir() -> PathBuf {
+    // Never fall back to the current working directory: that risks writing
+    // `auth.json` (OAuth tokens) into a project checkout that then gets
+    // git-committed. Prefer the OS config dir, then `~/.config`, then a temp
+    // dir — anything but the cwd.
     dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+        .unwrap_or_else(std::env::temp_dir)
         .join(CONFIG_DIR_NAME)
 }
 

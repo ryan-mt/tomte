@@ -166,7 +166,9 @@ pub fn derive_preview(history: &[InputItem]) -> String {
 pub fn save(record: &SessionRecord) -> std::io::Result<()> {
     validate_session_id(&record.meta.id)?;
     let dir = sessions_dir_for(&record.meta.cwd);
-    std::fs::create_dir_all(&dir)?;
+    // Owner-only (0o700): session files are 0o600, but a 0o755 dir still leaks
+    // project slugs and session counts/timing to other local users.
+    crate::config::create_dir_secure(&dir)?;
     let path = dir.join(format!("{}.json", record.meta.id));
     let tmp = unique_tmp_path(&path);
     let text = serde_json::to_string(record)

@@ -94,20 +94,25 @@ fn init_tracing(stderr_logs: bool) {
     use tracing_subscriber::util::SubscriberInitExt;
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,opencli=info"));
-    let log_dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("opencli")
-        .join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
+    let config_root = opencli_core::config::config_dir();
+    let log_dir = config_root.join("logs");
+    // Harden the config tree to owner-only (0o700) at startup — this also covers
+    // users who only use env-var auth and never hit the secure-dir path
+    // elsewhere — then create the logs subdir the same way.
+    let _ = opencli_core::config::create_dir_secure(&config_root);
+    let _ = opencli_core::config::create_dir_secure(&log_dir);
     let log_path = log_dir.join(format!(
         "opencli-{}.log",
         chrono::Utc::now().format("%Y-%m-%d")
     ));
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .ok();
+    let mut log_opts = std::fs::OpenOptions::new();
+    log_opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        log_opts.mode(0o600);
+    }
+    let file = log_opts.open(&log_path).ok();
     // The full-screen TUI owns the terminal (alternate screen + raw mode), and
     // headless JSON mode promises stdout as one AgentEvent per line for scripts.
     // In those modes log to the file only; keep stderr for human one-shot

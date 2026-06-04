@@ -78,6 +78,7 @@
 - Path-based `deny` rules can no longer be slipped past by an in-repo symlink or a case-variant: the gate re-checks `deny` against the symlink-resolved real path (so `link -> .git/config` is still blocked), and path globs fold case on case-insensitive filesystems (macOS/Windows).
 - `write_file` re-resolves its target after creating parent directories, so a parent component swapped for an out-of-sandbox symlink in the TOCTOU window after the first path check can no longer redirect the write outside the working tree.
 - MCP servers and lifecycle hooks now get `run_shell`'s secret-env scrub: inherited API keys, tokens, and live agent sockets are stripped before spawn so a third-party MCP package or a hook can't exfiltrate them. Pass a server's needed secret via its explicit `env` map.
+- State directories are now owner-only (`0o700`) and log files `0o600`: the per-project session dir, the logs dir, and the config tree are hardened at startup. `config_dir` no longer falls back to the working directory (which risked git-committing `auth.json`) — it uses `~/.config` or a temp dir.
 
 ## 0.0.1-beta.4
 
