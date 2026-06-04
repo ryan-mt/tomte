@@ -33,6 +33,22 @@ impl ChatCompletionsClient {
         api_key: String,
         forward_reasoning_effort: bool,
     ) -> Result<Self> {
+        // Reject a non-https base_url (except an explicit loopback proxy): the
+        // API key is sent as `Authorization: Bearer …`, so an http:// upstream
+        // would leak it in cleartext.
+        let parsed = url::Url::parse(&base_url)
+            .map_err(|e| anyhow!("invalid provider base_url `{base_url}`: {e}"))?;
+        let is_loopback = parsed.host_str().is_some_and(|h| {
+            h.eq_ignore_ascii_case("localhost")
+                || h.parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
+        if parsed.scheme() != "https" && !is_loopback {
+            return Err(anyhow!(
+                "provider base_url must use https (got `{}://`) or an http://localhost proxy; otherwise the API key is sent in cleartext",
+                parsed.scheme()
+            ));
+        }
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .build()?;
@@ -88,7 +104,7 @@ impl ProviderClient for ChatCompletionsClient {
                 "{} {} {}",
                 self.provider_id,
                 status,
-                crate::sensitive::redact_auth_in(&text)
+                crate::sensitive::error_excerpt(&text)
             ));
         }
         Ok(handle_chat_response(resp))
@@ -103,7 +119,7 @@ impl ProviderClient for ChatCompletionsClient {
                 "{} {} {}",
                 self.provider_id,
                 status,
-                crate::sensitive::redact_auth_in(&text)
+                crate::sensitive::error_excerpt(&text)
             ));
         }
         serde_json::from_str(&text).map_err(|e| anyhow!("parse Chat Completions response: {e}"))
@@ -130,5 +146,17 @@ mod tests {
         assert_eq!(c.wire_model("groq/llama-3.3-70b"), "llama-3.3-70b");
         // A bare id (no provider prefix) is left untouched.
         assert_eq!(c.wire_model("llama-3.3-70b"), "llama-3.3-70b");
+    }
+
+    #[test]
+    fn rejects_cleartext_base_url_but_allows_loopback() {
+        let mk =
+            |base: &str| ChatCompletionsClient::new("p".into(), base.into(), "k".into(), false);
+        // http:// to a non-loopback host would leak the bearer key — rejected.
+        assert!(mk("http://api.example.com/v1").is_err());
+        // https is fine, and an explicit local proxy over http is allowed.
+        assert!(mk("https://api.example.com/v1").is_ok());
+        assert!(mk("http://localhost:8080/v1").is_ok());
+        assert!(mk("http://127.0.0.1:8080/v1").is_ok());
     }
 }

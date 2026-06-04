@@ -24,10 +24,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// retry attempt is bounded by it.
 const CREATE_TIMEOUT: Duration = Duration::from_secs(300);
 
-fn redact_auth_in(body: &str) -> String {
-    crate::sensitive::redact_auth_in(body)
-}
-
 fn parse_json_response(text: &str) -> Result<serde_json::Value> {
     serde_json::from_str(text).map_err(|e| {
         anyhow!(
@@ -173,7 +169,11 @@ impl OpenAiClient {
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
-            return Err(anyhow!("OpenAI {} {}", status, redact_auth_in(&text)));
+            return Err(anyhow!(
+                "OpenAI {} {}",
+                status,
+                crate::sensitive::error_excerpt(&text)
+            ));
         }
         parse_json_response(&text)
     }
@@ -209,7 +209,11 @@ impl OpenAiClient {
                 Ok(t) => t,
                 Err(e) => format!("(failed to read error body: {e})"),
             };
-            return Err(anyhow!("OpenAI {} {}", status, redact_auth_in(&text)));
+            return Err(anyhow!(
+                "OpenAI {} {}",
+                status,
+                crate::sensitive::error_excerpt(&text)
+            ));
         }
         // Capture rate-limit/quota headers before the body stream is consumed.
         // ChatGPT/Codex subscription creds expose `x-codex-*`; api.openai.com
@@ -255,7 +259,11 @@ pub async fn raw_post<B: Serialize>(
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
-        return Err(anyhow!("OpenAI {} {}", status, redact_auth_in(&text)));
+        return Err(anyhow!(
+            "OpenAI {} {}",
+            status,
+            crate::sensitive::error_excerpt(&text)
+        ));
     }
     parse_json_response(&text)
 }

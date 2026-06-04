@@ -41,10 +41,6 @@ const CONTEXT_1M_BETA: &str = "context-1m-2025-08-07";
 /// this server-side; missing it produces a generic 400.
 const OAUTH_IDENTITY_PROMPT: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
-fn redact_auth_in(body: &str) -> String {
-    crate::sensitive::redact_auth_in(body)
-}
-
 fn parse_anthropic_response(text: &str) -> Result<serde_json::Value> {
     serde_json::from_str(text).map_err(|e| {
         anyhow!(
@@ -147,7 +143,11 @@ impl AnthropicClient {
                 Ok(t) => t,
                 Err(e) => format!("(failed to read error body: {e})"),
             };
-            return Err(anyhow!("Anthropic {} {}", status, redact_auth_in(&text)));
+            return Err(anyhow!(
+                "Anthropic {} {}",
+                status,
+                crate::sensitive::error_excerpt(&text)
+            ));
         }
         // Capture rate-limit/quota headers before the body stream is consumed.
         // OAuth (Pro/Max) sends the `unified` 5h/weekly family; API keys send
@@ -175,7 +175,11 @@ impl AnthropicClient {
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
-            return Err(anyhow!("Anthropic {} {}", status, redact_auth_in(&text)));
+            return Err(anyhow!(
+                "Anthropic {} {}",
+                status,
+                crate::sensitive::error_excerpt(&text)
+            ));
         }
         parse_anthropic_response(&text)
     }
@@ -226,14 +230,12 @@ impl crate::client::ProviderClient for AnthropicClient {
 
 #[cfg(test)]
 mod beta_header_tests {
-    use super::{
-        anthropic_beta_value, parse_anthropic_response, redact_auth_in, CONTEXT_1M_BETA, OAUTH_BETA,
-    };
+    use super::{anthropic_beta_value, parse_anthropic_response, CONTEXT_1M_BETA, OAUTH_BETA};
 
     #[test]
     fn redacts_auth_values_from_error_bodies() {
         let body = r#"{"error":"bad key sk-ant-api03-secret","auth":"Bearer oauth-secret"}"#;
-        let redacted = redact_auth_in(body);
+        let redacted = crate::sensitive::redact_auth_in(body);
         assert!(!redacted.contains("sk-ant-api03-secret"), "{redacted}");
         assert!(!redacted.contains("oauth-secret"), "{redacted}");
         assert!(redacted.contains("<redacted>"), "{redacted}");

@@ -81,6 +81,7 @@
 - State directories are now owner-only (`0o700`) and log files `0o600`: the per-project session dir, the logs dir, and the config tree are hardened at startup. `config_dir` no longer falls back to the working directory (which risked git-committing `auth.json`) — it uses `~/.config` or a temp dir.
 - Session files, project `SKILL.md`s, and subagent definitions are now read through a shared size-capped, regular-file-only helper, so a planted multi-GB file or a symlink to `/dev/zero` in a cloned repo (or the sessions dir) can't OOM the CLI when they're enumerated.
 - `web_search` now matches `web_fetch`'s SSRF hardening: its HTTP client follows redirects only to non-blocked http(s) addresses (a hijacked backend can't 302 it to cloud metadata or `127.0.0.1`), and result URLs with `file://`/`javascript:`/`data:` schemes are dropped instead of surfaced to the model.
+- A custom OpenAI-compatible provider's `base_url` must now be `https` (or an `http://localhost` proxy) so the API key isn't sent in cleartext. HTTP-error and non-streaming response bodies across the OpenAI/Anthropic clients are now bounded by the same auth-redacted 160-char excerpt as the parse path.
 
 ## 0.0.1-beta.4
 
