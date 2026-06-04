@@ -136,6 +136,7 @@ impl Agent {
                                 &tool_name,
                             ),
                             is_effectively_read_only,
+                            &self.cwd,
                         ) {
                             ToolPreflight::Block(reason) => {
                                 precomputed.push((pc.call_id.clone(), reason, true));

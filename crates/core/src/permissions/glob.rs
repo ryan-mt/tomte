@@ -65,7 +65,19 @@ pub(super) fn path_argument<'a>(tool_name: &str, args: &'a Value) -> Option<&'a 
 /// char; everything else is literal. No brace/char-class support — not needed
 /// for permission paths.
 pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
-    glob_inner(&collapse_globstars(pattern), text.as_bytes())
+    // Case-insensitive filesystems (the default on macOS and Windows) resolve
+    // `.GIT/config` and `.git/config` to the same file, so a path rule must fold
+    // case there or a deny glob is bypassed by changing case. Linux stays
+    // case-sensitive (exact byte match).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let matched = {
+        let pattern = pattern.to_ascii_lowercase();
+        let text = text.to_ascii_lowercase();
+        glob_inner(&collapse_globstars(&pattern), text.as_bytes())
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let matched = glob_inner(&collapse_globstars(pattern), text.as_bytes());
+    matched
 }
 
 /// Collapse runs of `*` so a pattern like `***` or `**********` can't trigger

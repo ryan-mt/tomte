@@ -75,6 +75,7 @@
 - `run_shell`'s danger guard now flags git's wider destructive surface — force-push via a `+refspec`/`--mirror`, remote-branch deletion (`push :branch`/`--delete`), `branch -D`, `update-ref -d`, `reflog expire`, `gc --prune=now`, `stash clear/drop`, and `filter-branch` — so none can auto-run unseen under a `git:*` allow rule.
 - `run_shell`'s danger guard now also catches `rm -rf /*/` and `$VAR`/`~user`-rooted deletes, `find -delete`/`-exec rm`, and disk-wiping writes via `shred`/`wipefs`/`tee`/`truncate`/`cp` to a block device (now incl. `/dev/vd*`, `/dev/mmcblk*`, `/dev/disk*`).
 - Fixed a persisted `run_shell(<prog>:*)` allow rule silently auto-running a destructive command (force-push, `rm -rf`) the user never saw: a classifier-flagged command now always prompts for approval first — even under an allow rule or bypass/auto mode — and a non-interactive run refuses it outright.
+- Path-based `deny` rules can no longer be slipped past by an in-repo symlink or a case-variant: the gate re-checks `deny` against the symlink-resolved real path (so `link -> .git/config` is still blocked), and path globs fold case on case-insensitive filesystems (macOS/Windows).
 
 ## 0.0.1-beta.4
 

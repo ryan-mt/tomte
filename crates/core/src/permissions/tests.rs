@@ -20,6 +20,46 @@ fn non_shell_rule_is_the_tool_name() {
     assert_eq!(rule_for("write_file", &json!({"path": "a"})), "write_file");
 }
 
+#[cfg(unix)]
+#[test]
+fn deny_rule_not_bypassed_by_in_repo_symlink() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path();
+    std::fs::create_dir(cwd.join(".git")).unwrap();
+    std::fs::write(cwd.join(".git/config"), "token = secret").unwrap();
+    symlink(".git/config", cwd.join("link")).unwrap();
+    let perms = ProjectPermissions {
+        allow: vec![],
+        deny: vec!["read_file(.git/**)".into()],
+    };
+    // The raw decision matches only the spelled path, so the symlink slips past.
+    assert_eq!(
+        decide(&perms, "read_file", &json!({"path": "link"})),
+        Decision::Ask
+    );
+    // The resolved re-check follows the symlink to .git/config and blocks it.
+    assert!(deny_matches_resolved(
+        &perms,
+        "read_file",
+        &json!({"path": "link"}),
+        cwd
+    ));
+    // The denied path's own spelling is still denied directly.
+    assert_eq!(
+        decide(&perms, "read_file", &json!({"path": ".git/config"})),
+        Decision::Deny
+    );
+    // A non-denied in-repo file is not falsely blocked by the resolved check.
+    std::fs::write(cwd.join("README.md"), "ok").unwrap();
+    assert!(!deny_matches_resolved(
+        &perms,
+        "read_file",
+        &json!({"path": "README.md"}),
+        cwd
+    ));
+}
+
 #[test]
 fn is_allowed_matches_program_and_whole_tool_rules() {
     let perms = ProjectPermissions {

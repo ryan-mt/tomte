@@ -148,9 +148,53 @@ fn rule_matches(rule: &str, tool_name: &str, args: &Value, mode: MatchMode) -> b
     // lexically normalized first so a `deny(.git/**)` isn't slipped past by
     // `./.git/config`, `.git//config`, or `.git/x/../config`.
     match path_argument(tool_name, args) {
-        Some(path) => glob_match(spec, &normalize_rule_path(path)),
+        Some(path) => path_rule_matches(spec, path),
         None => false,
     }
+}
+
+/// Match a file-tool path spec (`.git/**`, `src/**`) against one path, lexically
+/// normalized. Shared by [`rule_matches`] and [`deny_matches_resolved`].
+fn path_rule_matches(spec: &str, path: &str) -> bool {
+    glob_match(spec, &normalize_rule_path(path))
+}
+
+/// Re-evaluate `deny` rules against the *symlink-resolved* real path of a file
+/// tool's path argument. [`decide`] matches the raw model-supplied string, but
+/// the fs tools act on the canonicalized target, so an in-repo symlink whose
+/// name doesn't match a deny glob (e.g. `link -> .git/config`) — or a
+/// case-variant on a case-insensitive filesystem — would otherwise launder a
+/// denied path. Returns true when the resolved sandbox-relative path matches a
+/// file-tool deny rule. Best-effort: a path that fails to resolve (escaping or
+/// invalid) is left to the tool's own `resolve` rejection.
+pub fn deny_matches_resolved(
+    perms: &ProjectPermissions,
+    tool_name: &str,
+    args: &Value,
+    cwd: &Path,
+) -> bool {
+    if perms.deny.is_empty() || tool_name == "run_shell" {
+        return false;
+    }
+    let Some(raw) = path_argument(tool_name, args) else {
+        return false;
+    };
+    let (Ok(resolved), Ok(sandbox)) = (crate::tools::fs::resolve(cwd, raw), cwd.canonicalize())
+    else {
+        return false;
+    };
+    let Ok(rel) = resolved.strip_prefix(&sandbox) else {
+        return false;
+    };
+    // Deny globs are written with `/`; normalize Windows separators.
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    perms.deny.iter().any(|rule| match rule.split_once('(') {
+        Some((t, rest)) => {
+            let spec = rest.strip_suffix(')').unwrap_or(rest);
+            t.trim() == tool_name && !spec.is_empty() && path_rule_matches(spec, &rel)
+        }
+        None => false,
+    })
 }
 
 /// Persist an "allow in this project" grant to the user-level store (outside the

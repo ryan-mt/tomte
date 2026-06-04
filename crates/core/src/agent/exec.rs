@@ -354,6 +354,7 @@ pub(super) fn preflight_tool_call(
     args: &Value,
     approval: ApprovalMode,
     is_read_only: bool,
+    cwd: &std::path::Path,
 ) -> ToolPreflight {
     // Plan mode is read-only for external side effects: file writes, shell, and
     // non-plan sub-agent dispatches are rejected up-front so the model can
@@ -372,6 +373,15 @@ pub(super) fn preflight_tool_call(
     if matches!(decision, crate::permissions::Decision::Deny) {
         return ToolPreflight::Block(format!(
             "Error: `{tool_name}` is blocked by a deny rule in .opencli/permissions.json"
+        ));
+    }
+
+    // The raw decision above matches the spelled path. Re-check `deny` rules
+    // against the symlink-resolved real path so an in-repo symlink (or a
+    // case-variant on a case-insensitive FS) can't launder a denied target.
+    if crate::permissions::deny_matches_resolved(perms, tool_name, args, cwd) {
+        return ToolPreflight::Block(format!(
+            "Error: `{tool_name}` is blocked by a deny rule in .opencli/permissions.json (the path resolves to a denied target)"
         ));
     }
 

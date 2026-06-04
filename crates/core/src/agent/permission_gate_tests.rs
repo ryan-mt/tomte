@@ -62,6 +62,7 @@ fn deny_rules_block_before_hook_phase() {
         &json!({"file_path": ".env.local"}),
         ApprovalMode::OnRequest,
         true,
+        std::path::Path::new("."),
     );
 
     match outcome {
@@ -82,6 +83,7 @@ fn plan_mode_allows_session_only_todo_write() {
         &json!({"todos": []}),
         ApprovalMode::Plan,
         todo_write.is_read_only(),
+        std::path::Path::new("."),
     );
 
     assert!(
@@ -102,6 +104,7 @@ fn plan_mode_blocks_external_mutating_tools() {
         &json!({"command": "cargo test"}),
         ApprovalMode::Plan,
         run_shell.is_read_only(),
+        std::path::Path::new("."),
     );
 
     match outcome {
@@ -127,6 +130,7 @@ fn plan_mode_allows_only_plan_required_dispatch_agent() {
         &read_only_args,
         ApprovalMode::Plan,
         effective_tool_read_only("dispatch_agent", &read_only_args, dispatch.is_read_only()),
+        std::path::Path::new("."),
     );
 
     assert!(
@@ -149,6 +153,7 @@ fn plan_mode_allows_only_plan_required_dispatch_agent() {
             &read_only_mode_args,
             dispatch.is_read_only(),
         ),
+        std::path::Path::new("."),
     );
 
     assert!(
@@ -166,6 +171,7 @@ fn plan_mode_allows_only_plan_required_dispatch_agent() {
         &mutating_args,
         ApprovalMode::Plan,
         effective_tool_read_only("dispatch_agent", &mutating_args, dispatch.is_read_only()),
+        std::path::Path::new("."),
     );
 
     match outcome {
