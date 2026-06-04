@@ -195,7 +195,7 @@ impl OpenAiClient {
             return Err(anyhow!(
                 "OpenAI {} {}",
                 status,
-                crate::sensitive::error_excerpt(&text)
+                crate::sensitive::error_excerpt_redacting(&text, self.credential.secret_value())
             ));
         }
         let parsed = parse_json_response(&text)?;
@@ -237,7 +237,7 @@ impl OpenAiClient {
             return Err(anyhow!(
                 "OpenAI {} {}",
                 status,
-                crate::sensitive::error_excerpt(&text)
+                crate::sensitive::error_excerpt_redacting(&text, self.credential.secret_value())
             ));
         }
         // Capture rate-limit/quota headers before the body stream is consumed.
@@ -287,7 +287,7 @@ pub async fn raw_post<B: Serialize>(
         return Err(anyhow!(
             "OpenAI {} {}",
             status,
-            crate::sensitive::error_excerpt(&text)
+            crate::sensitive::error_excerpt_redacting(&text, credential.secret_value())
         ));
     }
     parse_json_response(&text)

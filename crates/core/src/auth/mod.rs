@@ -65,6 +65,18 @@ impl Credential {
         }
     }
 
+    /// The raw bearer secret (OAuth access token or API key) that must be
+    /// redacted out of any error body before it is surfaced or logged. The
+    /// prefix heuristic in `sensitive::redact_auth_in` misses prefixless tokens
+    /// — a ChatGPT/Codex OAuth access token is a bare JWT (`eyJ…`, no `sk-`) —
+    /// so error paths that hold a credential redact this value by exact match.
+    pub fn secret_value(&self) -> &str {
+        match self {
+            Self::OAuth { access_token, .. } => access_token,
+            Self::ApiKey { key, .. } => key,
+        }
+    }
+
     pub fn provider(&self) -> Provider {
         match self {
             Self::OAuth { provider, .. } | Self::ApiKey { provider, .. } => *provider,

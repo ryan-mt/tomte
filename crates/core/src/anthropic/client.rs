@@ -158,7 +158,7 @@ impl AnthropicClient {
             return Err(anyhow!(
                 "Anthropic {} {}",
                 status,
-                crate::sensitive::error_excerpt(&text)
+                crate::sensitive::error_excerpt_redacting(&text, self.credential.secret_value())
             ));
         }
         // Capture rate-limit/quota headers before the body stream is consumed.
@@ -190,7 +190,7 @@ impl AnthropicClient {
             return Err(anyhow!(
                 "Anthropic {} {}",
                 status,
-                crate::sensitive::error_excerpt(&text)
+                crate::sensitive::error_excerpt_redacting(&text, self.credential.secret_value())
             ));
         }
         let parsed = parse_anthropic_response(&text)?;
