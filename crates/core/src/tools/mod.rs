@@ -53,6 +53,14 @@ pub trait BuiltinTool: Send + Sync {
     fn is_read_only(&self) -> bool {
         false
     }
+    /// A best-effort reason this specific call is destructive (e.g. `rm -rf /`,
+    /// a force-push), or `None`. When `Some`, the approval gate forces a human
+    /// to see and approve THIS exact call before it runs — even under a
+    /// persisted allow rule or a bypass mode — so a `run_shell(<prog>:*)` grant
+    /// can't silently auto-run a destructive command the user never saw.
+    fn danger_reason(&self, _args: &Value) -> Option<&'static str> {
+        None
+    }
     /// Outer hard timeout for this tool. Most tools share the agent default;
     /// long-running orchestration tools such as `dispatch_agent` can opt into a
     /// larger cap, and `run_shell` derives it from the caller's `timeout_ms` so

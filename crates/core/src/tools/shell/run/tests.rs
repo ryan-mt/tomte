@@ -5,6 +5,26 @@ use super::*;
 use crate::tools::{ApprovalMode, SessionState};
 use tokio::sync::Mutex;
 
+#[test]
+fn danger_reason_flags_destructive_and_passes_safe() {
+    // The approval gate calls this to force a human prompt for destructive
+    // commands even under an allow rule, so it must mirror classify_danger and
+    // read the command via both the `command` field and the `cmd` alias.
+    assert!(RunShell
+        .danger_reason(&json!({"command": "git push --force origin main"}))
+        .is_some());
+    assert!(RunShell
+        .danger_reason(&json!({"command": "rm -rf /*/"}))
+        .is_some());
+    assert!(RunShell
+        .danger_reason(&json!({"cmd": "rm -rf ~"}))
+        .is_some());
+    assert!(RunShell
+        .danger_reason(&json!({"command": "git status"}))
+        .is_none());
+    assert!(RunShell.danger_reason(&json!({})).is_none());
+}
+
 #[tokio::test]
 async fn background_run_returns_id_and_captures_output() {
     let ctx = ctx();

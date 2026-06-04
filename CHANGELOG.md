@@ -74,6 +74,7 @@
 - Reorganized the codebase so every Rust source file is ≤500 lines: large modules (`agent`, `tui/app`, `tui/ui`, the `tools` set, `openai/chat`, `permissions`) are split into focused submodules and two oversized functions are decomposed. Pure internal refactor — no behavior change, same 731 tests pass.
 - `run_shell`'s danger guard now flags git's wider destructive surface — force-push via a `+refspec`/`--mirror`, remote-branch deletion (`push :branch`/`--delete`), `branch -D`, `update-ref -d`, `reflog expire`, `gc --prune=now`, `stash clear/drop`, and `filter-branch` — so none can auto-run unseen under a `git:*` allow rule.
 - `run_shell`'s danger guard now also catches `rm -rf /*/` and `$VAR`/`~user`-rooted deletes, `find -delete`/`-exec rm`, and disk-wiping writes via `shred`/`wipefs`/`tee`/`truncate`/`cp` to a block device (now incl. `/dev/vd*`, `/dev/mmcblk*`, `/dev/disk*`).
+- Fixed a persisted `run_shell(<prog>:*)` allow rule silently auto-running a destructive command (force-push, `rm -rf`) the user never saw: a classifier-flagged command now always prompts for approval first — even under an allow rule or bypass/auto mode — and a non-interactive run refuses it outright.
 
 ## 0.0.1-beta.4
 

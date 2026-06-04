@@ -263,17 +263,23 @@ fn approval_outcome_non_interactive_fails_closed_even_on_allow_rule() {
     // read-only unless the operator passes --dangerously-skip-permissions
     // (which clears require_approval, making base_gate false → AutoRun).
     assert_eq!(
-        approval_outcome(true, true, Decision::Allow),
+        approval_outcome(true, true, Decision::Allow, false),
         ApprovalOutcome::Deny
     );
     assert_eq!(
-        approval_outcome(true, true, Decision::Ask),
+        approval_outcome(true, true, Decision::Ask, false),
         ApprovalOutcome::Deny
     );
     // Read-only / auto / skip-permissions (base_gate=false) still runs.
     assert_eq!(
-        approval_outcome(true, false, Decision::Ask),
+        approval_outcome(true, false, Decision::Ask, false),
         ApprovalOutcome::AutoRun
+    );
+    // …but a destructive command is refused headless even with skip-permissions
+    // (base_gate=false), because the model can't self-confirm an unseen `rm -rf`.
+    assert_eq!(
+        approval_outcome(true, false, Decision::Ask, true),
+        ApprovalOutcome::Deny
     );
 }
 
@@ -282,15 +288,43 @@ fn approval_outcome_interactive_prompts_unless_allowed() {
     // Interactive: a persisted allow rule auto-runs; otherwise prompt the
     // human. A read-only tool (base_gate=false) always auto-runs.
     assert_eq!(
-        approval_outcome(false, true, Decision::Allow),
+        approval_outcome(false, true, Decision::Allow, false),
         ApprovalOutcome::AutoRun
     );
     assert_eq!(
-        approval_outcome(false, true, Decision::Ask),
+        approval_outcome(false, true, Decision::Ask, false),
         ApprovalOutcome::Prompt
     );
     assert_eq!(
-        approval_outcome(false, false, Decision::Ask),
+        approval_outcome(false, false, Decision::Ask, false),
+        ApprovalOutcome::AutoRun
+    );
+}
+
+#[test]
+fn approval_outcome_dangerous_command_always_prompts_in_interactive() {
+    // The core allow-rule auto-run fix: a classifier-flagged destructive command
+    // never auto-runs in an interactive session — not under a persisted allow
+    // rule, and not under a bypass/auto mode (base_gate=false). The human must
+    // see and approve THIS exact command.
+    assert_eq!(
+        approval_outcome(false, true, Decision::Allow, true),
+        ApprovalOutcome::Prompt,
+        "allow-rule must not auto-run a destructive command"
+    );
+    assert_eq!(
+        approval_outcome(false, false, Decision::Ask, true),
+        ApprovalOutcome::Prompt,
+        "bypass/auto mode must still surface a destructive command"
+    );
+    assert_eq!(
+        approval_outcome(false, true, Decision::Ask, true),
+        ApprovalOutcome::Prompt
+    );
+    // A non-destructive command under an allow rule still auto-runs (no
+    // regression: ordinary `git status` under `git:*` stays frictionless).
+    assert_eq!(
+        approval_outcome(false, true, Decision::Allow, false),
         ApprovalOutcome::AutoRun
     );
 }

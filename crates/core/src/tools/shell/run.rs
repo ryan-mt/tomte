@@ -135,15 +135,23 @@ Parameters:\n\
         std::time::Duration::from_millis(inner_ms.saturating_add(30_000)).max(DEFAULT)
     }
 
+    fn danger_reason(&self, args: &Value) -> Option<&'static str> {
+        args.get("command")
+            .or_else(|| args.get("cmd"))
+            .and_then(|v| v.as_str())
+            .and_then(classify_danger)
+    }
+
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: ShellArgs = crate::tools::parse_args("run_shell", args)?;
         if let Some(reason) = classify_danger(&a.command) {
-            // `dangerous_override` is supplied by the model, so it only clears
-            // the destructive-command guard when a human is in the loop — in an
-            // interactive session the approval gate has already shown and
-            // approved this exact command. A non-interactive run can't get that
-            // confirmation, so a prompt-injected model cannot self-override:
-            // the command is refused outright.
+            // The approval gate (agent::exec::approval_outcome) forces a human
+            // prompt for any classifier-flagged command before execution — even
+            // under an allow rule or a bypass mode — so in an interactive run a
+            // human has already seen and approved THIS exact command and the
+            // model-supplied `dangerous_override` only acknowledges it. A
+            // non-interactive run has no approver, so the override is ignored
+            // and the command is refused outright (also enforced at the gate).
             let overridden = a.dangerous_override.unwrap_or(false) && !ctx.non_interactive;
             if !overridden {
                 let hint = if ctx.non_interactive {

@@ -405,7 +405,20 @@ pub(super) fn approval_outcome(
     non_interactive: bool,
     base_gate: bool,
     decision: crate::permissions::Decision,
+    dangerous: bool,
 ) -> ApprovalOutcome {
+    // A classifier-flagged destructive command must never auto-run: a human has
+    // to see and approve THIS exact command (interactive), or it is refused
+    // (headless) — even under a persisted allow rule, Auto mode, or a bypass.
+    // Without this, a `run_shell(<prog>:*)` grant silently auto-runs a
+    // destructive command (force-push, `rm -rf`) the user never saw.
+    if dangerous {
+        return if non_interactive {
+            ApprovalOutcome::Deny
+        } else {
+            ApprovalOutcome::Prompt
+        };
+    }
     if !base_gate {
         ApprovalOutcome::AutoRun
     } else if non_interactive {

@@ -151,10 +151,16 @@ impl Agent {
                                     && !is_effectively_read_only
                                     && !ALWAYS_AUTO_TOOLS.contains(&tool_name.as_str())
                                     && !auto_via_accept_edits;
+                                // A classifier-flagged destructive command
+                                // (e.g. `rm -rf`, force-push) must be seen by a
+                                // human even under an allow rule or bypass, so
+                                // the gate forces a prompt / refusal for it.
+                                let danger = t.danger_reason(&args);
                                 let approved = match approval_outcome(
                                     self.non_interactive,
                                     base_gate,
                                     decision,
+                                    danger.is_some(),
                                 ) {
                                     ApprovalOutcome::AutoRun => true,
                                     ApprovalOutcome::Deny => false,
@@ -182,15 +188,18 @@ impl Agent {
                                 {
                                     Ok(()) => runnable.push((pc.call_id.clone(), args, t)),
                                     Err(reason) => {
-                                        // A non-interactive run can't prompt.
-                                        // Steer the model to a read-only tool
-                                        // it CAN run (the common case is it
-                                        // reached for `run_shell` on a task a
-                                        // read tool handles), and tell the
-                                        // operator how to allow side effects —
-                                        // rather than a dead-end "denied".
+                                        // A non-interactive run can't prompt. For
+                                        // a flagged destructive command, name the
+                                        // danger (skip-permissions wouldn't help);
+                                        // otherwise steer the model to a read-only
+                                        // tool it CAN run rather than dead-ending.
                                         let reason = if !approved && self.non_interactive {
-                                            non_interactive_blocked_message(&tool_name)
+                                            match danger {
+                                                Some(d) => format!(
+                                                    "Error: refused: {d}. Destructive commands are not allowed in a non-interactive run and cannot be overridden by the model; the command was not executed."
+                                                ),
+                                                None => non_interactive_blocked_message(&tool_name),
+                                            }
                                         } else {
                                             reason
                                         };
