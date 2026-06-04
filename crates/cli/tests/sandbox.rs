@@ -133,3 +133,29 @@ fn network_allowed_lets_inet_socket_open() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The helper applies conservative rlimits before exec; verify they reach the
+/// shell. Independent of Landlock/seccomp, so this needs no kernel-feature gate.
+#[test]
+fn conservative_rlimits_reach_the_shell() {
+    let dir = tmp_workspace("rlimit");
+    // Core dumps disabled — `0` is unit-agnostic across shells.
+    let core = run_sandboxed(dir.to_str().unwrap(), false, "ulimit -c");
+    assert!(core.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&core.stdout).trim(),
+        "0",
+        "core-dump limit must be 0"
+    );
+    // File size capped. The reported block unit varies by shell (dash uses
+    // 512-byte blocks, bash 1024), so assert only that a finite cap is in force.
+    let fsize = run_sandboxed(dir.to_str().unwrap(), false, "ulimit -f");
+    assert!(fsize.status.success());
+    let f = String::from_utf8_lossy(&fsize.stdout).trim().to_string();
+    assert_ne!(f, "unlimited", "file-size limit must be capped");
+    assert!(
+        f.parse::<u64>().map(|n| n > 0).unwrap_or(false),
+        "file-size limit must be a positive number, got {f:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

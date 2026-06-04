@@ -4,10 +4,11 @@
 //!   - [`wrap`] (parent side): rebuilds the shell command to re-exec this binary
 //!     as the sandbox helper.
 //!   - [`run_helper`] (child side): inside the freshly-launched, single-threaded
-//!     helper process, applies Landlock (filesystem + TCP) and seccomp (block
-//!     `AF_INET`/`AF_INET6` sockets) to itself, then `execvp`s the real shell.
-//!     Landlock domains and seccomp filters are inherited across `execve`, so
-//!     the shell and every descendant stay confined.
+//!     helper process, applies Landlock (filesystem + TCP), seccomp (block
+//!     `AF_INET`/`AF_INET6` sockets), and conservative resource limits
+//!     (`RLIMIT_CORE`/`RLIMIT_FSIZE`) to itself, then `execvp`s the real shell.
+//!     Landlock domains, seccomp filters, and rlimits are all inherited across
+//!     `execve`, so the shell and every descendant stay confined.
 
 use std::collections::BTreeMap;
 use std::ffi::{CString, OsString};
@@ -73,7 +74,9 @@ fn enforce_and_exec(policy_json: Option<OsString>, target: Vec<OsString>) -> Res
     if !policy.network {
         block_inet_sockets()?;
     }
-    // 4) exec the target — replaces the image; restrictions persist.
+    // 4) conservative resource limits (inherited across execve/fork).
+    apply_rlimits()?;
+    // 5) exec the target — replaces the image; restrictions persist.
     exec(&target)
 }
 
@@ -83,6 +86,46 @@ fn set_no_new_privs() -> Result<()> {
     if rc != 0 {
         return Err(anyhow::Error::from(std::io::Error::last_os_error()))
             .context("prctl(PR_SET_NO_NEW_PRIVS)");
+    }
+    Ok(())
+}
+
+/// Single regular-file size cap (4 GiB). Generous enough for real build
+/// artifacts (debug binaries, archives) while stopping a runaway `yes > big` or
+/// log loop from filling the disk inside a writable root.
+const FSIZE_CAP_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Conservative resource limits applied to the sandboxed process before exec;
+/// like Landlock/seccomp they are inherited across `execve` and `fork`, so the
+/// whole command tree is covered. Kept deliberately light so they never break a
+/// real build:
+///   - `RLIMIT_CORE = 0` — never write a core dump (a crash could otherwise drop
+///     a multi-GB `core` file into the workspace).
+///   - `RLIMIT_FSIZE = 4 GiB` — cap any single file the command writes.
+///
+/// We intentionally do NOT cap address space (`RLIMIT_AS`), CPU time, or process
+/// count (`RLIMIT_NPROC`): each routinely breaks legitimate work — LTO/linking is
+/// memory-hungry, and `RLIMIT_NPROC` is per-UID so a low cap fails when the user
+/// already has many processes running. The wall-clock timeout in `run_shell`
+/// already bounds runaway CPU.
+fn apply_rlimits() -> Result<()> {
+    set_rlimit(libc::RLIMIT_CORE, 0).context("setrlimit(RLIMIT_CORE)")?;
+    set_rlimit(libc::RLIMIT_FSIZE, FSIZE_CAP_BYTES).context("setrlimit(RLIMIT_FSIZE)")?;
+    Ok(())
+}
+
+/// Set both the soft and hard limit of `resource` to `limit`. Setting the hard
+/// limit too prevents the sandboxed process from raising the cap again.
+fn set_rlimit(resource: libc::__rlimit_resource_t, limit: u64) -> Result<()> {
+    let rl = libc::rlimit {
+        rlim_cur: limit as libc::rlim_t,
+        rlim_max: limit as libc::rlim_t,
+    };
+    // SAFETY: a valid resource constant and a fully-initialized `rlimit`; the
+    // pointer is read-only and not retained past the call.
+    let rc = unsafe { libc::setrlimit(resource, &rl) };
+    if rc != 0 {
+        return Err(anyhow::Error::from(std::io::Error::last_os_error())).context("setrlimit");
     }
     Ok(())
 }
