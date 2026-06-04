@@ -16,3 +16,6 @@ Cargo.lock.bak
 
 # OS
 .DS_Store
+
+# codegraph index
+.codegraph/

@@ -1,11 +1,8 @@
 # Changelog
 
-## 0.0.3
-
-- Added an OS-level sandbox for `run_shell`: commands run under Landlock + seccomp (Linux) or `sandbox-exec` (macOS), confining file writes to the workspace and blocking outbound network by default — so an auto-approved or prompt-injected command can't escape the project or exfiltrate. Modes `read-only` / `workspace-write` (default) / `danger-full-access`; `opencli doctor` shows the active mode. Other platforms run unsandboxed with a warning.
-
 ## 0.0.2
 
+- Added an OS-level sandbox for `run_shell`: commands run under Landlock + seccomp (Linux) or `sandbox-exec` (macOS), confining file writes to the workspace and blocking outbound network by default — so an auto-approved or prompt-injected command can't escape the project or exfiltrate. Modes `read-only` / `workspace-write` (default) / `danger-full-access`; `opencli doctor` shows the active mode. Other platforms run unsandboxed with a warning.
 - Added a `memory` tool — agent-writable, project-scoped notes that persist across sessions: the `MEMORY.md` index is re-injected into context each session, other notes load on demand. Sandboxed to a flat per-project store, auto-approved interactively, and disabled in headless runs.
 - Added Claude Code / Codex-style composer prefixes: `@<path>` attaches a file via a gitignore-aware typeahead, `!<command>` runs a shell command inline without a model turn (`!!` forces past the danger guard), and `#<note>` appends to the project `CLAUDE.md`.
 - Added left-drag text selection in the TUI — drag to highlight and copy on release (no Shift needed); handles wide CJK/emoji characters and clears on the next key, scroll, or click.
