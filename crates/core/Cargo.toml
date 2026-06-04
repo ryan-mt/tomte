@@ -34,5 +34,11 @@ libc.workspace = true
 landlock = "0.4"
 seccompiler = "0.5"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+] }
+
 [dev-dependencies]
 tempfile.workspace = true
