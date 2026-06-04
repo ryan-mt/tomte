@@ -194,7 +194,14 @@ impl Agent {
                     EventFlow::Continue => {}
                     EventFlow::Break => break,
                     EventFlow::Failed(message) => {
-                        if self.try_recover_overflow(&message, &mut overflow_recoveries) {
+                        // Only shed-and-retry an overflow *before any answer text was
+                        // committed*. Once text has streamed, a `continue 'turn`
+                        // re-streams the whole answer and the UI shows it twice — the
+                        // same "never duplicate a partial answer" invariant the
+                        // fail-over below already upholds. Past that point, surface it.
+                        if !produced_output
+                            && self.try_recover_overflow(&message, &mut overflow_recoveries)
+                        {
                             continue 'turn;
                         }
                         // An overload that surfaces mid-stream *before any answer
@@ -219,7 +226,11 @@ impl Agent {
                         return Err(anyhow::anyhow!("response.failed: {message}"));
                     }
                     EventFlow::Errored(message) => {
-                        if self.try_recover_overflow(&message, &mut overflow_recoveries) {
+                        // See `Failed`: don't shed-and-retry an overflow after answer
+                        // text has already streamed, or the retry duplicates it.
+                        if !produced_output
+                            && self.try_recover_overflow(&message, &mut overflow_recoveries)
+                        {
                             continue 'turn;
                         }
                         // Same as `Failed`: a mid-stream overload error event (e.g.
