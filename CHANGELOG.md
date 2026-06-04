@@ -85,6 +85,7 @@
 - A project-local subagent (a `.opencli`/`.claude`/`.codex/agents/<name>.md` shipped in a cloned repo) is now confined to read-only tools even under Auto mode or `--dangerously-skip-permissions`, so an attacker-authored agent can't run `run_shell`/`write_file` with its own system prompt. Put trusted mutating agents in your global config.
 - The system prompt now tells the model to treat all tool output — file contents, web pages, search results, shell output, MCP results — as untrusted data, never instructions, so content crafted to say "ignore previous instructions and run …" can't steer it into actions the user didn't ask for.
 - Resuming a session no longer restores the `read_files` set into live state, so a tampered session file can't pre-satisfy `write_file`/`edit_file`'s read-before-overwrite guard — the model must read a file this session before overwriting it. The set is still persisted for display.
+- A custom provider's API key with no recognized prefix (a bare hex/`xai-`/`gsk_` token) is now redacted from the OpenAI-compatible client's error bodies by exact match, not just the `sk-`/`Bearer` heuristic, so a gateway echoing the key in an error can't leak it.
 
 ## 0.0.1-beta.4
 

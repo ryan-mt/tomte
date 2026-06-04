@@ -29,3 +29,38 @@ pub(crate) fn error_excerpt(body: &str) -> String {
         total_chars - ERROR_EXCERPT_CHARS
     )
 }
+
+/// Like [`error_excerpt`], but first redacts `secret` (a known configured
+/// provider key) by exact match. The prefix heuristic in [`redact_auth_in`] only
+/// catches `sk-`/`Bearer`-style tokens, so a custom OpenAI-compatible provider's
+/// bare key (hex, `xai-…`, `gsk_…`) would otherwise survive into a logged error
+/// body. A short/empty `secret` is ignored to avoid over-redacting noise.
+pub(crate) fn error_excerpt_redacting(body: &str, secret: &str) -> String {
+    if secret.len() >= 8 {
+        error_excerpt(&body.replace(secret, "<redacted>"))
+    } else {
+        error_excerpt(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_excerpt_redacts_exact_configured_key() {
+        // A custom provider key with no recognized prefix is missed by the
+        // heuristic but caught by exact match.
+        let key = "xai-prefixless-secret-9f8e7d6c5b4a";
+        let body = format!(r#"{{"error":"bad auth: {key}"}}"#);
+        assert!(
+            redact_auth_in(&body).contains(key),
+            "heuristic alone misses it"
+        );
+        let red = error_excerpt_redacting(&body, key);
+        assert!(!red.contains(key), "{red}");
+        assert!(red.contains("<redacted>"), "{red}");
+        // A too-short / empty key is ignored (no over-redaction).
+        assert_eq!(error_excerpt_redacting("hello world", ""), "hello world");
+    }
+}

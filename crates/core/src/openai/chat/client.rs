@@ -104,7 +104,7 @@ impl ProviderClient for ChatCompletionsClient {
                 "{} {} {}",
                 self.provider_id,
                 status,
-                crate::sensitive::error_excerpt(&text)
+                crate::sensitive::error_excerpt_redacting(&text, &self.api_key)
             ));
         }
         Ok(handle_chat_response(resp))
@@ -119,7 +119,7 @@ impl ProviderClient for ChatCompletionsClient {
                 "{} {} {}",
                 self.provider_id,
                 status,
-                crate::sensitive::error_excerpt(&text)
+                crate::sensitive::error_excerpt_redacting(&text, &self.api_key)
             ));
         }
         serde_json::from_str(&text).map_err(|e| anyhow!("parse Chat Completions response: {e}"))
