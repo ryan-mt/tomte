@@ -343,6 +343,13 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 app.blocks
                     .push(Block::System(format!("compact skipped: {e}")));
                 app.auto_scroll = true;
+                // Re-arm auto-compaction: the success arm clears this flag, but a
+                // failed summary (e.g. the summary request itself overflowed) must
+                // not leave auto-compaction disarmed for the rest of the
+                // over-threshold window — otherwise the session silently drifts
+                // into a hard context overflow. A later 85% tick can retry once
+                // the real turn's emergency shed has freed space.
+                app.auto_compact_done_this_window = false;
             }
         },
         AgentEvent::ApprovalRequest {

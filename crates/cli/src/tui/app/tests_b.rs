@@ -336,3 +336,21 @@ fn goal_update_complete_clears_active_goal_before_continuation() {
     assert!(app.message_queue.is_empty());
     assert!(app.pending_session_save);
 }
+
+#[test]
+fn failed_compaction_rearms_auto_compaction() {
+    // The success arm clears auto_compact_done_this_window; a failed/no-op
+    // compaction must clear it too, or a session that can't summarize stays
+    // disarmed for the whole over-threshold window and drifts into a hard
+    // context overflow.
+    let mut app = App::new();
+    app.auto_compact_done_this_window = true;
+    apply_agent_event(
+        &mut app,
+        AgentEvent::CompactDone {
+            original_len: 0,
+            error: Some("summary request overflowed".to_string()),
+        },
+    );
+    assert!(!app.auto_compact_done_this_window);
+}
