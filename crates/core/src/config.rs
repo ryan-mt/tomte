@@ -457,6 +457,13 @@ pub fn redacted_view(cfg: &Config) -> Config {
     out
 }
 
+/// Validate a sandbox mode supplied on the CLI (`--sandbox`). Returns the
+/// canonical lowercase form, or `None` for an unrecognized value so the caller
+/// can surface a hard error (env/file paths fall back instead).
+pub fn normalize_sandbox_mode(value: &str) -> Option<String> {
+    sandbox::parse_mode_override(Some(value))
+}
+
 pub fn normalize_reasoning_effort(value: &str) -> Option<String> {
     normalize_enum_value(value, VALID_REASONING_EFFORTS)
 }

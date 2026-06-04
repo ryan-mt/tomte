@@ -72,6 +72,16 @@ enum Command {
         /// it, an unattended run is read-only — side-effecting tools are denied.
         #[arg(long)]
         dangerously_skip_permissions: bool,
+        /// Sandbox enforcement for `run_shell` this run, overriding config/env:
+        /// `read-only` | `workspace-write` | `danger-full-access`. Orthogonal to
+        /// `--dangerously-skip-permissions` (which gates approval, not what a
+        /// running command may touch).
+        #[arg(long)]
+        sandbox: Option<String>,
+        /// Allow outbound network from sandboxed `run_shell` commands this run
+        /// (only meaningful in `workspace-write`; off by default).
+        #[arg(long)]
+        sandbox_allow_net: bool,
     },
     /// Open the TUI with the resume-session picker open
     Resume,
@@ -182,6 +192,8 @@ async fn async_main() -> Result<()> {
             cwd,
             prompt_file,
             dangerously_skip_permissions,
+            sandbox,
+            sandbox_allow_net,
         }) => {
             commands::chat::run(
                 prompt.join(" "),
@@ -192,6 +204,8 @@ async fn async_main() -> Result<()> {
                 cwd,
                 prompt_file,
                 dangerously_skip_permissions,
+                sandbox,
+                sandbox_allow_net,
             )
             .await
         }

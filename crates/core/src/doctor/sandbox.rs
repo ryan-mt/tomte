@@ -7,7 +7,9 @@ use crate::config;
 
 pub(super) fn section() -> Section {
     let cfg = config::load();
-    let mode = cfg.sandbox.mode.trim().to_ascii_lowercase();
+    // Report the EFFECTIVE mode so `doctor` reflects a `TOMTE_SANDBOX_MODE` env
+    // override (the CLI flag is per-run and not visible here).
+    let mode = cfg.sandbox.effective_mode().trim().to_ascii_lowercase();
     let mechanism = mechanism();
 
     let check = match mode.as_str() {
@@ -24,7 +26,7 @@ pub(super) fn section() -> Section {
         },
         // workspace-write (the default) and any unknown value.
         _ => {
-            let net = if cfg.sandbox.network {
+            let net = if cfg.sandbox.effective_network() {
                 "network allowed"
             } else {
                 "network blocked"

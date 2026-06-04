@@ -63,7 +63,9 @@ struct SandboxPolicy {
 /// Resolve the effective policy for a command. `None` means "no sandbox"
 /// (`danger-full-access`), which runs the command with full privileges.
 fn resolve(config: &Config, cwd: &Path) -> Option<SandboxPolicy> {
-    match SandboxMode::from_config_str(&config.sandbox.mode) {
+    // `effective_mode`/`effective_network` fold in the `--sandbox` CLI flag and
+    // the `TOMTE_SANDBOX_*` env vars over the stored config (CLI > env > file).
+    match SandboxMode::from_config_str(&config.sandbox.effective_mode()) {
         SandboxMode::DangerFullAccess => None,
         SandboxMode::ReadOnly => Some(SandboxPolicy {
             writable_roots: Vec::new(),
@@ -78,7 +80,7 @@ fn resolve(config: &Config, cwd: &Path) -> Option<SandboxPolicy> {
             }
             Some(SandboxPolicy {
                 writable_roots: roots,
-                network: config.sandbox.network,
+                network: config.sandbox.effective_network(),
             })
         }
     }

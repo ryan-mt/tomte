@@ -21,6 +21,8 @@ pub async fn run(
     cwd: Option<std::path::PathBuf>,
     prompt_file: Option<std::path::PathBuf>,
     dangerously_skip_permissions: bool,
+    sandbox: Option<String>,
+    sandbox_allow_net: bool,
 ) -> Result<()> {
     let mut prompt = prompt;
     // Prompt precedence: positional argument → --prompt-file → stdin.
@@ -75,6 +77,19 @@ pub async fn run(
             );
         };
         cfg.reasoning_effort = r;
+    }
+    // Per-run sandbox overrides. These set `serde(skip)` fields so they apply to
+    // this run only and never persist (CLI > env > config; see SandboxConfig).
+    if let Some(s) = sandbox {
+        let mode = config::normalize_sandbox_mode(&s).ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid --sandbox `{s}`; expected one of: read-only, workspace-write, danger-full-access"
+            )
+        })?;
+        cfg.sandbox.mode_override = Some(mode);
+    }
+    if sandbox_allow_net {
+        cfg.sandbox.network_override = Some(true);
     }
     let format = normalize_output_format(&output_format)?;
 
