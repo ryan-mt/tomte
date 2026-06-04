@@ -66,8 +66,8 @@ pub(super) fn queued_height(app: &App) -> u16 {
 }
 
 pub(super) fn render_queue(f: &mut Frame, area: Rect, app: &App) {
-    let dim = Style::default().fg(Color::Rgb(150, 150, 150));
-    let chev = Style::default().fg(Color::Rgb(110, 110, 110));
+    let dim = Style::default().fg(palette::TEXT_MUTED);
+    let chev = Style::default().fg(palette::TEXT_FAINT);
     let mut lines: Vec<Line> = Vec::new();
     let width = area.width.saturating_sub(4) as usize;
     let show = app.message_queue.iter().take(4);
@@ -163,12 +163,12 @@ pub(super) fn truncate_chars(s: &str, max: usize) -> String {
 /// time — Claude Code's sub-agent list. Records each row's screen rect into
 /// `app.subagent_rows` so a left-click can toggle the row's detail.
 pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
-    let header_dim = Style::default().fg(Color::Rgb(150, 155, 165));
+    let header_dim = Style::default().fg(palette::TEXT_MUTED);
     let kind_style = Style::default()
-        .fg(Color::Rgb(230, 230, 235))
+        .fg(palette::TEXT_BRIGHT)
         .add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(Color::Rgb(140, 140, 150));
-    let accent = Style::default().fg(Color::Rgb(140, 170, 255));
+    let dim = Style::default().fg(palette::TEXT_MUTED);
+    let accent = Style::default().fg(palette::INFO);
 
     let total = app.subagents.len();
     let running = app.subagents.iter().filter(|s| s.done.is_none()).count();
@@ -206,15 +206,12 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
         ));
 
         let dot = match s.done {
-            Some(true) => Span::styled("✓ ", Style::default().fg(Color::Rgb(120, 200, 120))),
-            Some(false) => Span::styled("✗ ", Style::default().fg(Color::Rgb(225, 110, 110))),
+            Some(true) => Span::styled("✓ ", Style::default().fg(palette::SUCCESS)),
+            Some(false) => Span::styled("✗ ", Style::default().fg(palette::DANGER)),
             None => {
                 let frame = SPINNER_FRAMES
                     [(s.started_at.elapsed().as_millis() / 80) as usize % SPINNER_FRAMES.len()];
-                Span::styled(
-                    format!("{frame} "),
-                    Style::default().fg(Color::Rgb(120, 200, 255)),
-                )
+                Span::styled(format!("{frame} "), Style::default().fg(palette::INFO))
             }
         };
         lines.push(Line::from(vec![
@@ -235,10 +232,7 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
         if s.expanded {
             lines.push(Line::from(vec![
                 Span::raw("     ↳ "),
-                Span::styled(
-                    s.prompt.clone(),
-                    Style::default().fg(Color::Rgb(175, 175, 185)),
-                ),
+                Span::styled(s.prompt.clone(), Style::default().fg(palette::TEXT_MUTED)),
             ]));
         }
     }
@@ -266,9 +260,9 @@ pub(super) fn render_todos(f: &mut Frame, area: Rect, app: &App) {
         .count();
 
     let header = Style::default()
-        .fg(Color::Rgb(165, 170, 180))
+        .fg(palette::TEXT_MUTED)
         .add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(Color::Rgb(135, 140, 150));
+    let dim = Style::default().fg(palette::TEXT_MUTED);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(vec![
@@ -319,17 +313,17 @@ pub(super) fn render_todo_line(
     blocked: bool,
 ) -> Line<'static> {
     let active_style = Style::default()
-        .fg(Color::Rgb(255, 184, 108))
+        .fg(palette::WARNING)
         .add_modifier(Modifier::BOLD);
-    let pending_style = Style::default().fg(Color::Rgb(205, 205, 210));
+    let pending_style = Style::default().fg(palette::TEXT);
     let done_style = Style::default()
-        .fg(Color::Rgb(125, 130, 140))
+        .fg(palette::TEXT_MUTED)
         .add_modifier(Modifier::CROSSED_OUT);
-    let done_mark = Style::default().fg(Color::Rgb(120, 200, 120));
-    let pending_mark = Style::default().fg(Color::Rgb(145, 150, 160));
+    let done_mark = Style::default().fg(palette::SUCCESS);
+    let pending_mark = Style::default().fg(palette::TEXT_MUTED);
     // A pending item still waiting on an unfinished dependency: dimmer body and
     // a distinct marker so it reads as "not yet startable".
-    let blocked_style = Style::default().fg(Color::Rgb(120, 124, 134));
+    let blocked_style = Style::default().fg(palette::TEXT_FAINT);
 
     let (icon, mark_style, body_style) = match todo.status {
         TodoStatus::Completed => ("✓", done_mark, done_style),
@@ -368,19 +362,16 @@ pub(super) fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
         extras.push_str(" · thinking");
     }
     let line = Line::from(vec![
-        Span::styled(
-            format!(" {frame} "),
-            Style::default().fg(Color::Rgb(220, 130, 220)),
-        ),
+        Span::styled(format!(" {frame} "), Style::default().fg(palette::INFO)),
         Span::styled(
             format!("{}…", app.spinner_word),
             Style::default()
-                .fg(Color::Rgb(220, 130, 220))
+                .fg(palette::INFO)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!(" ({}{extras})", format_elapsed(elapsed)),
-            Style::default().fg(Color::Rgb(160, 160, 160)),
+            Style::default().fg(palette::TEXT_MUTED),
         ),
     ]);
     f.render_widget(Paragraph::new(line), area);

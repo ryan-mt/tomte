@@ -76,7 +76,7 @@ pub(super) fn append_numbered(
     if total > max_lines {
         out.push(Line::from(Span::styled(
             format!("… +{} lines", total - max_lines),
-            Style::default().fg(Color::Rgb(160, 160, 160)),
+            Style::default().fg(palette::TEXT_MUTED),
         )));
     }
 }

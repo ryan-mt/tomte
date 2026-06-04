@@ -15,7 +15,7 @@ pub(super) fn friendly_body<'a>(
     let Some(text) = output else {
         out.push(Line::from(Span::styled(
             "…",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(palette::WARNING),
         )));
         return out;
     };
@@ -27,22 +27,25 @@ pub(super) fn friendly_body<'a>(
         let total = text.lines().count();
         for raw in text.lines().take(max_err) {
             for w in wrap(raw, avail) {
-                out.push(Line::from(Span::styled(w, Style::default().fg(Color::Red))));
+                out.push(Line::from(Span::styled(
+                    w,
+                    Style::default().fg(palette::DANGER),
+                )));
             }
         }
         if total > max_err {
             out.push(Line::from(Span::styled(
                 format!("… +{} lines", total - max_err),
-                Style::default().fg(Color::Rgb(160, 160, 160)),
+                Style::default().fg(palette::TEXT_MUTED),
             )));
         }
         return out;
     }
 
-    let style_summary = Style::default().fg(Color::Gray);
-    let style_meta = Style::default().fg(Color::Rgb(160, 160, 160));
-    let style_code = Style::default().fg(Color::White);
-    let style_lineno = Style::default().fg(Color::Rgb(160, 160, 160));
+    let style_summary = Style::default().fg(palette::TEXT_MUTED);
+    let style_meta = Style::default().fg(palette::TEXT_MUTED);
+    let style_code = Style::default().fg(palette::TEXT_BRIGHT);
+    let style_lineno = Style::default().fg(palette::TEXT_MUTED);
 
     // Per-tool limits: (compact, expanded).
     let limits = BodyLimits::for_mode(expanded);
@@ -103,17 +106,17 @@ pub(super) fn friendly_body<'a>(
             let start_line = locate_line_number(path, old).unwrap_or(1);
 
             let removed_bg = Style::default()
-                .bg(Color::Rgb(60, 0, 0))
-                .fg(Color::Rgb(255, 120, 120));
+                .bg(palette::DIFF_DEL_BG)
+                .fg(palette::DIFF_DEL_FG);
             let added_bg = Style::default()
-                .bg(Color::Rgb(0, 50, 0))
-                .fg(Color::Rgb(160, 255, 160));
+                .bg(palette::DIFF_ADD_BG)
+                .fg(palette::DIFF_ADD_FG);
             let lineno_removed = Style::default()
-                .bg(Color::Rgb(60, 0, 0))
-                .fg(Color::Rgb(200, 80, 80));
+                .bg(palette::DIFF_DEL_BG)
+                .fg(palette::DANGER);
             let lineno_added = Style::default()
-                .bg(Color::Rgb(0, 50, 0))
-                .fg(Color::Rgb(120, 200, 120));
+                .bg(palette::DIFF_ADD_BG)
+                .fg(palette::SUCCESS);
 
             let mut shown = 0usize;
             let max_diff = limits.edit_diff;
@@ -150,17 +153,17 @@ pub(super) fn friendly_body<'a>(
             let edits = args.get("edits").and_then(|v| v.as_array());
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
             let removed_bg = Style::default()
-                .bg(Color::Rgb(60, 0, 0))
-                .fg(Color::Rgb(255, 120, 120));
+                .bg(palette::DIFF_DEL_BG)
+                .fg(palette::DIFF_DEL_FG);
             let added_bg = Style::default()
-                .bg(Color::Rgb(0, 50, 0))
-                .fg(Color::Rgb(160, 255, 160));
+                .bg(palette::DIFF_ADD_BG)
+                .fg(palette::DIFF_ADD_FG);
             let lineno_removed = Style::default()
-                .bg(Color::Rgb(60, 0, 0))
-                .fg(Color::Rgb(200, 80, 80));
+                .bg(palette::DIFF_DEL_BG)
+                .fg(palette::DANGER);
             let lineno_added = Style::default()
-                .bg(Color::Rgb(0, 50, 0))
-                .fg(Color::Rgb(120, 200, 120));
+                .bg(palette::DIFF_ADD_BG)
+                .fg(palette::SUCCESS);
 
             let (mut total_added, mut total_removed) = (0usize, 0usize);
             if let Some(edits) = edits {
@@ -278,7 +281,7 @@ pub(super) fn friendly_body<'a>(
                 if !success || expanded {
                     // Claude Code style: stderr rendered in red, with no
                     // separator box — the colour alone sets it apart from stdout.
-                    let err_style = Style::default().fg(Color::Red);
+                    let err_style = Style::default().fg(palette::DANGER);
                     let total_err = stderr.lines().count();
                     for raw in stderr.lines().take(stderr_budget) {
                         for w in wrap(raw, avail) {
@@ -313,7 +316,7 @@ pub(super) fn friendly_body<'a>(
             if !success {
                 out.push(Line::from(Span::styled(
                     format!("Error (exit {code})"),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(palette::DANGER),
                 )));
             }
         }
@@ -348,15 +351,15 @@ pub(super) fn friendly_body<'a>(
             };
 
             let done_text = Style::default()
-                .fg(Color::Rgb(130, 130, 130))
+                .fg(palette::TEXT_MUTED)
                 .add_modifier(Modifier::CROSSED_OUT);
-            let pending_text = Style::default().fg(Color::Gray);
+            let pending_text = Style::default().fg(palette::TEXT_MUTED);
             let active_text = Style::default()
-                .fg(Color::Rgb(255, 184, 108))
+                .fg(palette::WARNING)
                 .add_modifier(Modifier::BOLD);
-            let check_done = Style::default().fg(Color::Green);
-            let check_pending = Style::default().fg(Color::Rgb(160, 160, 160));
-            let check_active = Style::default().fg(Color::Rgb(255, 184, 108));
+            let check_done = Style::default().fg(palette::SUCCESS);
+            let check_pending = Style::default().fg(palette::TEXT_MUTED);
+            let check_active = Style::default().fg(palette::WARNING);
 
             for todo in todos {
                 let content = todo.get("content").and_then(|v| v.as_str()).unwrap_or("");

@@ -7,6 +7,7 @@
 //! with their slash-command shortcuts. `/context all` expands the detail
 //! sections to list the actual items.
 
+use crate::tui::palette;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use tomte_core::context_report::ContextReport;
@@ -33,7 +34,7 @@ const C_MCP: Color = Color::Rgb(240, 220, 110);
 const C_FREE: Color = Color::Rgb(70, 75, 88);
 
 fn dim() -> Style {
-    Style::default().fg(Color::Rgb(140, 140, 150))
+    Style::default().fg(palette::TEXT_MUTED)
 }
 fn bright() -> Style {
     Style::default().fg(Color::Rgb(230, 230, 235))
@@ -258,10 +259,7 @@ fn detail_section(
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" · ", dim()),
-        Span::styled(
-            slash.to_string(),
-            Style::default().fg(Color::Rgb(140, 170, 255)),
-        ),
+        Span::styled(slash.to_string(), Style::default().fg(palette::INFO)),
     ];
     if let Some(n) = note {
         header.push(Span::styled(format!(" ({n})"), dim()));

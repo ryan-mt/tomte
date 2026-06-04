@@ -3,13 +3,13 @@
 use super::*;
 
 pub(super) fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
-    let dim = Style::default().fg(Color::Rgb(160, 160, 160));
-    let muted = Style::default().fg(Color::Rgb(125, 125, 125));
+    let dim = Style::default().fg(palette::TEXT_MUTED);
+    let muted = Style::default().fg(palette::TEXT_MUTED);
     let strong = Style::default()
-        .fg(Color::Rgb(230, 230, 230))
+        .fg(palette::TEXT_BRIGHT)
         .add_modifier(Modifier::BOLD);
-    let accent = Style::default().fg(Color::Rgb(25, 195, 154));
-    let border = Style::default().fg(Color::Rgb(80, 80, 80));
+    let accent = Style::default().fg(palette::ACCENT);
+    let border = Style::default().fg(palette::BORDER);
 
     let cwd = shorten_home_path(&app.cwd);
 
@@ -146,17 +146,17 @@ pub(super) fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block]
     let any_error = entries.iter().any(|(_, _, err, _)| *err);
     let any_pending = entries.iter().any(|(_, _, _, done)| !done);
     let bullet_color = if any_error {
-        Color::Red
+        palette::DANGER
     } else if any_pending {
-        Color::Yellow
+        palette::WARNING
     } else {
-        Color::Green
+        palette::SUCCESS
     };
 
     let total_lines: usize = entries.iter().map(|(_, l, _, _)| *l).sum();
     let count = entries.len();
-    let dim = Style::default().fg(Color::Rgb(160, 160, 160));
-    let gray = Style::default().fg(Color::Gray);
+    let dim = Style::default().fg(palette::TEXT_MUTED);
+    let gray = Style::default().fg(palette::TEXT_MUTED);
 
     if count == 1 {
         // Single read: keep the familiar "Read(path)" header but with a tiny
@@ -167,7 +167,7 @@ pub(super) fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block]
             Span::styled(
                 "Read".to_string(),
                 Style::default()
-                    .fg(Color::White)
+                    .fg(palette::TEXT_BRIGHT)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("({})", pretty_path(path)), gray),
@@ -184,7 +184,7 @@ pub(super) fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block]
             Span::styled(
                 format!("Read {} files", count),
                 Style::default()
-                    .fg(Color::White)
+                    .fg(palette::TEXT_BRIGHT)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!(" · {} lines total", total_lines), gray),
@@ -193,9 +193,9 @@ pub(super) fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block]
             for (idx, (path, lc, err, done)) in entries.iter().enumerate() {
                 let branch = if idx == 0 { "  ⎿ " } else { "    " };
                 let path_style = if *err {
-                    Style::default().fg(Color::Red)
+                    Style::default().fg(palette::DANGER)
                 } else if !*done {
-                    Style::default().fg(Color::Yellow)
+                    Style::default().fg(palette::WARNING)
                 } else {
                     gray
                 };
@@ -229,11 +229,11 @@ pub(super) fn render_tool(
 
     let (display_name, summary) = friendly_header(name, &parsed);
     let bullet_color = if error {
-        Color::Red
+        palette::DANGER
     } else if output.is_none() {
-        Color::Yellow
+        palette::WARNING
     } else {
-        Color::Green
+        palette::SUCCESS
     };
 
     // Header: ● Write(file)
@@ -242,14 +242,14 @@ pub(super) fn render_tool(
         Span::styled(
             display_name,
             Style::default()
-                .fg(Color::White)
+                .fg(palette::TEXT_BRIGHT)
                 .add_modifier(Modifier::BOLD),
         ),
     ];
     if !summary.is_empty() {
         header_spans.push(Span::styled(
             format!("({summary})"),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(palette::TEXT_MUTED),
         ));
     }
     lines.push(Line::from(header_spans));
@@ -271,7 +271,7 @@ pub(super) fn render_tool(
         lines.push(Line::from(
             std::iter::once(Span::styled(
                 branch.to_string(),
-                Style::default().fg(Color::Rgb(160, 160, 160)),
+                Style::default().fg(palette::TEXT_MUTED),
             ))
             .chain(body.spans)
             .collect::<Vec<_>>(),

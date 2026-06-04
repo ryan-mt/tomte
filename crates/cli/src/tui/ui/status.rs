@@ -6,9 +6,9 @@ pub(super) fn render_input(f: &mut Frame, area: Rect, app: &App) {
     use ratatui::widgets::{Block as RBlock, BorderType, Borders};
 
     let prompt_color = if app.busy {
-        Color::Rgb(160, 160, 160)
+        palette::TEXT_MUTED
     } else {
-        Color::Magenta
+        palette::ACCENT
     };
     let prompt_style = Style::default()
         .fg(prompt_color)
@@ -17,9 +17,9 @@ pub(super) fn render_input(f: &mut Frame, area: Rect, app: &App) {
     // Rounded border around the prompt, matching Claude Code's input box. The
     // border dims while a turn is running so the box reads as "not your turn".
     let border_color = if app.busy {
-        Color::Rgb(80, 80, 80)
+        palette::BORDER
     } else {
-        Color::Rgb(120, 120, 120)
+        palette::BORDER_ACTIVE
     };
     let block = RBlock::default()
         .borders(Borders::ALL)
@@ -41,7 +41,7 @@ pub(super) fn render_input(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("> ", prompt_style),
             Span::styled(
                 "Try \"build me a todo list app\"",
-                Style::default().fg(Color::Rgb(160, 160, 160)),
+                Style::default().fg(palette::TEXT_MUTED),
             ),
         ])];
         f.render_widget(Paragraph::new(lines), inner);
@@ -145,28 +145,31 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     let left_text = status_left_text(app);
     let left_para = Paragraph::new(Line::from(Span::styled(
         left_text,
-        Style::default().fg(Color::Rgb(160, 160, 160)),
+        Style::default().fg(palette::TEXT_MUTED),
     )));
 
     // Right side: model · effort · cwd
     let cwd = shorten_home_path(&app.cwd);
     let auth_dot = match app.auth_mode {
-        AuthMode::None => Span::styled("● ", Style::default().fg(Color::Red)),
-        AuthMode::OpenaiApiKey => Span::styled("● ", Style::default().fg(Color::Cyan)),
-        AuthMode::OpenaiOauth => Span::styled("● ", Style::default().fg(Color::Green)),
-        AuthMode::AnthropicApiKey => Span::styled("● ", Style::default().fg(Color::Magenta)),
-        AuthMode::AnthropicOauth => Span::styled("● ", Style::default().fg(Color::Yellow)),
+        AuthMode::None => Span::styled("● ", Style::default().fg(palette::DANGER)),
+        AuthMode::OpenaiApiKey => Span::styled("● ", Style::default().fg(palette::INFO)),
+        AuthMode::OpenaiOauth => Span::styled("● ", Style::default().fg(palette::SUCCESS)),
+        AuthMode::AnthropicApiKey => Span::styled("● ", Style::default().fg(palette::VIOLET)),
+        AuthMode::AnthropicOauth => Span::styled("● ", Style::default().fg(palette::WARNING)),
     };
     let right_spans = vec![
         auth_dot,
-        Span::styled(app.config.model.clone(), Style::default().fg(Color::Gray)),
+        Span::styled(
+            app.config.model.clone(),
+            Style::default().fg(palette::TEXT_MUTED),
+        ),
         Span::styled(
             format!(" · {}", app.config.reasoning_effort),
-            Style::default().fg(Color::Rgb(160, 160, 160)),
+            Style::default().fg(palette::TEXT_MUTED),
         ),
         Span::styled(
             format!("  {cwd} "),
-            Style::default().fg(Color::Rgb(160, 160, 160)),
+            Style::default().fg(palette::TEXT_MUTED),
         ),
     ];
     let right_text: String = right_spans.iter().map(|s| s.content.as_ref()).collect();
@@ -239,13 +242,13 @@ pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect,
         return;
     };
 
-    let dim = Style::default().fg(Color::Rgb(170, 170, 170));
-    let bg = Style::default().bg(Color::Rgb(20, 20, 22));
+    let dim = Style::default().fg(palette::TEXT_MUTED);
+    let bg = Style::default().bg(palette::SURFACE);
     let accent = Style::default()
-        .fg(Color::Rgb(25, 195, 154))
+        .fg(palette::ACCENT)
         .add_modifier(Modifier::BOLD);
     let warn = Style::default()
-        .fg(Color::Rgb(255, 182, 73))
+        .fg(palette::WARNING)
         .add_modifier(Modifier::BOLD);
 
     let mut lines: Vec<Line> = Vec::new();
@@ -265,7 +268,7 @@ pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect,
         for raw in d.lines().take(8) {
             lines.push(Line::from(Span::styled(
                 format!("  {raw}"),
-                Style::default().fg(Color::Rgb(220, 220, 220)),
+                Style::default().fg(palette::TEXT),
             )));
         }
         if d.lines().count() > 8 {
@@ -286,10 +289,10 @@ pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect,
     };
     let opts = ["Allow once".to_string(), allow_label, "Deny".to_string()];
     let sel_style = Style::default()
-        .fg(Color::Rgb(255, 255, 255))
-        .bg(Color::Rgb(60, 50, 20))
+        .fg(palette::TEXT_BRIGHT)
+        .bg(palette::ACCENT_DEEP)
         .add_modifier(Modifier::BOLD);
-    let opt_style = Style::default().fg(Color::Rgb(220, 220, 220));
+    let opt_style = Style::default().fg(palette::TEXT);
     for (i, label) in opts.iter().enumerate() {
         let is_sel = i == p.selected;
         let marker = if is_sel { "  ❯ " } else { "    " };
@@ -329,7 +332,7 @@ pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect,
     let block = RBlock::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Rgb(255, 182, 73)))
+        .border_style(Style::default().fg(palette::WARNING))
         .title(Span::styled(" Approve tool call? ", warn))
         .style(bg);
     let inner = block.inner(popup);

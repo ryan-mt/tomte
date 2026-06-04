@@ -5,6 +5,7 @@ mod composer;
 mod context_view;
 mod input;
 mod login;
+mod palette;
 mod picker;
 mod selection;
 mod ui;

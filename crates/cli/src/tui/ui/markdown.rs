@@ -12,7 +12,7 @@ pub(super) fn render_markdown_inline(line: &str) -> Vec<Span<'static>> {
         .bg(Color::Rgb(40, 30, 18));
     let bold_style = Style::default().add_modifier(Modifier::BOLD);
     let italic_style = Style::default().add_modifier(Modifier::ITALIC);
-    let plain = Style::default().fg(Color::Gray);
+    let plain = Style::default().fg(palette::TEXT_MUTED);
 
     while let Some(c) = chars.next() {
         match c {
@@ -88,7 +88,7 @@ pub(super) fn syntax_assets() -> &'static (syntect::parsing::SyntaxSet, syntect:
 }
 
 /// Background fill behind a fenced code block, so it reads as one solid panel.
-pub(super) const CODE_BG: Color = Color::Rgb(30, 31, 38);
+pub(super) const CODE_BG: Color = palette::SURFACE_CODE;
 
 /// Render the assistant's markdown text into content rows (each a `Vec<Span>`,
 /// without the leading bullet/indent gutter). Handles fenced code blocks
@@ -304,7 +304,7 @@ pub(super) fn md_cell_width(s: &str) -> usize {
 /// rows. Columns are sized to content and shrunk to fit `content_width`; cells
 /// that still overflow are word-wrapped.
 pub(super) fn render_md_table(tbl: &[&str], content_width: usize) -> Vec<Vec<Span<'static>>> {
-    let border = Style::default().fg(Color::Rgb(90, 95, 105));
+    let border = Style::default().fg(palette::BORDER);
     let header_style = Style::default()
         .fg(Color::Rgb(235, 235, 240))
         .add_modifier(Modifier::BOLD);

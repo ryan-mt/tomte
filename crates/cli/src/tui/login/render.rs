@@ -3,7 +3,7 @@
 //! the footer. Pure draw code — all state lives in [`super::LoginScreen`].
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -12,6 +12,7 @@ use tomte_core::provider::Provider;
 
 use super::{LoginScreen, Option_, Stage};
 use crate::tui::input::TextInput;
+use crate::tui::palette;
 
 const ASCII_LOGO: &str = "
   ██████╗ ██████╗ ███████╗███╗   ██╗ ██████╗██╗     ██╗
@@ -69,7 +70,7 @@ fn render_logo(f: &mut Frame, area: Rect) {
         lines.push(Line::from(Span::styled(
             raw.to_string(),
             Style::default()
-                .fg(Color::Rgb(16, 163, 127))
+                .fg(palette::ACCENT)
                 .add_modifier(Modifier::BOLD),
         )));
     }
@@ -81,12 +82,12 @@ fn render_tagline(f: &mut Frame, area: Rect) {
         Line::from(Span::styled(
             " tomte — a coding agent for your terminal",
             Style::default()
-                .fg(Color::Rgb(240, 240, 240))
+                .fg(palette::TEXT_BRIGHT)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
             " powered by OpenAI & Anthropic models",
-            Style::default().fg(Color::Rgb(180, 180, 180)),
+            Style::default().fg(palette::TEXT_MUTED),
         )),
     ];
     f.render_widget(Paragraph::new(lines), area);
@@ -96,7 +97,7 @@ fn render_pick(f: &mut Frame, area: Rect, selected: Option_, err: Option<&str>) 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
         " Choose how to sign in to tomte",
-        Style::default().fg(Color::Rgb(240, 240, 240)),
+        Style::default().fg(palette::TEXT_BRIGHT),
     )));
     lines.push(Line::raw(""));
 
@@ -105,25 +106,25 @@ fn render_pick(f: &mut Frame, area: Rect, selected: Option_, err: Option<&str>) 
         let caret = if is_sel { ">" } else { " " };
         let title_style = if is_sel {
             Style::default()
-                .fg(Color::Rgb(25, 195, 154))
+                .fg(palette::ACCENT)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Rgb(230, 230, 230))
+            Style::default().fg(palette::TEXT)
         };
         let head = Line::from(vec![
             Span::styled(
                 format!(" {caret} {idx}. "),
                 Style::default().fg(if is_sel {
-                    Color::Rgb(25, 195, 154)
+                    palette::ACCENT
                 } else {
-                    Color::Rgb(180, 180, 180)
+                    palette::TEXT_MUTED
                 }),
             ),
             Span::styled(title.to_string(), title_style),
         ]);
         let sub = Line::from(Span::styled(
             format!("     {desc}"),
-            Style::default().fg(Color::Rgb(180, 180, 180)),
+            Style::default().fg(palette::TEXT_MUTED),
         ));
         vec![head, sub]
     };
@@ -154,13 +155,13 @@ fn render_pick(f: &mut Frame, area: Rect, selected: Option_, err: Option<&str>) 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " ↑↓ to select · Enter to continue · Ctrl+C to exit",
-        Style::default().fg(Color::Rgb(170, 170, 170)),
+        Style::default().fg(palette::TEXT_MUTED),
     )));
     if let Some(e) = err {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             format!(" {e}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(palette::DANGER),
         )));
     }
     f.render_widget(Paragraph::new(lines), area);
@@ -172,32 +173,32 @@ fn render_browser(f: &mut Frame, area: Rect, url: &str, err: Option<&str>) {
     lines.push(Line::from(Span::styled(
         " Finish signing in via your browser…",
         Style::default()
-            .fg(Color::Rgb(25, 195, 154))
+            .fg(palette::ACCENT)
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " If the page didn't open automatically, copy this URL:",
-        Style::default().fg(Color::Rgb(190, 190, 190)),
+        Style::default().fg(palette::TEXT_MUTED),
     )));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         format!(" {url}"),
         Style::default()
-            .fg(Color::Rgb(120, 200, 255))
+            .fg(palette::INFO)
             .add_modifier(Modifier::UNDERLINED),
     )));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " Press Esc to cancel and pick a different sign-in method.",
-        Style::default().fg(Color::Rgb(170, 170, 170)),
+        Style::default().fg(palette::TEXT_MUTED),
     )));
     if let Some(e) = err {
         lines.push(Line::raw(""));
         for chunk in textwrap::wrap(e, area.width.saturating_sub(2) as usize) {
             lines.push(Line::from(Span::styled(
                 format!(" {chunk}"),
-                Style::default().fg(Color::Rgb(255, 120, 120)),
+                Style::default().fg(palette::DANGER),
             )));
         }
     }
@@ -210,26 +211,26 @@ fn render_tos(f: &mut Frame, area: Rect, err: Option<&str>) {
     lines.push(Line::from(Span::styled(
         " Claude Pro/Max sign-in — read this first",
         Style::default()
-            .fg(Color::Rgb(255, 196, 0))
+            .fg(palette::WARNING)
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::raw(""));
     for raw in anth::TOS_WARNING.lines() {
         lines.push(Line::from(Span::styled(
             format!(" {raw}"),
-            Style::default().fg(Color::Rgb(220, 200, 160)),
+            Style::default().fg(palette::TEXT),
         )));
     }
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " Press Enter to accept and continue · Esc to cancel",
-        Style::default().fg(Color::Rgb(170, 170, 170)),
+        Style::default().fg(palette::TEXT_MUTED),
     )));
     if let Some(e) = err {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             format!(" {e}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(palette::DANGER),
         )));
     }
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
@@ -241,55 +242,55 @@ fn render_paste(f: &mut Frame, area: Rect, url: &str, input: &TextInput, err: Op
     lines.push(Line::from(Span::styled(
         " Sign in with Claude in your browser…",
         Style::default()
-            .fg(Color::Rgb(25, 195, 154))
+            .fg(palette::ACCENT)
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " If the page didn't open automatically, copy this URL:",
-        Style::default().fg(Color::Rgb(190, 190, 190)),
+        Style::default().fg(palette::TEXT_MUTED),
     )));
     lines.push(Line::from(Span::styled(
         format!(" {url}"),
         Style::default()
-            .fg(Color::Rgb(120, 200, 255))
+            .fg(palette::INFO)
             .add_modifier(Modifier::UNDERLINED),
     )));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " After approving, paste the authorization code shown by claude.ai:",
-        Style::default().fg(Color::Rgb(230, 230, 230)),
+        Style::default().fg(palette::TEXT),
     )));
     lines.push(Line::raw(""));
     let body = if input.is_empty() {
-        Span::styled(
-            "paste code here…",
-            Style::default().fg(Color::Rgb(120, 120, 120)),
-        )
+        Span::styled("paste code here…", Style::default().fg(palette::TEXT_MUTED))
     } else {
-        Span::styled(input.buffer.clone(), Style::default().fg(Color::White))
+        Span::styled(
+            input.buffer.clone(),
+            Style::default().fg(palette::TEXT_BRIGHT),
+        )
     };
     lines.push(Line::from(vec![
         Span::styled(
             " > ",
             Style::default()
-                .fg(Color::Magenta)
+                .fg(palette::ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
         body,
-        Span::styled("█", Style::default().fg(Color::Gray)),
+        Span::styled("█", Style::default().fg(palette::TEXT_MUTED)),
     ]));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " Enter to finish · Esc to cancel · Ctrl+U to clear",
-        Style::default().fg(Color::Rgb(170, 170, 170)),
+        Style::default().fg(palette::TEXT_MUTED),
     )));
     if let Some(e) = err {
         lines.push(Line::raw(""));
         for chunk in textwrap::wrap(e, area.width.saturating_sub(2) as usize) {
             lines.push(Line::from(Span::styled(
                 format!(" {chunk}"),
-                Style::default().fg(Color::Rgb(255, 120, 120)),
+                Style::default().fg(palette::DANGER),
             )));
         }
     }
@@ -316,39 +317,39 @@ fn render_api_key(
     lines.push(Line::from(Span::styled(
         label,
         Style::default()
-            .fg(Color::White)
+            .fg(palette::TEXT_BRIGHT)
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
         hint,
-        Style::default().fg(Color::Rgb(170, 170, 170)),
+        Style::default().fg(palette::TEXT_MUTED),
     )));
     lines.push(Line::raw(""));
     let body = if input.is_empty() {
-        Span::styled(placeholder, Style::default().fg(Color::Rgb(170, 170, 170)))
+        Span::styled(placeholder, Style::default().fg(palette::TEXT_MUTED))
     } else {
-        Span::styled(masked, Style::default().fg(Color::White))
+        Span::styled(masked, Style::default().fg(palette::TEXT_BRIGHT))
     };
     lines.push(Line::from(vec![
         Span::styled(
             " > ",
             Style::default()
-                .fg(Color::Magenta)
+                .fg(palette::ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
         body,
-        Span::styled("█", Style::default().fg(Color::Gray)),
+        Span::styled("█", Style::default().fg(palette::TEXT_MUTED)),
     ]));
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
         " Enter to save · Esc to go back · Ctrl+U to clear",
-        Style::default().fg(Color::Rgb(170, 170, 170)),
+        Style::default().fg(palette::TEXT_MUTED),
     )));
     if let Some(e) = err {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             format!(" {e}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(palette::DANGER),
         )));
     }
     f.render_widget(Paragraph::new(lines), area);
@@ -358,7 +359,7 @@ fn render_footer(f: &mut Frame, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             " tomte · Rust · MIT",
-            Style::default().fg(Color::Rgb(170, 170, 170)),
+            Style::default().fg(palette::TEXT_MUTED),
         ))),
         area,
     );

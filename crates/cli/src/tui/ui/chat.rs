@@ -17,9 +17,9 @@ pub(super) fn render_compact_progress(f: &mut Frame, area: Rect, app: &App) {
             .unwrap_or(0.0);
         (95.0 * t / (t + 4000.0)).round().clamp(0.0, 95.0) as u16
     };
-    let purple = Style::default().fg(Color::Rgb(220, 130, 220));
-    let dim = Style::default().fg(Color::Rgb(160, 160, 160));
-    let track = Style::default().fg(Color::Rgb(90, 90, 90));
+    let purple = Style::default().fg(palette::INFO);
+    let dim = Style::default().fg(palette::TEXT_MUTED);
+    let track = Style::default().fg(palette::TEXT_FAINT);
 
     let label = " compacting ";
     let suffix = format!(" {pct:>3}%");
@@ -54,9 +54,9 @@ pub(super) fn render_jump_to_bottom(f: &mut Frame, chat_area: Rect) -> Rect {
     let label = " Jump to bottom (ctrl+End) ↓ ";
     let total = row.width as usize;
     let label_w = unicode_width::UnicodeWidthStr::width(label);
-    let rule = Style::default().fg(Color::Rgb(80, 85, 95));
+    let rule = Style::default().fg(palette::TEXT_FAINT);
     let label_style = Style::default()
-        .fg(Color::Rgb(210, 210, 220))
+        .fg(palette::TEXT_BRIGHT)
         .add_modifier(Modifier::BOLD);
     let spans = if total > label_w {
         let left = (total - label_w) / 2;
@@ -158,12 +158,12 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 // User turns render as a full-width gray block (like Claude
                 // Code): every wrapped line is padded with spaces carrying the
                 // background so the fill reaches the right edge.
-                let user_bg = Color::Rgb(38, 40, 44);
+                let user_bg = palette::SURFACE;
                 let chevron_style = Style::default()
-                    .fg(Color::Rgb(130, 170, 255))
+                    .fg(palette::INFO)
                     .bg(user_bg)
                     .add_modifier(Modifier::BOLD);
-                let body_style = Style::default().fg(Color::Rgb(225, 225, 230)).bg(user_bg);
+                let body_style = Style::default().fg(palette::TEXT).bg(user_bg);
                 let mut first = true;
                 for raw in text.split('\n') {
                     for w in wrap(raw, inner_width.saturating_sub(2)) {
@@ -204,7 +204,7 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 for l in wrap(text, inner_width.saturating_sub(2)) {
                     lines.push(Line::from(Span::styled(
                         format!("  {l}"),
-                        Style::default().fg(Color::Rgb(160, 160, 160)),
+                        Style::default().fg(palette::TEXT_MUTED),
                     )));
                 }
                 lines.push(Line::raw(""));
@@ -257,11 +257,11 @@ pub(super) fn push_assistant_lines(
     // the spinner row already communicates that the model is thinking.
     if let Some(secs) = thought_for_secs {
         lines.push(Line::from(vec![
-            Span::styled("· ", Style::default().fg(Color::Rgb(200, 120, 220))),
+            Span::styled("· ", Style::default().fg(palette::INFO)),
             Span::styled(
                 format!("Thought for {secs}s"),
                 Style::default()
-                    .fg(Color::Rgb(190, 190, 190))
+                    .fg(palette::TEXT_MUTED)
                     .add_modifier(Modifier::ITALIC),
             ),
         ]));
@@ -273,7 +273,7 @@ pub(super) fn push_assistant_lines(
         // tool bullet, so prose and tool calls read as one consistent column),
         // then indent continuation lines to align under it.
         let marker_style = Style::default()
-            .fg(Color::Rgb(140, 170, 255))
+            .fg(palette::INFO)
             .add_modifier(Modifier::BOLD);
         // Block-level markdown: fenced code blocks get syntax highlighting and
         // tables get box-drawing borders; everything else is wrapped + inline

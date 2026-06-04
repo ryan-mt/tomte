@@ -15,7 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 /// Selection highlight background — a muted blue, consistent with the truecolor
 /// palette the TUI already assumes elsewhere.
-const SELECTION_BG: Color = Color::Rgb(48, 60, 92);
+const SELECTION_BG: Color = crate::tui::palette::SELECTION_BG;
 
 /// A left-drag selection in terminal cell coordinates. `anchor` is where the
 /// drag started, `cursor` where it currently is (or ended).

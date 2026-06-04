@@ -9,6 +9,7 @@
 //! and rendered with the active item highlighted. Arrow keys navigate; Enter
 //! commits the selection.
 
+use crate::tui::palette;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -134,22 +135,22 @@ pub fn render(f: &mut Frame, anchor_area: Rect, picker: &Picker) {
     // Clear the area under the popup so it floats over content.
     f.render_widget(Clear, popup);
 
-    let dim = Style::default().fg(Color::Rgb(170, 170, 170));
-    let bg = Style::default().bg(Color::Rgb(20, 20, 22));
+    let dim = Style::default().fg(palette::TEXT_MUTED);
+    let bg = Style::default().bg(palette::SURFACE);
     let sel_bg = Style::default()
-        .bg(Color::Rgb(30, 60, 50))
-        .fg(Color::Rgb(255, 255, 255))
+        .bg(palette::ACCENT_DEEP)
+        .fg(palette::TEXT_BRIGHT)
         .add_modifier(Modifier::BOLD);
     let title = format!(" {} ", picker.title);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Rgb(80, 200, 160)))
+        .border_style(Style::default().fg(palette::ACCENT))
         .title(Span::styled(
             title,
             Style::default()
-                .fg(Color::Rgb(25, 195, 154))
+                .fg(palette::ACCENT)
                 .add_modifier(Modifier::BOLD),
         ))
         .style(bg);
@@ -179,11 +180,11 @@ pub fn render(f: &mut Frame, anchor_area: Rect, picker: &Picker) {
             let title_style = if is_sel {
                 sel_bg
             } else {
-                Style::default().fg(Color::Rgb(235, 235, 235))
+                Style::default().fg(palette::TEXT_BRIGHT)
             };
             let desc_style = if is_sel {
                 Style::default()
-                    .fg(Color::Rgb(190, 230, 215))
+                    .fg(palette::TEXT)
                     .bg(sel_bg.bg.unwrap_or(Color::Reset))
             } else {
                 dim
