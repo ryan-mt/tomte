@@ -43,14 +43,13 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
         return Some("filesystem format command");
     }
     if has("dd") {
-        let writes_block_device = tokens.iter().any(|t| {
-            let t = t.trim_start_matches("of=");
-            t.starts_with("/dev/sd")
-                || t.starts_with("/dev/nvme")
-                || t.starts_with("/dev/mmcblk")
-                || t.starts_with("/dev/hd")
-                || t == "/dev/disk"
-        });
+        // Share the redirect guard's device families instead of a bespoke list,
+        // which had drifted: it missed `/dev/vd*` (virtio — the default disk on
+        // KVM/QEMU/cloud VMs) and matched `/dev/disk` only exactly, letting
+        // `/dev/disk2` (macOS) through.
+        let writes_block_device = tokens
+            .iter()
+            .any(|t| is_raw_block_device(t.trim_start_matches("of=")));
         if writes_block_device {
             return Some("dd writing to a raw block device");
         }

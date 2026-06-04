@@ -29,6 +29,10 @@ fn classify_danger_flags_destructive_patterns() {
         "mkswap /dev/sda1",
         "dd if=/dev/zero of=/dev/sda bs=1M",
         "/bin/dd if=/dev/zero of=/dev/sda bs=1M",
+        // Device families the bespoke dd list used to miss: virtio (KVM/cloud
+        // default) and a numbered macOS disk.
+        "dd if=/dev/zero of=/dev/vda bs=1M",
+        "dd if=/dev/zero of=/dev/disk2",
         // Redirect to a raw block device — `>`/`>>` separated or glued.
         "echo x > /dev/sda",
         "echo x >/dev/sda",
