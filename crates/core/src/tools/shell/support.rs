@@ -78,12 +78,19 @@ impl BackgroundShellState {
     /// session ends — the async `kill_tx` path can't be driven during teardown.
     /// Skips a shell already known to have finished, to avoid a pid-reuse race.
     pub(crate) fn kill_now(&self) {
-        if let Ok(status) = self.status.try_lock() {
-            if !matches!(*status, BgStatus::Running) {
-                return;
-            }
+        // Only SIGKILL the cached process group while holding the status lock and
+        // confirming the child is still Running. A failed `try_lock` (the waiter
+        // is mid-update) or any terminal status means the child may already be
+        // reaped and its pid recycled, so killing the cached pgid could hit an
+        // unrelated same-uid process group. (The old code killed regardless when
+        // the lock was contended.) The residual reap→status-flip window is
+        // irreducible without pidfd; this removes the larger cases.
+        let Ok(status) = self.status.try_lock() else {
+            return;
+        };
+        if matches!(*status, BgStatus::Running) {
+            kill_process_group(self.pid);
         }
-        kill_process_group(self.pid);
     }
 }
 
