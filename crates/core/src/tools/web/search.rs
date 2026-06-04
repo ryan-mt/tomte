@@ -139,6 +139,12 @@ fn apply_filters(
         if !is_http_url(&r.url) {
             continue;
         }
+        // A decoded uddg target whose host is a literal internal IP (cloud
+        // metadata, loopback, RFC1918) must not be surfaced to the model or a
+        // later web_fetch.
+        if url_host_is_blocked_ip(&r.url) {
+            continue;
+        }
         if is_search_ad_or_tracking_url(&r.url) {
             continue;
         }
@@ -230,27 +236,15 @@ Parameters:\n\
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .timeout(Duration::from_secs(20))
-            // SSRF guard parity with web_fetch: a compromised or MITM'd search
-            // backend could 302 us to an internal address (cloud metadata,
-            // 127.0.0.1, RFC1918). Follow only http(s) redirects to non-blocked
-            // literal IPs, capped at a few hops.
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() >= 4 {
-                    return attempt.stop();
-                }
-                let url = attempt.url();
-                if !matches!(url.scheme(), "http" | "https") {
-                    return attempt.stop();
-                }
-                if let Some(host) = url.host_str() {
-                    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                        if super::is_blocked_ip(&ip) {
-                            return attempt.stop();
-                        }
-                    }
-                }
-                attempt.follow()
-            }))
+            // SSRF guard parity with web_fetch (web.rs): the previous custom
+            // policy rejected only redirect targets that were *literal* blocked
+            // IPs, so a compromised or MITM'd backend could 302 us to a hostname
+            // resolving to cloud metadata / 127.0.0.1 / RFC1918 and reqwest would
+            // re-resolve and connect there. A sync redirect closure can't pin the
+            // validated IP against DNS rebinding, so disable redirects entirely:
+            // the backends are fixed HTTPS endpoints that answer 200 directly, and
+            // an unfollowed 3xx just falls through to the next backend.
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let mut last_err: Option<String> = None;
         for backend in Backend::ALL {
@@ -413,6 +407,18 @@ fn host_of(url: &str) -> String {
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
         .unwrap_or_default()
+}
+
+/// Whether a result URL's host is a *literal* internal/loopback/link-local IP
+/// (e.g. cloud metadata `169.254.169.254`, `127.0.0.1`, RFC1918). Matches on the
+/// parsed `Host` so IPv4 and bracketed IPv6 literals are both caught. A hostname
+/// that resolves internally is left to web_fetch's own SSRF guard at fetch time.
+fn url_host_is_blocked_ip(url: &str) -> bool {
+    match url::Url::parse(url).ok().as_ref().and_then(|u| u.host()) {
+        Some(url::Host::Ipv4(ip)) => super::is_blocked_ip(&std::net::IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => super::is_blocked_ip(&std::net::IpAddr::V6(ip)),
+        _ => false,
+    }
 }
 
 /// Whether a result URL is a plain web URL safe to surface. Drops `file://`,

@@ -23,6 +23,25 @@ fn apply_filters_drops_non_http_schemes() {
 }
 
 #[test]
+fn apply_filters_drops_internal_ip_hosts() {
+    let mk = |url: &str| SearchResult {
+        title: "t".into(),
+        url: url.into(),
+        snippet: String::new(),
+    };
+    let raw = vec![
+        mk("https://tokio.rs/"),
+        mk("http://169.254.169.254/latest/meta-data/"),
+        mk("http://127.0.0.1/admin"),
+        mk("http://[::1]/"),
+        mk("http://10.0.0.5/"),
+    ];
+    let out = apply_filters(raw, 10, None, None);
+    assert_eq!(out.len(), 1, "only the public host should survive");
+    assert_eq!(out[0].url, "https://tokio.rs/");
+}
+
+#[test]
 fn ddg_parses_title_url_and_snippet() {
     let r = parse_ddg(SAMPLE);
     assert_eq!(r.len(), 2);
