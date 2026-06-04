@@ -45,5 +45,5 @@ pub(super) fn grep_available() -> bool {
 }
 
 pub(super) fn missing_rg(dir: &std::path::Path) -> String {
-    dir.join("opencli-missing-rg").display().to_string()
+    dir.join("tomte-missing-rg").display().to_string()
 }

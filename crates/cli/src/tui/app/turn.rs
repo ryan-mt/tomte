@@ -10,7 +10,7 @@ pub async fn launch_turn(
 ) {
     // UserPromptSubmit hook: may BLOCK the prompt (exit 2). Load hooks fresh
     // (cheap) so it works even on the first turn before the agent exists.
-    if let opencli_core::hooks::HookDecision::Block(reason) = opencli_core::hooks::load()
+    if let tomte_core::hooks::HookDecision::Block(reason) = tomte_core::hooks::load()
         .fire_user_prompt_submit(&text)
         .await
     {
@@ -133,7 +133,7 @@ pub async fn launch_turn(
             // writing a stale launch-time goal snapshot here.
             if !should_defer_session_save_to_host {
                 let record = a.to_session_record().await;
-                if let Err(e) = opencli_core::session::save(&record) {
+                if let Err(e) = tomte_core::session::save(&record) {
                     tracing::debug!(error = %e, "session save failed");
                 }
             }

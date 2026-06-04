@@ -79,7 +79,7 @@ Behaviour:\n\
                     .collect();
                 if available.is_empty() {
                     Err(anyhow!(
-                        "skill `{}` not found — no skills are installed. Install skills under ~/.config/opencli/skills/<name>/SKILL.md or ~/.claude/skills/.",
+                        "skill `{}` not found — no skills are installed. Install skills under ~/.config/tomte/skills/<name>/SKILL.md or ~/.claude/skills/.",
                         a.name
                     ))
                 } else {

@@ -14,11 +14,11 @@ pub(super) fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
     let cwd = shorten_home_path(&app.cwd);
 
     let auth_label = match app.auth_mode {
-        opencli_core::auth::AuthMode::OpenaiOauth => "ChatGPT account",
-        opencli_core::auth::AuthMode::OpenaiApiKey => "OpenAI API key",
-        opencli_core::auth::AuthMode::AnthropicOauth => "Claude OAuth",
-        opencli_core::auth::AuthMode::AnthropicApiKey => "Anthropic API key",
-        opencli_core::auth::AuthMode::None => "offline",
+        tomte_core::auth::AuthMode::OpenaiOauth => "ChatGPT account",
+        tomte_core::auth::AuthMode::OpenaiApiKey => "OpenAI API key",
+        tomte_core::auth::AuthMode::AnthropicOauth => "Claude OAuth",
+        tomte_core::auth::AuthMode::AnthropicApiKey => "Anthropic API key",
+        tomte_core::auth::AuthMode::None => "offline",
     };
 
     // Each row is `(spans, visible_width)`. Width is precomputed so the
@@ -26,7 +26,7 @@ pub(super) fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
     // resizes or the cwd changes — mirrors Claude Code's welcome card.
     let version = env!("CARGO_PKG_VERSION");
     let sparkle = "✻ ";
-    let title = "Welcome to opencli! ";
+    let title = "Welcome to tomte! ";
     let version_label = format!("v{version}");
     let header_w = sparkle.chars().count() + title.chars().count() + version_label.chars().count();
     let header_row = (

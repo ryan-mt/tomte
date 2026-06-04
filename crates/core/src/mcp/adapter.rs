@@ -1,4 +1,4 @@
-//! Adapts a discovered MCP tool to opencli's [`BuiltinTool`] interface so the
+//! Adapts a discovered MCP tool to tomte's [`BuiltinTool`] interface so the
 //! agent can invoke it identically to its own built-ins.
 
 use std::sync::Arc;

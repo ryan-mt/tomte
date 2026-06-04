@@ -83,7 +83,7 @@ pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
 /// Collapse runs of `*` so a pattern like `***` or `**********` can't trigger
 /// `glob_inner`'s O(n^k) backtracking — adjacent `**` groups each branch over
 /// every text offset (line 499), and the source pattern is untrusted (it comes
-/// from `.opencli/permissions.json`). A run of length 1 stays `*` (within-segment
+/// from `.tomte/permissions.json`). A run of length 1 stays `*` (within-segment
 /// wildcard); any run of length >= 2 becomes a single `**` (cross-`/` wildcard),
 /// which is exactly what a user writing `***` intends, so no valid pattern
 /// changes meaning.

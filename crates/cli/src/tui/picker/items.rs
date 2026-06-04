@@ -57,7 +57,7 @@ pub fn slash_commands() -> Vec<PickerItem> {
             "ask the agent to compact the conversation",
         ),
         item("todos", "/todos", "show the session todo list"),
-        item("about", "/about", "show opencli version + build info"),
+        item("about", "/about", "show tomte version + build info"),
         item("login", "/login", "sign in with ChatGPT"),
         item("apikey", "/apikey", "save an OpenAI API key"),
         item("logout", "/logout", "clear credentials"),
@@ -92,18 +92,18 @@ pub fn slash_commands() -> Vec<PickerItem> {
             "toggle the approval modal for writes/shell",
         ),
         item("undo", "/undo", "revert the most recent file edit"),
-        item("quit", "/quit", "exit opencli"),
+        item("quit", "/quit", "exit tomte"),
     ]
 }
 
 /// Build the model picker dynamically from the providers the user is
 /// currently signed in to. When only OpenAI creds exist the user sees the
-/// GPT catalogue; after `opencli login --provider anthropic` the Claude
+/// GPT catalogue; after `tomte login --provider anthropic` the Claude
 /// models appear alongside (or instead of) the GPT ones. After `logout`
 /// nothing is signed in and the picker shows a single offline placeholder.
 pub fn models() -> Vec<PickerItem> {
-    use opencli_core::auth::signed_in_model_catalogs;
-    use opencli_core::provider::Provider;
+    use tomte_core::auth::signed_in_model_catalogs;
+    use tomte_core::provider::Provider;
 
     let mut items = Vec::new();
     for catalog in signed_in_model_catalogs() {
@@ -138,7 +138,7 @@ pub fn models() -> Vec<PickerItem> {
     // glance in the picker (mirrors the textual catalogue). Done before the
     // not-signed-in placeholder below so that placeholder stays untagged.
     for it in &mut items {
-        let win = opencli_core::agent::context_window_label(&it.key);
+        let win = tomte_core::agent::context_window_label(&it.key);
         it.description = format!("{win} ctx · {}", it.description);
     }
     if items.is_empty() {
@@ -156,7 +156,7 @@ pub fn models() -> Vec<PickerItem> {
 /// can't be cleared by logging out. An "all" entry appears only when more than
 /// one credential is stored.
 pub fn logout_targets() -> Vec<PickerItem> {
-    use opencli_core::auth::{load_auth, LogoutTarget};
+    use tomte_core::auth::{load_auth, LogoutTarget};
     let r = load_auth().unwrap_or_default();
     let mut items = Vec::new();
     let item = |t: LogoutTarget, title: &str, desc: &str| PickerItem {
@@ -214,8 +214,8 @@ pub fn logout_targets() -> Vec<PickerItem> {
 /// `max`/`ultracode` only on Anthropic. A single shared list for both providers
 /// left users unsure which levels existed where.
 pub fn efforts(model: &str) -> Vec<PickerItem> {
-    use opencli_core::catalog;
-    use opencli_core::provider::Provider;
+    use tomte_core::catalog;
+    use tomte_core::provider::Provider;
 
     let item = |key: &str, description: &str| PickerItem {
         key: key.into(),
@@ -255,7 +255,7 @@ pub fn efforts(model: &str) -> Vec<PickerItem> {
 
 /// Build picker items from a snapshot of stored sessions for the current cwd.
 /// Newest first, with a single-line preview shaped like the slash command rows.
-pub fn sessions(metas: &[opencli_core::session::SessionMeta]) -> Vec<PickerItem> {
+pub fn sessions(metas: &[tomte_core::session::SessionMeta]) -> Vec<PickerItem> {
     metas
         .iter()
         .map(|m| PickerItem {
@@ -272,7 +272,7 @@ pub fn sessions(metas: &[opencli_core::session::SessionMeta]) -> Vec<PickerItem>
 }
 
 fn ago(ms: u64) -> String {
-    let now = opencli_core::session::now_ms();
+    let now = tomte_core::session::now_ms();
     let diff = now.saturating_sub(ms);
     let secs = diff / 1000;
     if secs < 60 {

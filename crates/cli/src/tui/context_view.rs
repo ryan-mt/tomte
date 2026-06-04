@@ -1,15 +1,15 @@
 //! Colored renderer for the `/context` report.
 //!
-//! Turns an [`opencli_core::context_report::ContextReport`] into styled
+//! Turns a [`tomte_core::context_report::ContextReport`] into styled
 //! scrollback lines that mirror Claude Code's `/context`: a proportional grid on
 //! the left, the model headline plus a per-category legend on the right, and
 //! detail sections (MCP servers, custom agents, memory files, skills) underneath
 //! with their slash-command shortcuts. `/context all` expands the detail
 //! sections to list the actual items.
 
-use opencli_core::context_report::ContextReport;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use tomte_core::context_report::ContextReport;
 
 // Grid dimensions. 12 rows lines the grid up with the 12-line right column
 // (title, model, tokens, blank, legend header, 6 categories, free space).
@@ -404,13 +404,13 @@ mod tests {
     }
 
     /// End-to-end preview against THIS repo's real config/skills/agents/memory:
-    /// `cargo test -p opencli context_view_preview_real -- --ignored --nocapture`.
+    /// `cargo test -p tomte context_view_preview_real -- --ignored --nocapture`.
     /// Exercises the same `build` → `render` path the `/context` command uses.
     #[test]
     #[ignore]
     fn context_view_preview_real() {
-        let cfg = opencli_core::config::load();
-        let report = opencli_core::context_report::build(std::path::Path::new("."), &cfg, 4096, 0);
+        let cfg = tomte_core::config::load();
+        let report = tomte_core::context_report::build(std::path::Path::new("."), &cfg, 4096, 0);
         let lines = render(&report, false);
         println!();
         for line in &lines {
@@ -426,7 +426,7 @@ mod tests {
         }
     }
 
-    /// Truecolor preview: `cargo test -p opencli context_view_preview -- --ignored --nocapture`.
+    /// Truecolor preview: `cargo test -p tomte context_view_preview -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn context_view_preview() {

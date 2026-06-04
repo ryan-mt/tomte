@@ -12,16 +12,16 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use futures_util::StreamExt;
-use opencli_core::agent::{Agent, AgentEvent};
-use opencli_core::auth::{self, AuthMode};
-use opencli_core::client::LlmClient;
-use opencli_core::config::{self, Config};
-use opencli_core::provider::Provider;
-use opencli_core::session::{SessionGoalSnapshot, SessionRecord};
-use opencli_core::tools::{ApprovalMode, TodoItem, TodoStatus};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
+use tomte_core::agent::{Agent, AgentEvent};
+use tomte_core::auth::{self, AuthMode};
+use tomte_core::client::LlmClient;
+use tomte_core::config::{self, Config};
+use tomte_core::provider::Provider;
+use tomte_core::session::{SessionGoalSnapshot, SessionRecord};
+use tomte_core::tools::{ApprovalMode, TodoItem, TodoStatus};
 
 use super::clipboard;
 use super::composer::{self, BangResult};

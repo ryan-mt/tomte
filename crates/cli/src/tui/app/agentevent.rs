@@ -98,7 +98,7 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                     did_ask_user = true;
                     ask_prompt = o
                         .as_deref()
-                        .and_then(opencli_core::tools::ask::render_ask_envelope);
+                        .and_then(tomte_core::tools::ask::render_ask_envelope);
                 }
             }
             if let Some(prompt) = ask_prompt {
@@ -267,7 +267,7 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 );
                 if app.config.model.split_once('/').is_some() {
                     msg.push_str(&format!(
-                        "\n   opencli assumed a {}-token window for this provider; set its real `context_limit` in config.json so it compacts in time.",
+                        "\n   tomte assumed a {}-token window for this provider; set its real `context_limit` in config.json so it compacts in time.",
                         app.config.effective_context_limit()
                     ));
                 }

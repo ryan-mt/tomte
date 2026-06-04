@@ -332,7 +332,7 @@ fn roll_rarity(rng: &mut Rng) -> Rarity {
 }
 
 /// Account identities that always hatch the legendary companion — the
-/// dev/founder. Also forced by the `OPENCLI_BUDDY_DEV` env var, so the dev
+/// dev/founder. Also forced by the `TOMTE_BUDDY_DEV` env var, so the dev
 /// gets the legendary on any account. (Mirrors how Claude Code hands its
 /// internal builds special treatment.)
 const FOUNDER_IDS: &[&str] = &[];
@@ -342,7 +342,7 @@ const FOUNDER_IDS: &[&str] = &[];
 /// rarity-weighted roll with the lone legendary at its fixed ~1%.
 pub fn roll(identity: &str) -> usize {
     if FOUNDER_IDS.contains(&identity)
-        || dev_override(std::env::var_os("OPENCLI_BUDDY_DEV").as_deref())
+        || dev_override(std::env::var_os("TOMTE_BUDDY_DEV").as_deref())
     {
         return legendary_index();
     }
@@ -376,7 +376,7 @@ fn legendary_index() -> usize {
         .unwrap_or(0)
 }
 
-/// Whether the `OPENCLI_BUDDY_DEV` override is set to a truthy value.
+/// Whether the `TOMTE_BUDDY_DEV` override is set to a truthy value.
 fn dev_override(value: Option<&std::ffi::OsStr>) -> bool {
     match value {
         Some(v) => {

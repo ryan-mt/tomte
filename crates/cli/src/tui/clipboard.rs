@@ -61,7 +61,7 @@ fn save_image(img: arboard::ImageData<'_>) -> Result<PathBuf> {
             .map_err(|e| anyhow!("encoding PNG: {e}"))?;
     }
 
-    let dir = opencli_core::config::config_dir().join("clipboard");
+    let dir = tomte_core::config::config_dir().join("clipboard");
     std::fs::create_dir_all(&dir).ok();
     let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f").to_string();
     let path = clipboard_image_path(&dir, &ts);
@@ -83,7 +83,7 @@ mod tests {
 
     #[test]
     fn clipboard_image_paths_are_unique_within_same_millisecond() {
-        let dir = Path::new("/tmp/opencli-clipboard-test");
+        let dir = Path::new("/tmp/tomte-clipboard-test");
         let timestamp = "20260101-000000.000";
 
         let first = clipboard_image_path(dir, timestamp);

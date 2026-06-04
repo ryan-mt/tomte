@@ -57,7 +57,7 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
             app.open_overlay(OverlayKind::ResumePicker);
         }
         "cost" => {
-            let report = opencli_core::pricing::render_cost_report(
+            let report = tomte_core::pricing::render_cost_report(
                 &app.usage_by_model,
                 &app.config.model,
                 app.turn_count,
@@ -70,12 +70,8 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
         "context" | "ctx" => {
             let expanded = arg.trim().eq_ignore_ascii_case("all");
             let messages = estimate_messages_tokens(&app.blocks);
-            let report = opencli_core::context_report::build(
-                &app.cwd,
-                &app.config,
-                messages,
-                app.tokens_used,
-            );
+            let report =
+                tomte_core::context_report::build(&app.cwd, &app.config, messages, app.tokens_used);
             let lines = crate::tui::context_view::render(&report, expanded);
             app.blocks.push(Block::Rich(lines));
         }
@@ -89,7 +85,7 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
             } else if arg.eq_ignore_ascii_case("reset") || arg.eq_ignore_ascii_case("clear") {
                 // Dev/testing: forget the adopted companion so the next /buddy
                 // hatches again. This only replays the hatch — WHICH pet you get
-                // is still derived from the account (or OPENCLI_BUDDY_SEED), so
+                // is still derived from the account (or TOMTE_BUDDY_SEED), so
                 // it can't be tricked into a different companion.
                 app.buddy_pet = None;
                 app.buddy_hidden = false;
@@ -110,9 +106,9 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
                 // First hatch: the pet is a pure function of the signed-in
                 // account, so it persists for that account and re-rolls only on
                 // account switch — nothing is stored to delete or tamper with.
-                // `OPENCLI_BUDDY_SEED` lets a dev preview other pets by seeding
+                // `TOMTE_BUDDY_SEED` lets a dev preview other pets by seeding
                 // the roll directly instead of from the account.
-                let identity = std::env::var("OPENCLI_BUDDY_SEED")
+                let identity = std::env::var("TOMTE_BUDDY_SEED")
                     .ok()
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| {
@@ -134,8 +130,8 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
                 AuthMode::AnthropicApiKey => "anthropic_api_key",
                 AuthMode::AnthropicOauth => "claude_oauth",
             };
-            let mcp_count = opencli_core::mcp::load_servers_config().len();
-            let hooks = opencli_core::hooks::load();
+            let mcp_count = tomte_core::mcp::load_servers_config().len();
+            let hooks = tomte_core::hooks::load();
             let hook_count = hooks.config.pre_tool_use.len();
             let approval = match app.approval {
                 ApprovalMode::Auto => "auto",
@@ -164,12 +160,12 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
             )));
         }
         "hooks" => {
-            let hooks = opencli_core::hooks::load();
+            let hooks = tomte_core::hooks::load();
             let entries = &hooks.config.pre_tool_use;
             if entries.is_empty() {
                 app.blocks.push(Block::System(
                     "No PreToolUse hooks configured.\n\
-                     Add some in ~/.config/opencli/settings.json under .hooks.PreToolUse"
+                     Add some in ~/.config/tomte/settings.json under .hooks.PreToolUse"
                         .into(),
                 ));
             } else {
@@ -186,11 +182,11 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
             }
         }
         "mcp" => {
-            let servers = opencli_core::mcp::load_servers_config();
+            let servers = tomte_core::mcp::load_servers_config();
             if servers.is_empty() {
                 app.blocks.push(Block::System(
                     "No MCP servers configured.\n\
-                     Add some in ~/.config/opencli/settings.json under mcp_servers"
+                     Add some in ~/.config/tomte/settings.json under mcp_servers"
                         .into(),
                 ));
             } else {
@@ -211,7 +207,7 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
             }
         }
         "doctor" => {
-            let report = opencli_core::doctor::diagnose(&app.cwd);
+            let report = tomte_core::doctor::diagnose(&app.cwd);
             app.blocks.push(Block::System(report.render()));
         }
         "init" => {
@@ -303,7 +299,7 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
         }
         "export" => {
             let default_name = format!(
-                "opencli-export-{}.md",
+                "tomte-export-{}.md",
                 chrono::Local::now().format("%Y%m%d-%H%M%S")
             );
             let path = if arg.is_empty() {

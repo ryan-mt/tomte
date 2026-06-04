@@ -44,7 +44,7 @@ export function Switchboard() {
           Any model.
         </h2>
         <p className="mt-5 max-w-md text-[1.0625rem] leading-relaxed text-ink-2">
-          OpenCLI routes a single agent to whichever provider you point it at. Switch models mid-session, or fail over automatically when one is rate-limited.
+          Tomte routes a single agent to whichever provider you point it at. Switch models mid-session, or fail over automatically when one is rate-limited.
         </p>
 
         <div className="mt-7 border border-ink">
@@ -87,7 +87,7 @@ export function Switchboard() {
 
       <div className="blueprint relative border border-line-2 bg-bg-2 p-4">
         <span className="mono-label absolute right-3.5 top-3.5">routing</span>
-        <svg viewBox="0 0 400 320" className="w-full" role="img" aria-label="OpenCLI routing a single core to multiple providers">
+        <svg viewBox="0 0 400 320" className="w-full" role="img" aria-label="Tomte routing a single core to multiple providers">
           {providers.map((p, i) => {
             const on = p.key === active;
             const y = NODE_Y[p.key];
@@ -113,7 +113,7 @@ export function Switchboard() {
 
           <rect x="40" y="134" width="110" height="52" fill="#f4f4f1" stroke={accent} strokeWidth="2" />
           <text x="95" y="165" textAnchor="middle" className="font-mono" fontSize="15" fontWeight="700" fill="#131312">
-            opencli
+            tomte
           </text>
 
           {providers.map((p) => {

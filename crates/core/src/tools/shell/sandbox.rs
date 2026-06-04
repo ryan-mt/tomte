@@ -150,7 +150,7 @@ pub fn maybe_exec_helper() {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = args;
-        eprintln!("opencli: the sandbox helper is only supported on Linux");
+        eprintln!("tomte: the sandbox helper is only supported on Linux");
         std::process::exit(70);
     }
 }

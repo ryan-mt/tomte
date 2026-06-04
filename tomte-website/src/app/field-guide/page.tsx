@@ -29,7 +29,7 @@ import { Reveal } from "@/components/Reveal";
 export const metadata: Metadata = {
   title: "Field guide",
   description:
-    "The full OpenCLI tool belt: files, shell, search, web, sub-agents, reasoning levels, slash commands, and the security model.",
+    "The full Tomte tool belt: files, shell, search, web, sub-agents, reasoning levels, slash commands, and the security model.",
 };
 
 type IconCmp = ComponentType<{
@@ -117,7 +117,7 @@ export default function FieldGuide() {
             ))}
           </div>
           <p className="mt-5 font-mono text-[12.5px] text-ink-3">
-            Set it with opencli config --set-reasoning high, or /thinking inside the session.
+            Set it with tomte config --set-reasoning high, or /thinking inside the session.
           </p>
         </div>
       </section>
@@ -171,7 +171,7 @@ export default function FieldGuide() {
             The security model, stated plainly
           </h2>
           <p className="mt-4 max-w-2xl text-[1.0625rem] leading-relaxed text-ink-2">
-            run_shell executes directly on your machine. There is no sandbox yet, so review destructive prompts. Here is what opencli does guard.
+            run_shell executes directly on your machine. There is no sandbox yet, so review destructive prompts. Here is what tomte does guard.
           </p>
           <div className="mt-9 grid gap-x-14 gap-y-8 sm:grid-cols-2">
             {security.map((s) => (

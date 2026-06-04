@@ -1,6 +1,6 @@
 //! Sub-agent dispatch tool. The Claude Code analogue of `Task`.
 //!
-//! Given a `subagent_type` (matching a file in `~/.config/opencli/agents/`)
+//! Given a `subagent_type` (matching a file in `~/.config/tomte/agents/`)
 //! and a `prompt`, spins up a child `Agent` with a restricted tool registry,
 //! drives one full turn (loops until the model produces final text), and
 //! returns the final assistant text to the parent agent as the tool result.
@@ -189,7 +189,7 @@ impl BuiltinTool for DispatchAgent {
 \n\
 When to use:\n\
 - The work is large enough to warrant its own context (heavy exploration, multi-file research, broad refactor planning) and would crowd out the main conversation if done inline.\n\
-- A specialised sub-agent (defined under any discovered agents directory, such as `~/.config/opencli/agents/<name>.md`, `~/.claude/agents/<name>.md`, or `~/.codex/agents/<name>.md`) has a tighter tool whitelist and prompt than the main agent, e.g. a `code-explorer` that can only read+grep, or a `security-reviewer` that focuses on a checklist.\n\
+- A specialised sub-agent (defined under any discovered agents directory, such as `~/.config/tomte/agents/<name>.md`, `~/.claude/agents/<name>.md`, or `~/.codex/agents/<name>.md`) has a tighter tool whitelist and prompt than the main agent, e.g. a `code-explorer` that can only read+grep, or a `security-reviewer` that focuses on a checklist.\n\
 - You want to run several independent read-only planning/research sub-tasks in parallel — issue multiple `dispatch_agent` calls with `plan_mode_required: true` in the same turn and they execute concurrently. Dispatches that may write are serialized by the host to avoid file races.\n\
 \n\
 When NOT to use:\n\
@@ -198,7 +198,7 @@ When NOT to use:\n\
 - Editing files the parent should review — when parent approvals are enabled, sub-agents are forced into read-only plan mode because they cannot present nested approval prompts.\n\
 \n\
 Parameters:\n\
-- `subagent_type`: Sub-agent name from the definition's `name:` frontmatter (or the bare filename without `.md`). Definitions are discovered from opencli (`~/.config/opencli/agents/`), Claude Code (`~/.claude/agents/`), Codex (`~/.codex/agents/` or `$CODEX_HOME/agents`), and project `.opencli/.claude/.codex` agent directories. A definition looks like:\n\
+- `subagent_type`: Sub-agent name from the definition's `name:` frontmatter (or the bare filename without `.md`). Definitions are discovered from tomte (`~/.config/tomte/agents/`), Claude Code (`~/.claude/agents/`), Codex (`~/.codex/agents/` or `$CODEX_HOME/agents`), and project `.tomte/.claude/.codex` agent directories. A definition looks like:\n\
   ```\n\
   ---\n\
   name: code-explorer\n\
@@ -268,7 +268,7 @@ Behaviour:\n\
                 .collect::<Vec<_>>();
             if available.is_empty() {
                 anyhow!(
-                    "{e}. No subagents installed yet — create one at ~/.config/opencli/agents/<name>.md or install Claude/Codex agents under ~/.claude/agents or ~/.codex/agents"
+                    "{e}. No subagents installed yet — create one at ~/.config/tomte/agents/<name>.md or install Claude/Codex agents under ~/.claude/agents or ~/.codex/agents"
                 )
             } else {
                 anyhow!(

@@ -15,14 +15,14 @@ import { CodeBlock } from "@/components/CodeBlock";
 export const metadata: Metadata = {
   title: "Install",
   description:
-    "Install OpenCLI from source or a prebuilt binary, sign in with a subscription or an API key, and run it in the TUI or headless.",
+    "Install Tomte from source or a prebuilt binary, sign in with a subscription or an API key, and run it in the TUI or headless.",
 };
 
-const loginCommands = `opencli login                                 # OpenAI OAuth (ChatGPT subscription)
-opencli login --api-key --provider openai     # paste an OpenAI key
-opencli login --api-key --provider anthropic  # paste an Anthropic key
-opencli status                                # who am I, and on what plan
-opencli logout`;
+const loginCommands = `tomte login                                 # OpenAI OAuth (ChatGPT subscription)
+tomte login --api-key --provider openai     # paste an OpenAI key
+tomte login --api-key --provider anthropic  # paste an Anthropic key
+tomte status                                # who am I, and on what plan
+tomte logout`;
 
 const configJson = `{
   "model": "gpt-5.5",
@@ -83,7 +83,7 @@ export default function Install() {
                 Prefer a prebuilt binary
               </h2>
               <p className="mt-4 text-[1.0625rem] leading-relaxed text-ink-2">
-                Grab the archive for your platform from the latest release and put opencli on your PATH.
+                Grab the archive for your platform from the latest release and put tomte on your PATH.
               </p>
             </div>
             <a
@@ -143,10 +143,10 @@ export default function Install() {
               Two ways to talk to it
             </h2>
             <p className="mt-4 text-[1.0625rem] leading-relaxed text-ink-2">
-              Run opencli with no subcommand for the full terminal UI. Or go headless for scripts, cron, and systemd. Same agent either way.
+              Run tomte with no subcommand for the full terminal UI. Or go headless for scripts, cron, and systemd. Same agent either way.
             </p>
             <p className="mt-4 font-mono text-[12.5px] text-ink-3">
-              opencli, opencli resume, opencli chat, opencli run
+              tomte, tomte resume, tomte chat, tomte run
             </p>
           </div>
           <div className="lg:pt-2">
@@ -163,7 +163,7 @@ export default function Install() {
               Configuration
             </h2>
             <p className="mt-4 text-[1.0625rem] leading-relaxed text-ink-2">
-              Settings live in config.json under your config directory. A project can override the safe behavioural fields with its own .opencli/config.json.
+              Settings live in config.json under your config directory. A project can override the safe behavioural fields with its own .tomte/config.json.
             </p>
             <dl className="mt-7 border-t-2 border-ink">
               {configFields.map((f) => (
@@ -215,7 +215,7 @@ export default function Install() {
             <div className="lg:pt-2">
               <CodeBlock
                 label="from source"
-                code={`git clone ${site.repoUrl} && cd opencli\nmake install      # build release + link to PATH\nmake link-dev     # OR dev mode, re-runs cargo on each call\nmake unlink       # remove the link`}
+                code={`git clone ${site.repoUrl} && cd tomte\nmake install      # build release + link to PATH\nmake link-dev     # OR dev mode, re-runs cargo on each call\nmake unlink       # remove the link`}
               />
             </div>
           </div>

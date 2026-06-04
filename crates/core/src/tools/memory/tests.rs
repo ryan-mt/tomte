@@ -312,7 +312,7 @@ fn apply_store_at_preserves_a_preceding_inherited_block() {
         prompt.starts_with(&before),
         "store injection must not disturb the inherited block"
     );
-    assert!(prompt.contains("opencli-memory-store:start"));
+    assert!(prompt.contains("tomte-memory-store:start"));
 }
 
 // ---- headless guard via execute --------------------------------------------

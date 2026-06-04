@@ -28,14 +28,14 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "opencli: a coding agent that lives in your terminal",
-    template: "%s · opencli",
+    default: "tomte: a coding agent that lives in your terminal",
+    template: "%s · tomte",
   },
   description: site.description,
-  applicationName: "opencli",
+  applicationName: "tomte",
   authors: [{ name: "Ryan" }],
   keywords: [
-    "opencli",
+    "tomte",
     "coding agent",
     "terminal",
     "Rust CLI",
@@ -46,14 +46,14 @@ export const metadata: Metadata = {
     "developer tools",
   ],
   openGraph: {
-    title: "opencli",
+    title: "tomte",
     description: site.description,
     type: "website",
-    siteName: "opencli",
+    siteName: "tomte",
   },
   twitter: {
     card: "summary_large_image",
-    title: "opencli",
+    title: "tomte",
     description: site.description,
   },
 };

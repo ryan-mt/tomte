@@ -1,8 +1,8 @@
 //! Minimal MCP (Model Context Protocol) stdio client.
 //!
-//! Spawns a child process configured in `~/.config/opencli/settings.json`
+//! Spawns a child process configured in `~/.config/tomte/settings.json`
 //! under `mcp_servers`, speaks JSON-RPC 2.0 over newline-delimited stdin/stdout,
-//! and adapts each discovered MCP tool to opencli's `BuiltinTool` trait so the
+//! and adapts each discovered MCP tool to tomte's `BuiltinTool` trait so the
 //! agent can invoke them like any other built-in tool.
 //!
 //! Tools are exposed under the namespaced name `mcp__<server>__<tool>` so
@@ -237,7 +237,7 @@ impl McpClient {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
             "clientInfo": {
-                "name": "opencli",
+                "name": "tomte",
                 "version": env!("CARGO_PKG_VERSION"),
             }
         });

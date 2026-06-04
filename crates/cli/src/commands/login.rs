@@ -1,7 +1,7 @@
 use anyhow::Result;
-use opencli_core::auth::{self, anthropic as anth_oauth, AuthMode};
-use opencli_core::provider::Provider;
 use std::io::{BufRead, IsTerminal, Write};
+use tomte_core::auth::{self, anthropic as anth_oauth, AuthMode};
+use tomte_core::provider::Provider;
 
 pub async fn run(api_key: bool, open_browser: bool, provider: Option<String>) -> Result<()> {
     if let Some(p) = provider.as_deref() {
@@ -37,7 +37,7 @@ async fn show_login_picker(open_browser: bool) -> Result<()> {
         return Ok(());
     }
     println!();
-    println!("  Sign in to opencli");
+    println!("  Sign in to tomte");
     println!("  ─────────────────────");
     println!("    [1] OpenAI — ChatGPT account (OAuth in browser)");
     println!("    [2] OpenAI — API key");
@@ -199,13 +199,13 @@ fn print_available_models() {
             catalog.provider
         );
         for m in catalog.models {
-            let win = opencli_core::agent::context_window_label(m);
+            let win = tomte_core::agent::context_window_label(m);
             println!("      · {m:<20} ({win} context)");
         }
     }
     println!();
     println!(
-        "  Set the active model with `opencli config --set-model <id>` or `/model <id>` in the TUI."
+        "  Set the active model with `tomte config --set-model <id>` or `/model <id>` in the TUI."
     );
 }
 
@@ -261,7 +261,7 @@ pub async fn status() -> Result<()> {
 }
 
 pub async fn logout() -> Result<()> {
-    let path = opencli_core::config::config_dir().join("auth.json");
+    let path = tomte_core::config::config_dir().join("auth.json");
     if path.exists() {
         std::fs::remove_file(&path)?;
         println!("✅  Credentials cleared.");

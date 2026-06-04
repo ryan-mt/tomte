@@ -141,7 +141,7 @@ pub struct SessionState {
     pub read_file_meta:
         std::collections::HashMap<std::path::PathBuf, (Option<std::time::SystemTime>, Option<u64>)>,
     /// Worktree created by this session via `enter_worktree`. Exit/remove tools
-    /// are scoped to this state so opencli never cleans up a user-created worktree.
+    /// are scoped to this state so tomte never cleans up a user-created worktree.
     pub worktree: Option<WorktreeState>,
 }
 

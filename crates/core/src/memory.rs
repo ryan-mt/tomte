@@ -12,8 +12,8 @@ use std::path::{Component, Path, PathBuf};
 /// Default combined memory body budget (matches Codex `project_doc_max_bytes`).
 pub const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024;
 
-pub const MEMORY_BLOCK_BEGIN: &str = "\n\n<!-- opencli-inherited-memory:start -->\n";
-pub const MEMORY_BLOCK_END: &str = "\n<!-- opencli-inherited-memory:end -->\n";
+pub const MEMORY_BLOCK_BEGIN: &str = "\n\n<!-- tomte-inherited-memory:start -->\n";
+pub const MEMORY_BLOCK_END: &str = "\n<!-- tomte-inherited-memory:end -->\n";
 
 const MEMORY_CANDIDATES: &[&str] = &["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"];
 

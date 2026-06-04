@@ -1,12 +1,12 @@
 use std::io::{Read, Write};
 
 use anyhow::Result;
-use opencli_core::agent::{Agent, AgentEvent};
-use opencli_core::client::LlmClient;
-use opencli_core::config;
-use opencli_core::tools::ApprovalMode;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use tomte_core::agent::{Agent, AgentEvent};
+use tomte_core::client::LlmClient;
+use tomte_core::config;
+use tomte_core::tools::ApprovalMode;
 
 mod render;
 use render::{render_text_event, TextEventOutcome};
@@ -118,7 +118,7 @@ pub async fn run(
     // Lifecycle hooks: SessionStart (best-effort), then UserPromptSubmit which
     // may BLOCK the prompt (exit 2) before the model ever sees it.
     agent.hooks.fire_session_start().await;
-    if let opencli_core::hooks::HookDecision::Block(reason) =
+    if let tomte_core::hooks::HookDecision::Block(reason) =
         agent.hooks.fire_user_prompt_submit(&prompt).await
     {
         eprintln!("prompt blocked by UserPromptSubmit hook: {reason}");

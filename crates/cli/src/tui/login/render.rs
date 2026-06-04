@@ -2,13 +2,13 @@
 //! body (mode picker, browser wait, ToS gate, code paste, API-key entry), and
 //! the footer. Pure draw code — all state lives in [`super::LoginScreen`].
 
-use opencli_core::auth::anthropic as anth;
-use opencli_core::provider::Provider;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use tomte_core::auth::anthropic as anth;
+use tomte_core::provider::Provider;
 
 use super::{LoginScreen, Option_, Stage};
 use crate::tui::input::TextInput;
@@ -79,7 +79,7 @@ fn render_logo(f: &mut Frame, area: Rect) {
 fn render_tagline(f: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from(Span::styled(
-            " opencli — a coding agent for your terminal",
+            " tomte — a coding agent for your terminal",
             Style::default()
                 .fg(Color::Rgb(240, 240, 240))
                 .add_modifier(Modifier::BOLD),
@@ -95,7 +95,7 @@ fn render_tagline(f: &mut Frame, area: Rect) {
 fn render_pick(f: &mut Frame, area: Rect, selected: Option_, err: Option<&str>) {
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        " Choose how to sign in to opencli",
+        " Choose how to sign in to tomte",
         Style::default().fg(Color::Rgb(240, 240, 240)),
     )));
     lines.push(Line::raw(""));
@@ -357,7 +357,7 @@ fn render_api_key(
 fn render_footer(f: &mut Frame, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            " opencli · Rust · MIT",
+            " tomte · Rust · MIT",
             Style::default().fg(Color::Rgb(170, 170, 170)),
         ))),
         area,

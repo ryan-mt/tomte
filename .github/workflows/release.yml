@@ -28,25 +28,25 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            asset: opencli-x86_64-unknown-linux-gnu
+            asset: tomte-x86_64-unknown-linux-gnu
             target: x86_64-unknown-linux-gnu
             exe: ""
-            archive: opencli-x86_64-unknown-linux-gnu.tar.gz
+            archive: tomte-x86_64-unknown-linux-gnu.tar.gz
           - os: macos-latest
-            asset: opencli-x86_64-apple-darwin
+            asset: tomte-x86_64-apple-darwin
             target: x86_64-apple-darwin
             exe: ""
-            archive: opencli-x86_64-apple-darwin.tar.gz
+            archive: tomte-x86_64-apple-darwin.tar.gz
           - os: macos-latest
-            asset: opencli-aarch64-apple-darwin
+            asset: tomte-aarch64-apple-darwin
             target: aarch64-apple-darwin
             exe: ""
-            archive: opencli-aarch64-apple-darwin.tar.gz
+            archive: tomte-aarch64-apple-darwin.tar.gz
           - os: windows-latest
-            asset: opencli-x86_64-pc-windows-msvc
+            asset: tomte-x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
             exe: ".exe"
-            archive: opencli-x86_64-pc-windows-msvc.zip
+            archive: tomte-x86_64-pc-windows-msvc.zip
 
     steps:
       - uses: actions/checkout@v6.0.2
@@ -55,14 +55,14 @@ jobs:
         with:
           key: release-${{ matrix.asset }}
       - run: rustup target add ${{ matrix.target }}
-      - run: cargo build --release --bin opencli --target ${{ matrix.target }}
+      - run: cargo build --release --bin tomte --target ${{ matrix.target }}
       - name: Package archive (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "dist/${{ matrix.asset }}"
-          cp "target/${{ matrix.target }}/release/opencli${{ matrix.exe }}" "dist/${{ matrix.asset }}/"
+          cp "target/${{ matrix.target }}/release/tomte${{ matrix.exe }}" "dist/${{ matrix.asset }}/"
           cp README.md CHANGELOG.md LICENSE "dist/${{ matrix.asset }}/"
           cd dist
           tar -czf "${{ matrix.archive }}" "${{ matrix.asset }}"
@@ -72,7 +72,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "dist/${{ matrix.asset }}" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/opencli${{ matrix.exe }}" "dist/${{ matrix.asset }}/"
+          Copy-Item "target/${{ matrix.target }}/release/tomte${{ matrix.exe }}" "dist/${{ matrix.asset }}/"
           Copy-Item README.md, CHANGELOG.md, LICENSE "dist/${{ matrix.asset }}/"
           Compress-Archive -Path "dist/${{ matrix.asset }}" -DestinationPath "dist/${{ matrix.archive }}" -Force
           $hash = (Get-FileHash -Algorithm SHA256 "dist/${{ matrix.archive }}").Hash.ToLower()

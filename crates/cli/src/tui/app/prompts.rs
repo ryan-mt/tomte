@@ -286,7 +286,7 @@ pub fn push_markdown_fenced(out: &mut String, content: &str, language: Option<&s
 
 pub fn render_blocks_as_markdown(blocks: &[Block]) -> String {
     let mut out = String::new();
-    out.push_str("# opencli conversation\n\n");
+    out.push_str("# tomte conversation\n\n");
     for b in blocks {
         match b {
             Block::Welcome => {}

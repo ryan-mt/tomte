@@ -1,7 +1,7 @@
 use super::*;
 
 fn write_project_config(cwd: &Path, body: &str) {
-    let dir = cwd.join(".opencli");
+    let dir = cwd.join(".tomte");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("config.json"), body).unwrap();
 }
@@ -91,7 +91,7 @@ fn unparseable_project_config_is_ignored() {
 
 #[test]
 fn migrate_legacy_model_name_maps_dead_ids_to_current() {
-    // Ids opencli once surfaced that don't resolve at the API map onto a
+    // Ids tomte once surfaced that don't resolve at the API map onto a
     // working current model.
     assert_eq!(migrate_legacy_model_name("gpt-5.1"), "gpt-5.5");
     assert_eq!(migrate_legacy_model_name("gpt-5.3"), "gpt-5.5");

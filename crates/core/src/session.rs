@@ -1,8 +1,8 @@
 //! Conversation session persistence.
 //!
 //! Each chat session is stored as a single JSON file under
-//! `~/.config/opencli/sessions/<cwd-slug>/<session-id>.json` so that
-//! `opencli resume` and `/resume` can rehydrate prior conversations.
+//! `~/.config/tomte/sessions/<cwd-slug>/<session-id>.json` so that
+//! `tomte resume` and `/resume` can rehydrate prior conversations.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

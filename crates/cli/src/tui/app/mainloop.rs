@@ -38,7 +38,7 @@ pub async fn main_loop(
             break;
         }
         // Open the resume picker once on first frame when launched via
-        // `opencli resume`. Guarded so re-entry (eg. after Esc) doesn't pop
+        // `tomte resume`. Guarded so re-entry (eg. after Esc) doesn't pop
         // the picker back open unexpectedly.
         if app.start_with_resume_picker && app.screen == Screen::Chat && app.overlay.is_none() {
             app.start_with_resume_picker = false;

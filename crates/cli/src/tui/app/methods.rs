@@ -240,7 +240,7 @@ impl App {
                 p
             }
             OverlayKind::ResumePicker => {
-                let metas = opencli_core::session::list(&self.cwd);
+                let metas = tomte_core::session::list(&self.cwd);
                 Picker::new("resume session", picker::sessions(&metas))
             }
             OverlayKind::LogoutPicker => {

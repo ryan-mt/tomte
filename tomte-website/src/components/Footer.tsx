@@ -10,7 +10,7 @@ export function Footer() {
           <div>
             <div className="flex items-center gap-1.5">
               <span className="font-display text-[26px] font-extrabold tracking-tight text-ink">
-                opencli
+                tomte
               </span>
               <span className="mb-[3px] inline-block h-[19px] w-[10px] bg-ink" aria-hidden="true" />
             </div>

@@ -40,7 +40,7 @@ impl Agent {
                 .with_verbosity(self.config.verbosity.clone());
             if wire_debug_enabled() {
                 eprintln!(
-                    "[opencli wire] → model={} reasoning={:?} verbosity={:?}",
+                    "[tomte wire] → model={} reasoning={:?} verbosity={:?}",
                     request.model, request.reasoning, request.text
                 );
             }

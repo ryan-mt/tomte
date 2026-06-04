@@ -6,8 +6,8 @@ mod todo_panel_tests {
         hidden_todos_summary, todo_label, todos_height_for_count, truncate_chars,
         visible_todo_indices, TODO_VISIBLE_ROWS,
     };
-    use opencli_core::tools::{TodoItem, TodoStatus};
     use std::collections::HashSet;
+    use tomte_core::tools::{TodoItem, TodoStatus};
 
     fn item(content: &str, status: TodoStatus) -> TodoItem {
         TodoItem {

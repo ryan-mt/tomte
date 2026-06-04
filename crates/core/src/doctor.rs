@@ -1,8 +1,8 @@
-//! Setup diagnostics for the `opencli doctor` subcommand and the `/doctor`
+//! Setup diagnostics for the `tomte doctor` subcommand and the `/doctor`
 //! slash command.
 //!
 //! [`diagnose`] inspects the environment — credentials, config, MCP servers,
-//! discovered skills/subagents/hooks, and the external binaries opencli shells
+//! discovered skills/subagents/hooks, and the external binaries tomte shells
 //! out to — and returns a structured [`Report`]. It is deliberately **read-only
 //! and side-effect-free**: it never mutates state, never writes files, and never
 //! spawns an MCP server (a health check must be fast and safe to run when
@@ -83,7 +83,7 @@ pub struct Section {
 }
 
 /// Tally of non-neutral checks, used for the summary line and the process exit
-/// code of `opencli doctor`.
+/// code of `tomte doctor`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Counts {
     pub ok: usize,
@@ -119,7 +119,7 @@ impl Report {
         c
     }
 
-    /// True if any check failed hard. `opencli doctor` exits non-zero on this so
+    /// True if any check failed hard. `tomte doctor` exits non-zero on this so
     /// it can gate a setup script or CI step.
     pub fn has_errors(&self) -> bool {
         self.counts().error > 0
@@ -154,7 +154,7 @@ impl Report {
 
 /// Run every check against the given working directory and collect the report.
 ///
-/// `cwd` scopes the project-local lookups — `.opencli/config.json`, and the
+/// `cwd` scopes the project-local lookups — `.tomte/config.json`, and the
 /// recursively-discovered skills/subagents — so the report reflects the
 /// directory the user is actually working in.
 pub fn diagnose(cwd: &Path) -> Report {
@@ -174,7 +174,7 @@ pub fn diagnose(cwd: &Path) -> Report {
 
 fn runtime_section() -> Section {
     Section {
-        title: "opencli".to_string(),
+        title: "tomte".to_string(),
         checks: vec![Check::ok(format!("version {}", env!("CARGO_PKG_VERSION")))],
     }
 }
@@ -183,7 +183,7 @@ fn auth_section() -> Section {
     let record = auth::load_auth().unwrap_or_default();
     let mode = auth::effective_mode_with_env(&record);
     let mut checks = vec![match mode {
-        AuthMode::None => Check::error("not signed in — run `opencli login`"),
+        AuthMode::None => Check::error("not signed in — run `tomte login`"),
         AuthMode::OpenaiApiKey => Check::ok("signed in with OpenAI API key"),
         AuthMode::OpenaiOauth => Check::ok("signed in with ChatGPT (OpenAI OAuth)"),
         AuthMode::AnthropicApiKey => Check::ok("signed in with Anthropic API key"),
@@ -332,7 +332,7 @@ fn model_routing_check(
         Check::ok(format!("{model} → {name} (credentials present)"))
     } else {
         Check::error(format!(
-            "{model} → {name}, but no {name} credentials are configured — run `opencli login`"
+            "{model} → {name}, but no {name} credentials are configured — run `tomte login`"
         ))
     }
 }
@@ -415,7 +415,7 @@ fn tools_section() -> Section {
     }
 }
 
-/// `#[cfg(unix)]` permission check: opencli writes `auth.json` as `0600`, so a
+/// `#[cfg(unix)]` permission check: tomte writes `auth.json` as `0600`, so a
 /// looser mode means the credential file is exposed and is worth flagging.
 #[cfg(unix)]
 fn auth_file_permission_check(path: &Path) -> Option<Check> {

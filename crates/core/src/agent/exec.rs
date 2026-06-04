@@ -372,7 +372,7 @@ pub(super) fn preflight_tool_call(
     let decision = project_permission_decision(perms, tool_name, args, is_read_only);
     if matches!(decision, crate::permissions::Decision::Deny) {
         return ToolPreflight::Block(format!(
-            "Error: `{tool_name}` is blocked by a deny rule in .opencli/permissions.json"
+            "Error: `{tool_name}` is blocked by a deny rule in .tomte/permissions.json"
         ));
     }
 
@@ -381,7 +381,7 @@ pub(super) fn preflight_tool_call(
     // case-variant on a case-insensitive FS) can't launder a denied target.
     if crate::permissions::deny_matches_resolved(perms, tool_name, args, cwd) {
         return ToolPreflight::Block(format!(
-            "Error: `{tool_name}` is blocked by a deny rule in .opencli/permissions.json (the path resolves to a denied target)"
+            "Error: `{tool_name}` is blocked by a deny rule in .tomte/permissions.json (the path resolves to a denied target)"
         ));
     }
 
@@ -404,7 +404,7 @@ pub(super) enum ApprovalOutcome {
 
 /// Decide a tool call's fate at the approval gate. Pure so it is unit-testable.
 ///
-/// In a non-interactive run (`opencli chat`/`run` without
+/// In a non-interactive run (`tomte chat`/`run` without
 /// `--dangerously-skip-permissions`) any side-effecting tool fails closed —
 /// even when a persisted `allow` rule matches. The allow store is populated by
 /// interactive "allow in this project" choices; honoring it with no human

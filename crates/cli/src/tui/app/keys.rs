@@ -25,7 +25,7 @@ pub async fn handle_key(
     if app.pending_approval.is_some() {
         // Three-option menu, navigable with Up/Down + Enter, with y/n/Esc kept
         // as shortcuts. 0 = allow once, 1 = allow in this project (persisted to
-        // .opencli/permissions.json), 2 = deny.
+        // .tomte/permissions.json), 2 = deny.
         const N_OPTS: usize = 3;
         match key.code {
             KeyCode::Up => {
@@ -63,8 +63,7 @@ pub async fn handle_key(
             if choice == 1 {
                 let args_val: serde_json::Value =
                     serde_json::from_str(&p.args_json).unwrap_or(serde_json::Value::Null);
-                match opencli_core::permissions::allow_in_project(&app.cwd, &p.tool_name, &args_val)
-                {
+                match tomte_core::permissions::allow_in_project(&app.cwd, &p.tool_name, &args_val) {
                     Ok(rule) => app
                         .blocks
                         .push(Block::System(format!("✓ allowed in this project: {rule}"))),

@@ -158,7 +158,7 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
     })
 }
 
-/// Convenience: synchronous-style wrapper used by the non-TUI `opencli login` CLI.
+/// Convenience: synchronous-style wrapper used by the non-TUI `tomte login` CLI.
 /// Prints the URL to stdout, waits for completion.
 pub async fn login_with_browser(open_browser: bool) -> Result<AuthRecord> {
     let pending = start_browser_login(open_browser).await?;

@@ -1,5 +1,5 @@
 //! Integration: verify hooks matcher dispatcher behaves as documented.
-use opencli_core::hooks::{glob_match, matches};
+use tomte_core::hooks::{glob_match, matches};
 
 #[test]
 fn matches_dispatch_table() {

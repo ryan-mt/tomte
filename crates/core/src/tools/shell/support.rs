@@ -119,7 +119,7 @@ where
             Ok(0) => break,
             Ok(n) => append_tail_capped(&mut out.bytes, &mut out.dropped_bytes, &buf[..n], cap),
             Err(e) => {
-                let msg = format!("\n[opencli: failed to read process output: {e}]");
+                let msg = format!("\n[tomte: failed to read process output: {e}]");
                 append_tail_capped(&mut out.bytes, &mut out.dropped_bytes, msg.as_bytes(), cap);
                 break;
             }

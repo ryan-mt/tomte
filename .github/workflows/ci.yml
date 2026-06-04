@@ -76,7 +76,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-build-${{ runner.os }}
-      - run: cargo build --release --bin opencli
+      - run: cargo build --release --bin tomte
 
   release-smoke:
     name: release smoke (linux)

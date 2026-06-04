@@ -1,7 +1,7 @@
 .PHONY: build package smoke install link link-dev unlink dev fmt check clean
 
 build:
-	cargo build --release --bin opencli
+	cargo build --release --bin tomte
 
 package:
 	@./scripts/package-release.sh
@@ -26,7 +26,7 @@ unlink:
 
 # Run the app (TUI) in dev mode — rebuilds on each invocation.
 dev:
-	cargo run --bin opencli
+	cargo run --bin tomte
 
 fmt:
 	cargo fmt --all

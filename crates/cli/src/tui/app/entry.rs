@@ -11,7 +11,7 @@ pub async fn run_plan_mode_required() -> Result<()> {
 }
 
 /// Same as [`run`] but opens the resume-session picker on first frame so
-/// `opencli resume` lands the user directly on the session list.
+/// `tomte resume` lands the user directly on the session list.
 pub async fn run_resume() -> Result<()> {
     run_with(true, false).await
 }
@@ -39,7 +39,7 @@ pub async fn run_with(start_with_resume_picker: bool, plan_mode_required: bool) 
     let mut terminal = setup_terminal()?;
     // SessionStart hook (best-effort, once per interactive session). Spawned so a
     // slow hook can't delay the first frame; its output/exit code is ignored.
-    tokio::spawn(async { opencli_core::hooks::load().fire_session_start().await });
+    tokio::spawn(async { tomte_core::hooks::load().fire_session_start().await });
     let res = main_loop(&mut terminal, start_with_resume_picker, plan_mode_required).await;
     restore_terminal(&mut terminal)?;
     res

@@ -6,12 +6,12 @@
 //! other test's view of the sessions directory. We collapse the coverage into
 //! a single function so the env override is set once and used serially.
 
-use opencli_core::openai::{InputItem, MessageContent};
-use opencli_core::session::{
+use std::path::{Path, PathBuf};
+use tomte_core::openai::{InputItem, MessageContent};
+use tomte_core::session::{
     self, ModelUsage, SessionGoalSnapshot, SessionMeta, SessionRecord, SessionSnapshot,
 };
-use opencli_core::tools::{TodoItem, TodoStatus};
-use std::path::{Path, PathBuf};
+use tomte_core::tools::{TodoItem, TodoStatus};
 
 fn sample_history(prompt: &str) -> Vec<InputItem> {
     vec![
@@ -49,8 +49,8 @@ fn session_save_load_list_and_missing_id() {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::env::set_var("XDG_CONFIG_HOME", tmp.path());
 
-    let cwd_a = PathBuf::from("/tmp/opencli-test-proj-a");
-    let cwd_b = PathBuf::from("/tmp/opencli-test-proj-b");
+    let cwd_a = PathBuf::from("/tmp/tomte-test-proj-a");
+    let cwd_b = PathBuf::from("/tmp/tomte-test-proj-b");
 
     // --- save/load roundtrip ---------------------------------------------
     let mut r = record(&cwd_a, "alpha", 1_000);

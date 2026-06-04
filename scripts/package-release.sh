@@ -8,7 +8,7 @@ version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
 rustc_version="$(rustc -vV)"
 host_target="$(printf '%s\n' "$rustc_version" | awk '/^host: / { print $2; exit }')"
 target="${TARGET:-$host_target}"
-asset="opencli-${target}"
+asset="tomte-${target}"
 archive="dist/${asset}.tar.gz"
 exe_suffix=""
 
@@ -16,12 +16,12 @@ if [[ "$target" == *windows* ]]; then
   exe_suffix=".exe"
 fi
 
-cargo_args=(build --release --bin opencli)
+cargo_args=(build --release --bin tomte)
 if [[ -n "${TARGET:-}" ]]; then
   cargo_args+=(--target "$TARGET")
-  binary="target/${target}/release/opencli${exe_suffix}"
+  binary="target/${target}/release/tomte${exe_suffix}"
 else
-  binary="target/release/opencli${exe_suffix}"
+  binary="target/release/tomte${exe_suffix}"
 fi
 
 cargo "${cargo_args[@]}"
@@ -39,6 +39,6 @@ else
   shasum -a 256 "$archive" > "$archive.sha256"
 fi
 
-printf 'Packaged opencli %s for %s\n' "$version" "$target"
+printf 'Packaged tomte %s for %s\n' "$version" "$target"
 printf '  %s\n' "$archive"
 printf '  %s\n' "$archive.sha256"

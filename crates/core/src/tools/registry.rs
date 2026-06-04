@@ -226,10 +226,10 @@ impl Registry {
 }
 
 /// Canonicalise a tool name from a sub-agent's `tools:` whitelist to an
-/// opencli built-in name. Accepts both opencli's snake_case names and Claude
+/// tomte built-in name. Accepts both tomte's snake_case names and Claude
 /// Code's PascalCase names (so a `~/.claude/agents/*.md` file with
 /// `tools: ["Read", "Grep", "Bash"]` resolves correctly). Returns `None` for
-/// names with no opencli equivalent. `Task` maps to `dispatch_agent`, which
+/// names with no tomte equivalent. `Task` maps to `dispatch_agent`, which
 /// the caller always strips.
 fn canonical_tool_name(name: &str) -> Option<&'static str> {
     let lowered = name.trim().to_ascii_lowercase();

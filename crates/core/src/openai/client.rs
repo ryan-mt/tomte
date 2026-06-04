@@ -105,7 +105,7 @@ fn random_id() -> String {
 impl OpenAiClient {
     pub fn new(credential: Credential) -> Result<Self> {
         let http = reqwest::Client::builder()
-            .user_agent(concat!("opencli/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("tomte/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(CONNECT_TIMEOUT)
             .build()?;
         Ok(Self {
@@ -143,7 +143,7 @@ impl OpenAiClient {
         if self.credential.is_chatgpt_subscription() {
             h.insert("OpenAI-Beta", HeaderValue::from_static("responses=v1"));
             h.insert("OAI-Product-Sku", HeaderValue::from_static("codex"));
-            h.insert("originator", HeaderValue::from_static("opencli"));
+            h.insert("originator", HeaderValue::from_static("tomte"));
             h.insert("session_id", HeaderValue::from_str(&self.session_id)?);
         }
         Ok(h)

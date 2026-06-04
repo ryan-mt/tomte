@@ -150,8 +150,8 @@ pub(super) fn canonical_history_arguments(tool_name: &str, args: &Value) -> Opti
                 &["run_in_background", "runInBackground"],
             );
             // Do not treat Claude's `dangerouslyDisableSandbox` as permission
-            // to bypass opencli's destructive-command guard. Only the explicit
-            // opencli field is preserved.
+            // to bypass tomte's destructive-command guard. Only the explicit
+            // tomte field is preserved.
             insert_bool_or_null(
                 &mut out,
                 obj,

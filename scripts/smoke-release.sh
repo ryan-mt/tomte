@@ -4,8 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-bin_input="${OPENCLI_BIN:-target/release/opencli}"
-timeout_cmd="${OPENCLI_SMOKE_TIMEOUT:-180s}"
+bin_input="${TOMTE_BIN:-target/release/tomte}"
+timeout_cmd="${TOMTE_SMOKE_TIMEOUT:-180s}"
 
 fail() {
   printf 'smoke failed: %s\n' "$*" >&2
@@ -45,17 +45,17 @@ case "$bin_input" in
   */*) bin="$repo_root/$bin_input" ;;
   *)
     bin="$(command -v "$bin_input" || true)"
-    [[ -n "$bin" ]] || fail "OPENCLI_BIN not found on PATH: $bin_input"
+    [[ -n "$bin" ]] || fail "TOMTE_BIN not found on PATH: $bin_input"
     ;;
 esac
 
 if [[ ! -x "$bin" ]]; then
-  cargo build --release --bin opencli
+  cargo build --release --bin tomte
 fi
 
 actual_version="$("$bin" --version)"
-contains "$actual_version" "opencli $version" || {
-  fail "expected opencli $version, got: $actual_version"
+contains "$actual_version" "tomte $version" || {
+  fail "expected tomte $version, got: $actual_version"
 }
 printf 'ok version: %s\n' "$actual_version"
 
@@ -76,8 +76,8 @@ contains "$anthropic_cfg" '"reasoning_effort": "xhigh"' || fail "Anthropic max s
 printf 'ok config: Anthropic max persistence downgraded\n'
 
 auth_home="$tmp_root/auth-preservation"
-mkdir -p "$auth_home/opencli"
-printf '%s\n' '{"mode":"openai_oauth","tokens":{"access_token":"oauth-token","refresh_token":"refresh-token"}}' > "$auth_home/opencli/auth.json"
+mkdir -p "$auth_home/tomte"
+printf '%s\n' '{"mode":"openai_oauth","tokens":{"access_token":"oauth-token","refresh_token":"refresh-token"}}' > "$auth_home/tomte/auth.json"
 printf 'sk-test\n' | XDG_CONFIG_HOME="$auth_home" "$bin" login --api-key --provider openai >/dev/null 2>/dev/null
 auth_status="$(XDG_CONFIG_HOME="$auth_home" "$bin" status)"
 contains "$auth_status" 'OpenAI OAuth token is also stored' || fail "OpenAI OAuth was not preserved after API key login"
@@ -90,7 +90,7 @@ if ! package_output="$("$repo_root/scripts/package-release.sh" 2>&1)"; then
 fi
 rustc_version="$(rustc -vV)"
 host_target="$(printf '%s\n' "$rustc_version" | awk '/^host: / { print $2; exit }')"
-archive="dist/opencli-${host_target}.tar.gz"
+archive="dist/tomte-${host_target}.tar.gz"
 [[ -f "$archive" ]] || fail "package archive missing: $archive"
 if command -v sha256sum >/dev/null 2>&1; then
   sha256sum -c "$archive.sha256" >/dev/null
@@ -100,10 +100,10 @@ fi
 extract_dir="$tmp_root/package"
 mkdir -p "$extract_dir"
 tar -xzf "$archive" -C "$extract_dir"
-packaged_bin="$(find "$extract_dir" -type f -name opencli -perm -111 -print -quit)"
-[[ -n "$packaged_bin" ]] || fail "packaged opencli binary missing"
+packaged_bin="$(find "$extract_dir" -type f -name tomte -perm -111 -print -quit)"
+[[ -n "$packaged_bin" ]] || fail "packaged tomte binary missing"
 packaged_version="$("$packaged_bin" --version)"
-contains "$packaged_version" "opencli $version" || fail "packaged binary version mismatch: $packaged_version"
+contains "$packaged_version" "tomte $version" || fail "packaged binary version mismatch: $packaged_version"
 printf 'ok package: archive checksum and binary version verified\n'
 
 run_live_json_chat() {
@@ -134,15 +134,15 @@ run_live_tool_chat() {
   printf 'ok live: %s\n' "$label"
 }
 
-if [[ "${OPENCLI_LIVE_SMOKE:-}" == "1" ]]; then
-  openai_model="${OPENCLI_SMOKE_OPENAI_MODEL:-openai/gpt-5.5}"
-  anthropic_model="${OPENCLI_SMOKE_ANTHROPIC_MODEL:-anthropic/claude-haiku-4-5}"
-  run_live_json_chat "OpenAI JSON chat" "$openai_model" "OPENCLI_SMOKE_OPENAI_OK" "Reply exactly OPENCLI_SMOKE_OPENAI_OK and nothing else."
-  run_live_tool_chat "OpenAI read_file tool" "$openai_model" "OPENCLI_SMOKE_OPENAI_TOOL_OK"
-  run_live_json_chat "Anthropic JSON chat" "$anthropic_model" "OPENCLI_SMOKE_ANTHROPIC_OK" "Reply exactly OPENCLI_SMOKE_ANTHROPIC_OK and nothing else."
-  run_live_tool_chat "Anthropic read_file tool" "$anthropic_model" "OPENCLI_SMOKE_ANTHROPIC_TOOL_OK"
+if [[ "${TOMTE_LIVE_SMOKE:-}" == "1" ]]; then
+  openai_model="${TOMTE_SMOKE_OPENAI_MODEL:-openai/gpt-5.5}"
+  anthropic_model="${TOMTE_SMOKE_ANTHROPIC_MODEL:-anthropic/claude-haiku-4-5}"
+  run_live_json_chat "OpenAI JSON chat" "$openai_model" "TOMTE_SMOKE_OPENAI_OK" "Reply exactly TOMTE_SMOKE_OPENAI_OK and nothing else."
+  run_live_tool_chat "OpenAI read_file tool" "$openai_model" "TOMTE_SMOKE_OPENAI_TOOL_OK"
+  run_live_json_chat "Anthropic JSON chat" "$anthropic_model" "TOMTE_SMOKE_ANTHROPIC_OK" "Reply exactly TOMTE_SMOKE_ANTHROPIC_OK and nothing else."
+  run_live_tool_chat "Anthropic read_file tool" "$anthropic_model" "TOMTE_SMOKE_ANTHROPIC_TOOL_OK"
 else
-  printf 'skip live provider smoke: set OPENCLI_LIVE_SMOKE=1 to enable\n'
+  printf 'skip live provider smoke: set TOMTE_LIVE_SMOKE=1 to enable\n'
 fi
 
 printf 'smoke ok\n'

@@ -1,4 +1,4 @@
-//! Skills: curated, reusable playbooks that opencli can load on demand.
+//! Skills: curated, reusable playbooks that tomte can load on demand.
 //!
 //! Model — progressive disclosure, exactly like Claude Code:
 //!   1. At session start we *discover* every installed skill across all
@@ -11,10 +11,10 @@
 //!      in context speculatively.
 //!
 //! Sources (most-specific first; first occurrence of a `name` wins):
-//!   - `<cwd>/.opencli/skills/`         project, opencli-native
+//!   - `<cwd>/.tomte/skills/`         project, tomte-native
 //!   - `<cwd>/.claude/skills/`          project, Claude Code
 //!   - `<cwd>/.codex/skills/`           project, Codex
-//!   - `~/.config/opencli/skills/`      opencli global
+//!   - `~/.config/tomte/skills/`      tomte global
 //!   - `~/.claude/skills/` + plugins    Claude Code global
 //!   - `$CODEX_HOME/skills` or `~/.codex/skills` + plugins
 //!
@@ -31,7 +31,7 @@
 //! <body — returned by the `skill` tool when the model loads it>
 //! ```
 //!
-//! `triggers:` (comma-separated) is an optional opencli-native extension kept
+//! `triggers:` (comma-separated) is an optional tomte-native extension kept
 //! for backward compatibility; the manifest+tool model does not require it.
 
 use std::collections::BTreeSet;
@@ -82,12 +82,12 @@ pub const MANIFEST_MAX: usize = 600;
 const MAX_SKILL_BYTES: u64 = 1024 * 1024;
 
 /// Ordered skill root directories, most-specific first. The first directory
-/// that defines a given skill `name` wins, so a project or opencli-native
+/// that defines a given skill `name` wins, so a project or tomte-native
 /// skill can shadow a global one. Includes the skill libraries of other
-/// agents (Claude Code, Codex) so opencli can use them directly.
+/// agents (Claude Code, Codex) so tomte can use them directly.
 pub fn skill_roots(cwd: &Path) -> Vec<PathBuf> {
     let mut roots = vec![
-        cwd.join(".opencli").join("skills"),
+        cwd.join(".tomte").join("skills"),
         cwd.join(".claude").join("skills"),
         cwd.join(".codex").join("skills"),
         skills_dir(),

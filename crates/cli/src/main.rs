@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "opencli",
+    name = "tomte",
     version,
     about = "Terminal coding agent in Rust (OpenAI Responses + Anthropic Messages)"
 )]
@@ -36,7 +36,7 @@ enum Command {
     /// Show authentication status
     Status,
     /// Diagnose your setup — auth, config, model routing, MCP servers, and the
-    /// external tools opencli depends on. Exits non-zero if any check fails.
+    /// external tools tomte depends on. Exits non-zero if any check fails.
     /// Runs headless (no TUI), so it works even when startup is broken.
     Doctor,
     /// Sign out and remove stored credentials
@@ -93,16 +93,16 @@ fn init_tracing(stderr_logs: bool) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,opencli=info"));
-    let config_root = opencli_core::config::config_dir();
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,tomte=info"));
+    let config_root = tomte_core::config::config_dir();
     let log_dir = config_root.join("logs");
     // Harden the config tree to owner-only (0o700) at startup — this also covers
     // users who only use env-var auth and never hit the secure-dir path
     // elsewhere — then create the logs subdir the same way.
-    let _ = opencli_core::config::create_dir_secure(&config_root);
-    let _ = opencli_core::config::create_dir_secure(&log_dir);
+    let _ = tomte_core::config::create_dir_secure(&config_root);
+    let _ = tomte_core::config::create_dir_secure(&log_dir);
     let log_path = log_dir.join(format!(
-        "opencli-{}.log",
+        "tomte-{}.log",
         chrono::Utc::now().format("%Y-%m-%d")
     ));
     let mut log_opts = std::fs::OpenOptions::new();
@@ -146,7 +146,7 @@ fn main() -> Result<()> {
     // success. A normal launch returns immediately. This MUST run before the async
     // runtime starts: the helper restricts itself with Landlock/seccomp and execs,
     // which is only sound while the process is still single-threaded.
-    opencli_core::tools::shell::sandbox::maybe_exec_helper();
+    tomte_core::tools::shell::sandbox::maybe_exec_helper();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -156,7 +156,7 @@ fn main() -> Result<()> {
 async fn async_main() -> Result<()> {
     let cli = Cli::parse();
 
-    // `opencli` and `opencli resume` launch the full-screen TUI, which owns the
+    // `tomte` and `tomte resume` launch the full-screen TUI, which owns the
     // terminal. JSON chat output is also machine-readable, so logs must not share
     // stderr with script consumers there either.
     let tui_mode = matches!(cli.command, None | Some(Command::Resume));
@@ -214,14 +214,9 @@ mod tests {
 
     #[test]
     fn hidden_plan_mode_required_flag_parses_before_subcommand() {
-        let cli = Cli::try_parse_from([
-            "opencli",
-            "--plan-mode-required",
-            "chat",
-            "inspect",
-            "first",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["tomte", "--plan-mode-required", "chat", "inspect", "first"])
+                .unwrap();
 
         assert!(cli.plan_mode_required);
         match cli.command {
@@ -235,7 +230,7 @@ mod tests {
     #[test]
     fn hidden_plan_mode_required_flag_parses_after_subcommand() {
         let cli =
-            Cli::try_parse_from(["opencli", "chat", "--plan-mode-required", "inspect"]).unwrap();
+            Cli::try_parse_from(["tomte", "chat", "--plan-mode-required", "inspect"]).unwrap();
 
         assert!(cli.plan_mode_required);
     }
@@ -243,7 +238,7 @@ mod tests {
     #[test]
     fn run_alias_parses_as_chat_with_cwd_and_prompt_file() {
         let cli = Cli::try_parse_from([
-            "opencli",
+            "tomte",
             "run",
             "--cwd",
             "/tmp/project",
@@ -264,7 +259,7 @@ mod tests {
 
     #[test]
     fn dangerously_skip_permissions_defaults_off_and_parses_when_set() {
-        let default_cli = Cli::try_parse_from(["opencli", "chat", "hi"]).unwrap();
+        let default_cli = Cli::try_parse_from(["tomte", "chat", "hi"]).unwrap();
         match default_cli.command {
             Some(Command::Chat {
                 dangerously_skip_permissions,
@@ -277,7 +272,7 @@ mod tests {
         }
 
         let opt_in = Cli::try_parse_from([
-            "opencli",
+            "tomte",
             "run",
             "--dangerously-skip-permissions",
             "--cwd",
@@ -296,17 +291,15 @@ mod tests {
 
     #[test]
     fn json_chat_output_disables_stderr_tracing() {
-        let cli =
-            Cli::try_parse_from(["opencli", "chat", "--output-format", "json", "hi"]).unwrap();
+        let cli = Cli::try_parse_from(["tomte", "chat", "--output-format", "json", "hi"]).unwrap();
         assert!(command_uses_json_output(&cli.command));
 
         let stream_cli =
-            Cli::try_parse_from(["opencli", "chat", "--output-format", "stream-json", "hi"])
-                .unwrap();
+            Cli::try_parse_from(["tomte", "chat", "--output-format", "stream-json", "hi"]).unwrap();
         assert!(command_uses_json_output(&stream_cli.command));
 
         let text_cli =
-            Cli::try_parse_from(["opencli", "chat", "--output-format", "text", "hi"]).unwrap();
+            Cli::try_parse_from(["tomte", "chat", "--output-format", "text", "hi"]).unwrap();
         assert!(!command_uses_json_output(&text_cli.command));
     }
 }

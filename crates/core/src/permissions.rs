@@ -1,6 +1,6 @@
 //! Per-project tool-permission rules, mirroring Claude Code's `permissions`.
 //! Two sources are merged (see [`load`]): the in-repo
-//! `<cwd>/.opencli/permissions.json` is honored for `deny` ONLY — a cloned repo
+//! `<cwd>/.tomte/permissions.json` is honored for `deny` ONLY — a cloned repo
 //! may *tighten* what the agent can do but must never silently *grant* it —
 //! while the user's own "allow in this project" choices persist in an
 //! owner-only user-level store outside the repo (keyed by project path), so they
@@ -53,10 +53,10 @@ pub enum Decision {
     Ask,
 }
 
-/// `<cwd>/.opencli/permissions.json` — the in-repo project file. Honored for
+/// `<cwd>/.tomte/permissions.json` — the in-repo project file. Honored for
 /// `deny` only (see [`load`]); `allow` lives in the user-level store.
 pub fn permissions_path(cwd: &Path) -> PathBuf {
-    cwd.join(".opencli").join("permissions.json")
+    cwd.join(".tomte").join("permissions.json")
 }
 
 /// Load the effective rules for `cwd`: the repo file's `deny` plus the
@@ -199,7 +199,7 @@ pub fn deny_matches_resolved(
 
 /// Persist an "allow in this project" grant to the user-level store (outside the
 /// repo, under the owner-only config dir, keyed by project path). The in-repo
-/// `.opencli/permissions.json` is intentionally NOT used for `allow` — a cloned
+/// `.tomte/permissions.json` is intentionally NOT used for `allow` — a cloned
 /// repo could otherwise pre-grant silent execution — only for `deny`. Returns
 /// the rule that was recorded so the caller can report it.
 pub fn allow_in_project(cwd: &Path, tool_name: &str, args: &Value) -> io::Result<String> {

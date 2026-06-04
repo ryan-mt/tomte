@@ -302,14 +302,14 @@ fn history_tool_arguments_canonicalize_glob_and_web_scalars() {
     let web_raw = history_tool_arguments(
         "web_search",
         &json!({
-            "q": "opencli",
+            "q": "tomte",
             "limit": "7",
             "allowed_domains": "example.com, docs.rs",
             "blocked_domains": ""
         }),
     );
     let web: Value = serde_json::from_str(&web_raw).unwrap();
-    assert_eq!(web["query"], "opencli");
+    assert_eq!(web["query"], "tomte");
     assert_eq!(web["max_results"], 7);
     assert_eq!(web["blocked_domains"], Value::Null);
     assert_eq!(web["allowed_domains"][0], "example.com");

@@ -8,11 +8,11 @@ use serde::{Deserialize, Serialize};
 mod sandbox;
 pub use sandbox::SandboxConfig;
 
-const CONFIG_DIR_NAME: &str = "opencli";
+const CONFIG_DIR_NAME: &str = "tomte";
 static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 // `ultracode` is Claude Code's top effort-menu entry. Per the Anthropic docs it
 // is not a distinct API effort level — it pairs `xhigh` thinking with standing
-// permission to launch multi-agent workflows. opencli accepts it as a selectable
+// permission to launch multi-agent workflows. tomte accepts it as a selectable
 // effort and maps it onto `xhigh` on the wire (see translate.rs / openai client).
 pub const VALID_REASONING_EFFORTS: &[&str] = &[
     "none",
@@ -81,7 +81,7 @@ pub struct ProviderConfig {
     /// Name of an environment variable to read the API key from (checked first).
     #[serde(default)]
     pub api_key_env: Option<String>,
-    /// True input context window (in tokens) of this endpoint's model. opencli
+    /// True input context window (in tokens) of this endpoint's model. tomte
     /// cannot probe a custom OpenAI-compatible provider, so the catalog's
     /// guess-by-model-name is usually wrong (it may claim 1M for a 128K model),
     /// which makes auto-compaction fire too late and the provider reject the
@@ -129,7 +129,7 @@ impl Config {
     /// routed through a configured provider (`<id>/<model>` whose `<id>` is in
     /// [`providers`](Config::providers)) takes that provider's declared
     /// `context_limit`, or [`DEFAULT_PROVIDER_CONTEXT_LIMIT`] when unset, because
-    /// opencli can't infer a custom endpoint's real window from the model name.
+    /// tomte can't infer a custom endpoint's real window from the model name.
     /// Built-in OpenAI/Anthropic models use the catalog value.
     pub fn effective_context_limit(&self) -> u64 {
         if let Some((prefix, _)) = self.model.split_once('/') {
@@ -157,7 +157,7 @@ fn default_permission_mode() -> String {
     "default".to_string()
 }
 
-/// Map model ids that opencli once surfaced but that don't resolve at the
+/// Map model ids that tomte once surfaced but that don't resolve at the
 /// OpenAI API onto the closest current model, so a returning user keeps a
 /// working model after a catalog change. Idempotent.
 ///
@@ -262,7 +262,7 @@ pub fn load() -> Config {
     };
     // Normalise the configured model: accept an explicit built-in
     // `provider/model` spec, preserve custom provider specs, then auto-upgrade
-    // legacy placeholder names from earlier opencli builds.
+    // legacy placeholder names from earlier tomte builds.
     let normalized = normalize_model_name(&cfg.model);
     if normalized != cfg.model {
         tracing::info!(
@@ -275,12 +275,12 @@ pub fn load() -> Config {
     cfg
 }
 
-/// `<cwd>/.opencli/config.json` — the optional project-local config overlay.
+/// `<cwd>/.tomte/config.json` — the optional project-local config overlay.
 pub fn project_config_file(cwd: &Path) -> PathBuf {
-    cwd.join(".opencli").join("config.json")
+    cwd.join(".tomte").join("config.json")
 }
 
-/// Top-level keys a project config may NOT override. A project `.opencli/`
+/// Top-level keys a project config may NOT override. A project `.tomte/`
 /// ships in cloned repos, so letting one set these would let an untrusted repo
 /// disable approval prompts, auto-approve writes, or redirect the model to an
 /// arbitrary endpoint (leaking prompts / API keys). They stay global-only;
@@ -292,7 +292,7 @@ const PROJECT_PROTECTED_KEYS: &[&str] = &[
     "providers",
 ];
 
-/// Safe, behavioral fields a project `.opencli/config.json` may override on top
+/// Safe, behavioral fields a project `.tomte/config.json` may override on top
 /// of the global config. All optional; unknown keys (including the protected
 /// ones) are dropped by serde and never applied here.
 #[derive(Debug, Default, Deserialize)]
@@ -309,7 +309,7 @@ struct ProjectOverlay {
     fallback_models: Option<Vec<String>>,
 }
 
-/// Load the global config, then overlay a project-local `.opencli/config.json`
+/// Load the global config, then overlay a project-local `.tomte/config.json`
 /// from `cwd` if present. Only safe behavioral fields are overlaid (see
 /// [`PROJECT_PROTECTED_KEYS`]); a missing, oversized, or unparseable project
 /// file is ignored and the global config stands.

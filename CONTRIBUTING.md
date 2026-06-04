@@ -1,6 +1,6 @@
-# Contributing to opencli
+# Contributing to tomte
 
-Thanks for wanting to make `opencli` better. It's a young project (beta line
+Thanks for wanting to make `tomte` better. It's a young project (beta line
 `0.0.1-beta.*`) and patches, bug reports, and ideas are all welcome.
 
 This guide is short on purpose. The golden rule: **make the change you'd want to
@@ -24,10 +24,10 @@ You'll need:
 - **`ripgrep`** — recommended; it backs the `grep` tool and the smoke test.
 
 ```bash
-git clone https://github.com/ryan-mt/opencli && cd opencli
-make link-dev      # dev mode: `opencli` re-runs `cargo run` on each call
+git clone https://github.com/ryan-mt/tomte && cd tomte
+make link-dev      # dev mode: `tomte` re-runs `cargo run` on each call
 # ...or...
-make install       # build --release and link to ~/.local/bin/opencli
+make install       # build --release and link to ~/.local/bin/tomte
 ```
 
 Run it while you work:
@@ -93,19 +93,19 @@ Small, well-described PRs get reviewed fastest.
 
 ## Reporting bugs & requesting features
 
-Open an [issue](https://github.com/ryan-mt/opencli/issues). For a bug, the most
+Open an [issue](https://github.com/ryan-mt/tomte/issues). For a bug, the most
 useful report includes:
 
 - what you ran (the command or the prompt) and the model/provider in use,
 - what you expected vs. what happened,
-- your OS and `opencli --version`,
+- your OS and `tomte --version`,
 - any error output (scrub secrets first).
 
 ## Reporting a security issue
 
 Please **don't** open a public issue for a vulnerability. Report it privately
 through GitHub Security Advisories
-([Security → Report a vulnerability](https://github.com/ryan-mt/opencli/security/advisories/new))
+([Security → Report a vulnerability](https://github.com/ryan-mt/tomte/security/advisories/new))
 so it can be fixed before disclosure.
 
 `run_shell` executes directly on your machine with no sandbox yet, so the agent's

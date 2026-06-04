@@ -1539,67 +1539,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "opencli"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "arboard",
- "chrono",
- "clap",
- "crossterm",
- "dirs",
- "futures",
- "futures-util",
- "image",
- "opencli-core",
- "rand 0.8.6",
- "ratatui",
- "serde",
- "serde_json",
- "syntect",
- "tempfile",
- "textwrap",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "unicode-width 0.2.0",
- "url",
-]
-
-[[package]]
-name = "opencli-core"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64",
- "bytes",
- "chrono",
- "dirs",
- "eventsource-stream",
- "futures",
- "futures-util",
- "landlock",
- "libc",
- "once_cell",
- "rand 0.8.6",
- "regex",
- "reqwest",
- "seccompiler",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "url",
- "urlencoding",
- "webbrowser",
-]
-
-[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2611,6 +2550,67 @@ dependencies = [
  "futures-sink",
  "pin-project-lite",
  "tokio",
+]
+
+[[package]]
+name = "tomte"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dirs",
+ "futures",
+ "futures-util",
+ "image",
+ "rand 0.8.6",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "syntect",
+ "tempfile",
+ "textwrap",
+ "tokio",
+ "tomte-core",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-width 0.2.0",
+ "url",
+]
+
+[[package]]
+name = "tomte-core"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "bytes",
+ "chrono",
+ "dirs",
+ "eventsource-stream",
+ "futures",
+ "futures-util",
+ "landlock",
+ "libc",
+ "once_cell",
+ "rand 0.8.6",
+ "regex",
+ "reqwest",
+ "seccompiler",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "url",
+ "urlencoding",
+ "webbrowser",
 ]
 
 [[package]]

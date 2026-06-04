@@ -13,8 +13,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use opencli_core::agent::Agent;
 use tokio::sync::mpsc;
+use tomte_core::agent::Agent;
 
 use super::app::{App, Block};
 use super::picker;
@@ -56,7 +56,7 @@ pub(crate) fn handle_bang_shell(app: &mut App, bang_tx: &mpsc::Sender<BangResult
         return;
     }
     if !force {
-        if let Some(reason) = opencli_core::tools::shell::classify_danger(cmd) {
+        if let Some(reason) = tomte_core::tools::shell::classify_danger(cmd) {
             app.blocks.push(Block::System(format!(
                 "⚠ refused: {reason}. Re-run as `!!{cmd}` to force."
             )));

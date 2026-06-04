@@ -1,4 +1,4 @@
-//! Lifecycle hooks loaded from `~/.config/opencli/settings.json`.
+//! Lifecycle hooks loaded from `~/.config/tomte/settings.json`.
 //!
 //! Supported events:
 //!   - **PreToolUse**: before a tool runs. Exit 2 to block; stdout becomes
@@ -437,7 +437,7 @@ impl CappedOutput {
         let mut out = String::from_utf8_lossy(&self.bytes).to_string();
         if self.omitted > 0 {
             out.push_str(&format!(
-                "\n[opencli truncated hook {label}: omitted {} byte(s)]",
+                "\n[tomte truncated hook {label}: omitted {} byte(s)]",
                 self.omitted
             ));
         }

@@ -52,7 +52,7 @@ pub async fn handle_slash_3(app: &mut App, head: &str, arg: &str) {
         }
         "about" => {
             app.blocks.push(Block::System(format!(
-                "opencli v{}\n\
+                "tomte v{}\n\
                  model:  {}\n\
                  effort: {}\n\
                  build:  {}",
@@ -68,11 +68,11 @@ pub async fn handle_slash_3(app: &mut App, head: &str, arg: &str) {
         }
         "quit" | "exit" => app.should_exit = true,
         "agents" => {
-            let defs = opencli_core::subagent::load_all(&app.cwd);
+            let defs = tomte_core::subagent::load_all(&app.cwd);
             if defs.is_empty() {
                 app.blocks.push(Block::System(format!(
                     "No subagents installed. Create one at {}/agents/<name>.md, or install Claude/Codex agents under ~/.claude/agents or ~/.codex/agents.",
-                    opencli_core::config::config_dir().display()
+                    tomte_core::config::config_dir().display()
                 )));
             } else {
                 let mut out = String::from(
@@ -99,11 +99,11 @@ Invoke from the model via dispatch_agent with subagent_type set to the name.",
             }
         }
         "skills" => {
-            let skills = opencli_core::skill::discover(&app.cwd);
+            let skills = tomte_core::skill::discover(&app.cwd);
             if skills.is_empty() {
                 app.blocks.push(Block::System(format!(
                     "No skills installed. Create one at {}/skills/<name>/SKILL.md, or install Claude Code/Codex skills under ~/.claude/skills, ~/.codex/skills, or their plugin directories.",
-                    opencli_core::config::config_dir().display()
+                    tomte_core::config::config_dir().display()
                 )));
             } else {
                 let mut out = format!("Available skills ({}):\n", skills.len());
@@ -117,11 +117,11 @@ Invoke from the model via dispatch_agent with subagent_type set to the name.",
             }
         }
         "commands" => {
-            let cmds = opencli_core::command::load_all(&app.cwd);
+            let cmds = tomte_core::command::load_all(&app.cwd);
             if cmds.is_empty() {
                 app.blocks.push(Block::System(format!(
-                    "No custom commands installed. Create one at {}/commands/<name>.md or {}/.opencli/commands/<name>.md",
-                    opencli_core::config::config_dir().display(),
+                    "No custom commands installed. Create one at {}/commands/<name>.md or {}/.tomte/commands/<name>.md",
+                    tomte_core::config::config_dir().display(),
                     app.cwd.display()
                 )));
             } else {
@@ -151,9 +151,9 @@ Type /<name> [args] to expand and send.",
         }
         other => {
             // Check if it matches a custom command before reporting unknown.
-            let cmds = opencli_core::command::load_all(&app.cwd);
+            let cmds = tomte_core::command::load_all(&app.cwd);
             if let Some(cmd) = cmds.iter().find(|c| c.name == other) {
-                let expanded = opencli_core::command::expand(&cmd.body, &cmd.name, arg);
+                let expanded = tomte_core::command::expand(&cmd.body, &cmd.name, arg);
                 app.input.buffer = expanded;
                 app.input.cursor = app.input.buffer.len();
                 app.blocks.push(Block::System(format!(

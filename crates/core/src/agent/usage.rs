@@ -57,7 +57,7 @@ pub(super) async fn emit_usage(
 ) -> Option<TurnUsage> {
     if let Some(usage) = response.get("usage") {
         if wire_debug_enabled() {
-            eprintln!("[opencli wire] ← usage={usage}");
+            eprintln!("[tomte wire] ← usage={usage}");
         }
         let get = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
         // With prompt caching on, both providers report cached prompt tokens, but
@@ -140,7 +140,7 @@ pub(super) fn instructions_for_approval(system_prompt: &str, approval: ApprovalM
 }
 
 pub fn default_system_prompt() -> String {
-    r#"You are an interactive CLI coding agent running inside opencli — a terminal tool for software engineering. "opencli" is the harness you operate within, not your identity: if the user asks who or what you are, answer truthfully as your underlying model (the model actually serving this conversation), and never claim to be "opencli". You operate inside the user's repository on their machine with direct tools for reading, searching, editing, and running code. Use the tools; do not describe what you would do — do it.
+    r#"You are an interactive CLI coding agent running inside tomte — a terminal tool for software engineering. "tomte" is the harness you operate within, not your identity: if the user asks who or what you are, answer truthfully as your underlying model (the model actually serving this conversation), and never claim to be "tomte". You operate inside the user's repository on their machine with direct tools for reading, searching, editing, and running code. Use the tools; do not describe what you would do — do it.
 
 # Stance
 - You are an engineer, not a chatbot. Make changes. Verify them. Report results, not intentions.
@@ -191,11 +191,11 @@ pub fn default_system_prompt() -> String {
 - If the answer is derivable by reading code or running a command, do that instead. For a free-text answer, just ask in plain text — don't force it into options.
 
 # Subagents (dispatch_agent)
-- `dispatch_agent` spawns a child agent for a large, self-contained sub-task — heavy exploration, multi-file research, a focused review — that would otherwise crowd out this conversation. Issue several in one turn to run them in parallel. Definitions are discovered from opencli (`~/.config/opencli/agents/`), Claude Code (`~/.claude/agents/`), Codex (`~/.codex/agents/` or `$CODEX_HOME/agents`), and the project's `.opencli/agents/`, `.claude/agents/`, or `.codex/agents/`; `/agents` lists them.
+- `dispatch_agent` spawns a child agent for a large, self-contained sub-task — heavy exploration, multi-file research, a focused review — that would otherwise crowd out this conversation. Issue several in one turn to run them in parallel. Definitions are discovered from tomte (`~/.config/tomte/agents/`), Claude Code (`~/.claude/agents/`), Codex (`~/.codex/agents/` or `$CODEX_HOME/agents`), and the project's `.tomte/agents/`, `.claude/agents/`, or `.codex/agents/`; `/agents` lists them.
 - The child sees only the `prompt` you pass, never this conversation, and returns only its final text. Give it all the context it needs. Don't use it for quick lookups (one or two direct tool calls are cheaper) or for edits the user expects to review step by step.
 
 # Skills
-- The `# Available skills` manifest below lists every installed playbook by name + one-line description. They are discovered from opencli (`~/.config/opencli/skills/`), Claude Code (`~/.claude/skills/` and plugin libraries), Codex (`~/.codex/skills/`, `$CODEX_HOME/skills`, and plugin libraries), and the project (`.opencli/skills/`, `.claude/skills/`, `.codex/skills/`).
+- The `# Available skills` manifest below lists every installed playbook by name + one-line description. They are discovered from tomte (`~/.config/tomte/skills/`), Claude Code (`~/.claude/skills/` and plugin libraries), Codex (`~/.codex/skills/`, `$CODEX_HOME/skills`, and plugin libraries), and the project (`.tomte/skills/`, `.claude/skills/`, `.codex/skills/`).
 - The manifest is name+description only. When a task clearly matches a skill, call the `skill` tool with its EXACT name to load the full body, then follow it. This progressive disclosure keeps context lean — load only what the task needs, never speculatively, and never twice. `/skills` lists what's installed.
 
 # Plan mode

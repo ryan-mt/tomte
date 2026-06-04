@@ -98,7 +98,7 @@ fn roll_respects_weighted_rarity_distribution() {
 
 /// Print each sprite as REAL 24-bit-colour half-block pixel art (the actual
 /// render technique, not text), so the quality can be judged in a truecolor
-/// terminal: `cargo test -p opencli buddy_colored_preview -- --ignored --nocapture`.
+/// terminal: `cargo test -p tomte buddy_colored_preview -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn buddy_colored_preview() {
@@ -132,7 +132,7 @@ fn buddy_colored_preview() {
 }
 
 /// Print each sprite's silhouette so the shapes can be eyeballed with
-/// `cargo test -p opencli buddy_silhouettes -- --nocapture --ignored`.
+/// `cargo test -p tomte buddy_silhouettes -- --nocapture --ignored`.
 #[test]
 #[ignore]
 fn buddy_silhouettes() {

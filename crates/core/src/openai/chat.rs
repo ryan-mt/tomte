@@ -1,4 +1,4 @@
-//! OpenAI-compatible Chat Completions adapter. Lets opencli talk to any
+//! OpenAI-compatible Chat Completions adapter. Lets tomte talk to any
 //! provider that implements `/v1/chat/completions` (Groq, OpenRouter, DeepSeek,
 //! Together, local Ollama / LM Studio, …) by translating the shared
 //! [`ResponsesRequest`] IR into a Chat Completions request and bridging its SSE

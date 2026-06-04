@@ -12,8 +12,8 @@ pub(super) const INDEX_FILE: &str = "MEMORY.md";
 pub(super) const INDEX_MAX_LINES: usize = 200;
 pub(super) const INDEX_MAX_BYTES: usize = 25 * 1024;
 
-pub(super) const STORE_BLOCK_BEGIN: &str = "\n\n<!-- opencli-memory-store:start -->\n";
-const STORE_BLOCK_END: &str = "\n<!-- opencli-memory-store:end -->\n";
+pub(super) const STORE_BLOCK_BEGIN: &str = "\n\n<!-- tomte-memory-store:start -->\n";
+const STORE_BLOCK_END: &str = "\n<!-- tomte-memory-store:end -->\n";
 
 /// Re-inject the project memory index (`MEMORY.md`, capped) into `prompt`
 /// inside a replaceable marker block. When `MEMORY.md` is absent but notes

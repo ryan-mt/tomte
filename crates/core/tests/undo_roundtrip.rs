@@ -1,14 +1,14 @@
 //! Integration tests for the in-session undo stack: write a file, edit it,
 //! then verify `UndoLastEdit` rolls each step back in LIFO order.
 
-use opencli_core::tools::{
-    fs::{EditFile, MultiEdit, UndoLastEdit, WriteFile},
-    ApprovalMode, BuiltinTool, SessionState, ToolContext,
-};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
+use tomte_core::tools::{
+    fs::{EditFile, MultiEdit, UndoLastEdit, WriteFile},
+    ApprovalMode, BuiltinTool, SessionState, ToolContext,
+};
 
 fn ctx(cwd: std::path::PathBuf) -> ToolContext {
     ToolContext {
@@ -18,7 +18,7 @@ fn ctx(cwd: std::path::PathBuf) -> ToolContext {
         auto_approve_edits: false,
         non_interactive: false,
         session: Arc::new(Mutex::new(SessionState::default())),
-        config: opencli_core::config::Config::default(),
+        config: tomte_core::config::Config::default(),
         cwd_override: Arc::new(Mutex::new(None)),
         events: None,
     }

@@ -132,7 +132,7 @@ fn active_goal_session_snapshot_roundtrips_state() {
     goal.turns_completed = 7;
     goal.waiting_for_user = true;
     goal.last_summary = Some("waiting on approval".to_string());
-    goal.started_at_ms = opencli_core::session::now_ms().saturating_sub(92_000);
+    goal.started_at_ms = tomte_core::session::now_ms().saturating_sub(92_000);
 
     let restored = ActiveGoal::from_session_snapshot(goal.to_session_snapshot());
 
@@ -151,8 +151,8 @@ fn active_goal_session_snapshot_roundtrips_state() {
 fn host_state_session_record_includes_active_goal() {
     let mut app = App::new();
     app.active_goal = Some(ActiveGoal::new("finish verification".to_string()));
-    let mut record = opencli_core::session::SessionRecord {
-        meta: opencli_core::session::SessionMeta {
+    let mut record = tomte_core::session::SessionRecord {
+        meta: tomte_core::session::SessionMeta {
             id: "test".to_string(),
             cwd: app.cwd.clone(),
             model: "gpt-5".to_string(),
@@ -161,7 +161,7 @@ fn host_state_session_record_includes_active_goal() {
             message_count: 0,
             preview: "test".to_string(),
         },
-        state: opencli_core::session::SessionSnapshot::default(),
+        state: tomte_core::session::SessionSnapshot::default(),
         history: Vec::new(),
     };
 

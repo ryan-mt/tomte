@@ -11,9 +11,9 @@ export function Nav() {
   return (
     <header className="sticky top-0 z-50 border-b border-line bg-bg/85 backdrop-blur-md">
       <div className="mx-auto flex h-[68px] max-w-[1200px] items-center justify-between px-5 sm:px-8">
-        <Link href="/" className="flex items-center gap-1.5" aria-label="opencli home">
+        <Link href="/" className="flex items-center gap-1.5" aria-label="tomte home">
           <span className="font-display text-[20px] font-extrabold tracking-tight text-ink">
-            opencli
+            tomte
           </span>
           <span className="mb-[3px] inline-block h-[15px] w-[8px] bg-ink" aria-hidden="true" />
         </Link>
@@ -32,7 +32,7 @@ export function Nav() {
             href={site.repoUrl}
             target="_blank"
             rel="noreferrer"
-            aria-label="OpenCLI on GitHub"
+            aria-label="Tomte on GitHub"
             className="text-ink-2 transition-colors hover:text-ink"
           >
             <GithubLogo size={19} weight="regular" />

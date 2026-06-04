@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::tool_args::normalize_argument_fragment;
+mod value;
+use value::*;
 
 /// Wrapper around a streaming SSE response from the Responses API.
 pub struct StreamHandle {
@@ -385,111 +386,6 @@ fn function_call_event_id(value: &Value) -> String {
                 .and_then(|item| first_string(item, keys))
         })
         .unwrap_or_default()
-}
-
-fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| string_value(value.get(*key)))
-}
-
-fn first_argument_string(value: &Value, keys: &[&str]) -> Option<String> {
-    first_argument_value(value, keys)
-        .or_else(|| {
-            value
-                .get("function")
-                .and_then(|f| first_argument_value(f, keys))
-        })
-        .or_else(|| {
-            value
-                .get("tool")
-                .and_then(|t| first_argument_value(t, keys))
-        })
-        .or_else(|| {
-            value
-                .get("item")
-                .and_then(|item| first_argument_string(item, keys))
-        })
-        .or_else(|| {
-            value
-                .get("output_item")
-                .and_then(|item| first_argument_string(item, keys))
-        })
-}
-
-fn first_text_string(value: &Value, keys: &[&str]) -> Option<String> {
-    first_text_value(value, keys)
-        .or_else(|| {
-            value
-                .get("item")
-                .and_then(|item| first_text_string(item, keys))
-        })
-        .or_else(|| {
-            value
-                .get("output_item")
-                .and_then(|item| first_text_string(item, keys))
-        })
-}
-
-fn first_text_value(value: &Value, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|key| text_string_value(value.get(*key)))
-}
-
-fn text_string_value(value: Option<&Value>) -> Option<String> {
-    match value? {
-        Value::Null => None,
-        Value::String(s) if s.is_empty() => None,
-        Value::String(s) => Some(s.clone()),
-        Value::Array(parts) => {
-            let mut out = String::new();
-            for part in parts {
-                if let Some(piece) = text_string_value(Some(part)) {
-                    out.push_str(&piece);
-                }
-            }
-            if out.is_empty() {
-                None
-            } else {
-                Some(out)
-            }
-        }
-        Value::Object(obj) => {
-            for key in ["text", "content", "output_text", "outputText", "delta"] {
-                if let Some(text) = text_string_value(obj.get(key)) {
-                    return Some(text);
-                }
-            }
-            None
-        }
-        Value::Number(_) | Value::Bool(_) => None,
-    }
-}
-
-fn first_argument_value(value: &Value, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|key| argument_string_value(value.get(*key)))
-}
-
-fn argument_string_value(value: Option<&Value>) -> Option<String> {
-    match value? {
-        Value::Null => None,
-        Value::String(s) => normalize_argument_fragment(s).map(str::to_string),
-        Value::Array(arr) if arr.is_empty() => None,
-        Value::Object(map) if map.is_empty() => None,
-        Value::Number(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        Value::Array(_) | Value::Object(_) => value.and_then(|v| serde_json::to_string(v).ok()),
-    }
-}
-
-fn string_value(value: Option<&Value>) -> Option<String> {
-    match value? {
-        Value::Null => None,
-        Value::String(s) if s.is_empty() => None,
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        Value::Array(_) | Value::Object(_) => value.and_then(|v| serde_json::to_string(v).ok()),
-    }
 }
 
 fn is_terminal_event(ev: &ResponseStreamEvent) -> bool {

@@ -304,9 +304,9 @@ pub async fn handle_overlay_select(app: &mut App, kind: OverlayKind, key_sel: &s
             }
         }
         OverlayKind::LogoutPicker => {
-            if let Some(target) = opencli_core::auth::LogoutTarget::from_key(key_sel) {
+            if let Some(target) = tomte_core::auth::LogoutTarget::from_key(key_sel) {
                 let mut record = auth::load_auth().unwrap_or_default();
-                opencli_core::auth::clear_credential(&mut record, target);
+                tomte_core::auth::clear_credential(&mut record, target);
                 match auth::save_auth(&record) {
                     Ok(_) => {
                         app.auth_mode = auth::effective_mode_with_env(&record);

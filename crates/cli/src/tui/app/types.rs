@@ -162,12 +162,12 @@ pub struct App {
     /// Cumulative per-model billed token tally, mirrored from the agent's
     /// `AgentEvent::CostUpdate` and rendered by `/cost`. The agent owns the
     /// authoritative copy and persists it in the session record.
-    pub usage_by_model: Vec<opencli_core::session::ModelUsage>,
+    pub usage_by_model: Vec<tomte_core::session::ModelUsage>,
     /// Number of turns the user has run this session. Surfaced by `/cost`.
     pub turn_count: u64,
     /// Latest provider quota/rate-limit snapshot, captured from the most recent
     /// turn's response. Surfaced by `/usage`; `None` until the first turn.
-    pub last_quota: Option<opencli_core::usage::QuotaSnapshot>,
+    pub last_quota: Option<tomte_core::usage::QuotaSnapshot>,
     pub pending_images: Vec<std::path::PathBuf>,
     pub next_image_num: usize,
     /// Output of `!`-prefixed shell commands the user ran from the composer,
@@ -239,7 +239,7 @@ pub struct App {
     /// Result line queued by a finished compaction, pushed after the 100%-hold.
     pub compact_result_msg: Option<String>,
     /// True until the first frame has opened the resume picker. Used by
-    /// `opencli resume` to bypass needing to type `/resume` after launch.
+    /// `tomte resume` to bypass needing to type `/resume` after launch.
     pub start_with_resume_picker: bool,
     /// Snapshot of the agent's session todo list, refreshed after every
     /// tool batch via `AgentEvent::TodosSnapshot`. Read by `/todos`.
@@ -321,7 +321,7 @@ pub struct PendingApproval {
     /// Optional diff/preview rendered in a second pane (e.g. write_file).
     pub diff_preview: Option<String>,
     /// Highlighted menu option: 0 = allow once, 1 = allow this tool/command in
-    /// this project (persisted to .opencli/permissions.json), 2 = deny. Driven
+    /// this project (persisted to .tomte/permissions.json), 2 = deny. Driven
     /// by Up/Down; Enter commits it.
     pub selected: usize,
 }
@@ -344,7 +344,7 @@ impl ActiveGoal {
             waiting_for_user: false,
             last_summary: None,
             started_at: std::time::Instant::now(),
-            started_at_ms: opencli_core::session::now_ms(),
+            started_at_ms: tomte_core::session::now_ms(),
         }
     }
 
@@ -363,7 +363,7 @@ impl ActiveGoal {
     }
 
     pub fn from_session_snapshot(snapshot: SessionGoalSnapshot) -> Self {
-        let elapsed = opencli_core::session::now_ms().saturating_sub(snapshot.started_at_ms);
+        let elapsed = tomte_core::session::now_ms().saturating_sub(snapshot.started_at_ms);
         let started_at = std::time::Instant::now()
             .checked_sub(Duration::from_millis(elapsed))
             .unwrap_or_else(std::time::Instant::now);

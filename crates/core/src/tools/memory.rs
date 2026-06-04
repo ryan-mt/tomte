@@ -142,7 +142,7 @@ Writes are disabled in unattended headless runs (pass `--dangerously-skip-permis
         // operator can still opt in with `--dangerously-skip-permissions`.
         if command != "view" && ctx.non_interactive && ctx.require_approval {
             bail!(
-                "memory writes are disabled in unattended headless runs because memory is replayed into later sessions. Only `view` is available; pass --dangerously-skip-permissions to allow writes, or run opencli interactively."
+                "memory writes are disabled in unattended headless runs because memory is replayed into later sessions. Only `view` is available; pass --dangerously-skip-permissions to allow writes, or run tomte interactively."
             );
         }
 

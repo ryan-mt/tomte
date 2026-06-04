@@ -78,7 +78,7 @@ Parameters:\n\
         let pinned = validate_ssrf_safe(&url).await?;
         let cap = a.max_bytes.unwrap_or(DEFAULT_MAX_BYTES).min(HARD_CAP_BYTES) as usize;
         let client = reqwest::Client::builder()
-            .user_agent(concat!("opencli/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("tomte/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
             // Disable automatic redirects: a redirect could send us to a
             // private address even though the initial host was public. We

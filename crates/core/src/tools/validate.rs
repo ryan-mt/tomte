@@ -39,7 +39,7 @@ impl std::error::Error for ArgSchemaError {}
 /// the caller can skip appending a blank block.
 ///
 /// "Required" is inferred from the type rather than the schema's `required`
-/// list: opencli lists every property in `required` and represents optional
+/// list: tomte lists every property in `required` and represents optional
 /// fields as a nullable type (`["integer","null"]`), so a property is treated as
 /// optional when its type admits `null` (or it carries a `default`).
 pub fn schema_hint(tool: &str, schema: &Value) -> String {
@@ -107,7 +107,7 @@ fn prop_type_label(prop: &Value) -> String {
     }
 }
 
-/// A property is optional when its type admits `null` (how opencli encodes
+/// A property is optional when its type admits `null` (how tomte encodes
 /// optional fields) or it declares a `default`.
 fn prop_is_optional(prop: &Value) -> bool {
     if prop.get("default").is_some() {

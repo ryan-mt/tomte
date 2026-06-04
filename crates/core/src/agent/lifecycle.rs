@@ -119,7 +119,7 @@ impl Agent {
     }
 
     /// Append inherited memory files to the system prompt (Codex / Claude Code /
-    /// opencli). At most one file per directory (`AGENTS.override.md` >
+    /// tomte). At most one file per directory (`AGENTS.override.md` >
     /// `AGENTS.md` > `CLAUDE.md`), project scope is limited to the git root
     /// through `cwd`, combined bodies are capped at 32 KiB, and re-applying
     /// replaces the previous block instead of duplicating it.
@@ -136,7 +136,7 @@ impl Agent {
         crate::tools::memory::apply_store_to_prompt(&mut self.system_prompt, &self.cwd);
     }
 
-    /// Discover every installed skill (opencli + Claude Code + Codex + project)
+    /// Discover every installed skill (tomte + Claude Code + Codex + project)
     /// and append a compact manifest to the system prompt so the model knows
     /// what playbooks exist and can load any one on demand via the `skill`
     /// tool. Only `name: description` lines go in — bodies are loaded lazily —

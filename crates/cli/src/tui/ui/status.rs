@@ -274,14 +274,14 @@ pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect,
     }
     lines.push(Line::from(""));
     // Option 1 persists a per-project allow-rule (same logic as Claude Code's
-    // "don't ask again", but opencli's own wording): the label names exactly
+    // "don't ask again", but tomte's own wording): the label names exactly
     // what gets allowed in this project.
     let allow_label = {
         let args_val: serde_json::Value =
             serde_json::from_str(&p.args_json).unwrap_or(serde_json::Value::Null);
         format!(
             "Allow {} in this project",
-            opencli_core::permissions::rule_label(&p.tool_name, &args_val)
+            tomte_core::permissions::rule_label(&p.tool_name, &args_val)
         )
     };
     let opts = ["Allow once".to_string(), allow_label, "Deny".to_string()];

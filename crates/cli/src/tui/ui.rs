@@ -8,8 +8,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::app::{todo_completion_key, App, Block, SPINNER_FRAMES, TODO_RECENT_COMPLETED_TTL};
-use opencli_core::auth::AuthMode;
-use opencli_core::tools::{TodoItem, TodoStatus};
+use tomte_core::auth::AuthMode;
+use tomte_core::tools::{TodoItem, TodoStatus};
 
 mod body;
 mod chat;

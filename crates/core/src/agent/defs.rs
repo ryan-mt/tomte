@@ -439,7 +439,7 @@ pub struct Agent {
     pub session_created_ms: u64,
     /// Mutable per-session state shared across tool calls (todo list, etc.).
     pub session: Arc<Mutex<SessionState>>,
-    /// Lifecycle hooks loaded from `~/.config/opencli/settings.json`. Pre-tool
+    /// Lifecycle hooks loaded from `~/.config/tomte/settings.json`. Pre-tool
     /// hooks can block a tool call by exiting with code 2; the model receives
     /// the hook's stdout as the block reason.
     pub hooks: Arc<crate::hooks::HookSet>,

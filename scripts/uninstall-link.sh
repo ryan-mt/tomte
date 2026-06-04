@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-TARGET="${HOME}/.local/bin/opencli"
+TARGET="${HOME}/.local/bin/tomte"
 if [ -L "$TARGET" ] || [ -f "$TARGET" ]; then
   rm -f "$TARGET"
   echo "✅ Removed $TARGET"

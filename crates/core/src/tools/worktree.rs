@@ -109,7 +109,7 @@ pub async fn enter_worktree(ctx: &ToolContext, name: Option<&str>) -> Result<Str
         None => generated_slug(),
     };
     let branch = unique_branch(&repo_root, &slug).await?;
-    let worktrees_root = repo_root.join(".opencli").join("worktrees");
+    let worktrees_root = repo_root.join(".tomte").join("worktrees");
     tokio::fs::create_dir_all(&worktrees_root)
         .await
         .with_context(|| format!("create {}", worktrees_root.display()))?;
@@ -305,9 +305,9 @@ fn generated_slug() -> String {
 async fn unique_branch(repo_root: &Path, slug: &str) -> Result<String> {
     for idx in 0..100u32 {
         let candidate = if idx == 0 {
-            format!("opencli/{slug}")
+            format!("tomte/{slug}")
         } else {
-            format!("opencli/{slug}-{idx}")
+            format!("tomte/{slug}-{idx}")
         };
         let status = Command::new("git")
             .args(["show-ref", "--verify", "--quiet"])

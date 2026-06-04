@@ -83,7 +83,7 @@ impl AnthropicClient {
             ));
         }
         let http = reqwest::Client::builder()
-            .user_agent(concat!("opencli/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("tomte/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(CONNECT_TIMEOUT)
             .build()?;
         Ok(Self { http, credential })

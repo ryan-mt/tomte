@@ -1,11 +1,11 @@
 //! Integration: Agent::apply_project_memory discovers repo-scoped memory
 //! in ancestor-first order (git root → cwd).
-use opencli_core::agent::Agent;
-use opencli_core::auth::Credential;
-use opencli_core::client::LlmClient;
-use opencli_core::config::Config;
-use opencli_core::memory::{self, MEMORY_BLOCK_BEGIN};
-use opencli_core::provider::Provider;
+use tomte_core::agent::Agent;
+use tomte_core::auth::Credential;
+use tomte_core::client::LlmClient;
+use tomte_core::config::Config;
+use tomte_core::memory::{self, MEMORY_BLOCK_BEGIN};
+use tomte_core::provider::Provider;
 
 fn init_git_repo(root: &std::path::Path) {
     let out = std::process::Command::new("git")

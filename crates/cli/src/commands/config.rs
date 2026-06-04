@@ -1,5 +1,5 @@
 use anyhow::Result;
-use opencli_core::config;
+use tomte_core::config;
 
 pub async fn run(
     show: bool,

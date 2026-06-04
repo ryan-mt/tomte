@@ -1,6 +1,6 @@
 //! Custom slash commands: user-defined prompt templates loaded from
-//! `~/.config/opencli/commands/<name>.md` (global) and
-//! `<cwd>/.opencli/commands/<name>.md` (project-local; project wins on name
+//! `~/.config/tomte/commands/<name>.md` (global) and
+//! `<cwd>/.tomte/commands/<name>.md` (project-local; project wins on name
 //! collision).
 //!
 //! File format — Claude Code-compatible:
@@ -15,7 +15,7 @@
 //! Use $1, $2, ... for whitespace-split positional arguments.
 //! ```
 //!
-//! On execution, opencli substitutes `$ARGUMENTS`, `$1` ... `$9`, then
+//! On execution, tomte substitutes `$ARGUMENTS`, `$1` ... `$9`, then
 //! sends the expanded body to the model as the next user turn.
 
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ pub fn global_commands_dir() -> PathBuf {
 }
 
 pub fn project_commands_dir(cwd: &Path) -> PathBuf {
-    cwd.join(".opencli").join("commands")
+    cwd.join(".tomte").join("commands")
 }
 
 /// Load commands from global first, then project — project files with the

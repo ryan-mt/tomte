@@ -1,6 +1,6 @@
 //! Onboarding / login screen — first screen when the user is not authenticated.
 //!
-//! Offers the same four sign-in paths as `opencli login`:
+//! Offers the same four sign-in paths as `tomte login`:
 //!   ▸ OpenAI — ChatGPT account (OAuth via a local browser callback)
 //!   ▸ OpenAI — API key
 //!   ▸ Anthropic — Claude Pro/Max (OAuth, manual code paste, may violate ToS)
@@ -10,9 +10,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use opencli_core::auth::{self, anthropic as anth, AuthMode};
-use opencli_core::provider::Provider;
 use tokio::sync::Mutex;
+use tomte_core::auth::{self, anthropic as anth, AuthMode};
+use tomte_core::provider::Provider;
 
 use super::input::TextInput;
 

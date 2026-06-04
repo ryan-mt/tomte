@@ -43,10 +43,10 @@ async fn usage_slash_without_quota_shows_hint() {
 #[tokio::test]
 async fn usage_slash_renders_captured_quota() {
     let mut app = App::new();
-    app.last_quota = Some(opencli_core::usage::QuotaSnapshot {
-        provider: Some(opencli_core::provider::Provider::OpenAi),
+    app.last_quota = Some(tomte_core::usage::QuotaSnapshot {
+        provider: Some(tomte_core::provider::Provider::OpenAi),
         plan: Some("pro".into()),
-        windows: vec![opencli_core::usage::QuotaWindow {
+        windows: vec![tomte_core::usage::QuotaWindow {
             label: "5h".into(),
             used_percent: Some(12.5),
             remaining: None,

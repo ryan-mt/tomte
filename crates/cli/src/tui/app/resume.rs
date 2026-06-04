@@ -10,7 +10,7 @@ pub async fn apply_resume(
     agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
     id: &str,
 ) {
-    let record = match opencli_core::session::load(&app.cwd, id) {
+    let record = match tomte_core::session::load(&app.cwd, id) {
         Ok(r) => r,
         Err(e) => {
             app.blocks
@@ -92,7 +92,7 @@ pub async fn apply_resume(
 /// raw API error becomes an actionable /compact hint. Delegates to the core
 /// heuristic the agent's auto-recovery also uses, keeping one source of truth.
 pub fn is_context_overflow(message: &str) -> bool {
-    opencli_core::agent::is_context_overflow_message(message)
+    tomte_core::agent::is_context_overflow_message(message)
 }
 
 pub fn start_compaction(
@@ -125,7 +125,7 @@ pub fn start_compaction(
                     if r.is_ok() {
                         let mut record = a.to_session_record().await;
                         record.state.active_goal = goal_snapshot.clone();
-                        if let Err(e) = opencli_core::session::save(&record) {
+                        if let Err(e) = tomte_core::session::save(&record) {
                             tracing::debug!(error = %e, "session save after compact failed");
                         }
                     }
@@ -152,9 +152,9 @@ pub fn start_compaction(
 /// API history is a flat list of `InputItem`s; we group function_call +
 /// function_call_output by call_id and drop the reasoning items (they were
 /// only ever streamed deltas).
-pub fn rebuild_blocks_from_history(history: &[opencli_core::openai::InputItem]) -> Vec<Block> {
-    use opencli_core::openai::{InputItem, MessageContent};
+pub fn rebuild_blocks_from_history(history: &[tomte_core::openai::InputItem]) -> Vec<Block> {
     use std::collections::HashMap;
+    use tomte_core::openai::{InputItem, MessageContent};
 
     let mut outputs: HashMap<String, (String, bool)> = HashMap::new();
     for item in history {

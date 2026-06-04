@@ -52,7 +52,7 @@ pub(super) fn run_helper(mut args: std::env::ArgsOs) -> i32 {
     match enforce_and_exec(policy_json, target) {
         Ok(()) => 0, // unreachable: a successful exec never returns
         Err(e) => {
-            eprintln!("opencli sandbox: {e:#}");
+            eprintln!("tomte sandbox: {e:#}");
             126
         }
     }

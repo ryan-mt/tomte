@@ -1,5 +1,5 @@
 /**
- * content.ts: single source of truth for OpenCLI's website.
+ * content.ts: single source of truth for Tomte's website.
  *
  * STABILITY CONTRACT: everything that changes between releases (version,
  * model catalogue, tool belt, slash commands, links) lives HERE and nowhere
@@ -11,18 +11,18 @@
  */
 
 export const site = {
-  name: "opencli",
+  name: "tomte",
   /** Wordmark as shown in the masthead. */
-  wordmark: "opencli",
+  wordmark: "tomte",
   /** Latin-binomial conceit for the field-guide framing. */
-  binomial: "Opencli terminalis",
+  binomial: "Tomte terminalis",
   headline: "A coding agent that lives in your terminal.",
   /** Hero subtext: <= 20 words, no em-dash. */
   subhead:
     "Rust-fast and provider-agnostic. One open-source binary, a drop-in for Claude Code, at home in any repository.",
   /** Longer one-paragraph description for meta + intro plates. */
   description:
-    "OpenCLI is a single-binary coding agent for your terminal. Point it at OpenAI or Anthropic, drop it into any repository, and it reads, writes, runs, searches, and reasons through real work with a full tool belt and a terminal UI that stays out of the way.",
+    "Tomte is a single-binary coding agent for your terminal. Point it at OpenAI or Anthropic, drop it into any repository, and it reads, writes, runs, searches, and reasons through real work with a full tool belt and a terminal UI that stays out of the way.",
   license: "MIT",
   language: "Rust",
   /**
@@ -30,16 +30,16 @@ export const site = {
    * linking to the latest release rather than printing a fixed number.
    */
   version: "0.0.2",
-  repoUrl: "https://github.com/ryan-mt/opencli",
-  releasesUrl: "https://github.com/ryan-mt/opencli/releases",
-  latestReleaseUrl: "https://github.com/ryan-mt/opencli/releases/latest",
-  contributingUrl: "https://github.com/ryan-mt/opencli/blob/main/CONTRIBUTING.md",
-  licenseUrl: "https://github.com/ryan-mt/opencli/blob/main/LICENSE",
+  repoUrl: "https://github.com/ryan-mt/tomte",
+  releasesUrl: "https://github.com/ryan-mt/tomte/releases",
+  latestReleaseUrl: "https://github.com/ryan-mt/tomte/releases/latest",
+  contributingUrl: "https://github.com/ryan-mt/tomte/blob/main/CONTRIBUTING.md",
+  licenseUrl: "https://github.com/ryan-mt/tomte/blob/main/LICENSE",
 } as const;
 
 /** Field-guide "specimen card" facts. Creative framing over real attributes. */
 export const specimen: { label: string; value: string }[] = [
-  { label: "Genus / species", value: "Opencli terminalis" },
+  { label: "Genus / species", value: "Tomte terminalis" },
   { label: "Class", value: "Coding agent" },
   { label: "Order", value: "Terminal-dwelling" },
   { label: "Habitat", value: "Your repository" },
@@ -70,7 +70,7 @@ export const capabilities: Capability[] = [
   {
     tag: "one binary",
     title: "No daemon, no ceremony",
-    body: "A single opencli binary. Launch the full terminal UI or fire a one-shot from a script. Same agent either way, nothing running in the background.",
+    body: "A single tomte binary. Launch the full terminal UI or fire a one-shot from a script. Same agent either way, nothing running in the background.",
   },
   {
     tag: "your brain",
@@ -276,7 +276,7 @@ export const composerPrefixes: { prefix: string; desc: string }[] = [
 export const authMethods: { title: string; body: string }[] = [
   {
     title: "Subscription, OpenAI",
-    body: "opencli login signs in with a ChatGPT Plus, Pro, Team, or Enterprise account over OAuth.",
+    body: "tomte login signs in with a ChatGPT Plus, Pro, Team, or Enterprise account over OAuth.",
   },
   {
     title: "Subscription, Anthropic",
@@ -284,38 +284,38 @@ export const authMethods: { title: string; body: string }[] = [
   },
   {
     title: "API key",
-    body: "Paste an OpenAI or Anthropic key, or let opencli pick up OPENAI_API_KEY and ANTHROPIC_API_KEY from the environment.",
+    body: "Paste an OpenAI or Anthropic key, or let tomte pick up OPENAI_API_KEY and ANTHROPIC_API_KEY from the environment.",
   },
 ];
 
 /** Install steps for the quickstart plate. */
 export const quickstart: { step: string; cmd: string; note: string }[] = [
-  { step: "Clone and install", cmd: "git clone https://github.com/ryan-mt/opencli && cd opencli\nmake install", note: "Builds in release and links opencli onto your PATH." },
-  { step: "Sign in", cmd: "opencli login", note: "Opens a browser for OAuth, or prompts for an API key." },
-  { step: "Run", cmd: "opencli", note: "Launches the terminal UI. Add resume to reopen a session." },
+  { step: "Clone and install", cmd: "git clone https://github.com/ryan-mt/tomte && cd tomte\nmake install", note: "Builds in release and links tomte onto your PATH." },
+  { step: "Sign in", cmd: "tomte login", note: "Opens a browser for OAuth, or prompts for an API key." },
+  { step: "Run", cmd: "tomte", note: "Launches the terminal UI. Add resume to reopen a session." },
 ];
 
 /** Prebuilt binary targets. */
 export const binaries: { platform: string; archive: string }[] = [
-  { platform: "Linux x86-64", archive: "opencli-x86_64-unknown-linux-gnu.tar.gz" },
-  { platform: "macOS Intel", archive: "opencli-x86_64-apple-darwin.tar.gz" },
-  { platform: "macOS Apple Silicon", archive: "opencli-aarch64-apple-darwin.tar.gz" },
-  { platform: "Windows x86-64", archive: "opencli-x86_64-pc-windows-msvc.zip" },
+  { platform: "Linux x86-64", archive: "tomte-x86_64-unknown-linux-gnu.tar.gz" },
+  { platform: "macOS Intel", archive: "tomte-x86_64-apple-darwin.tar.gz" },
+  { platform: "macOS Apple Silicon", archive: "tomte-aarch64-apple-darwin.tar.gz" },
+  { platform: "Windows x86-64", archive: "tomte-x86_64-pc-windows-msvc.zip" },
 ];
 
 /** Headless usage examples. */
 export const headlessExamples: string[] = [
-  'opencli chat "write a fibonacci function in Python"',
-  'opencli chat --model gpt-5.5-pro --reasoning high "refactor module X"',
-  'echo "read CLAUDE.md and summarize" | opencli chat',
-  "opencli run --cwd /srv/project --prompt-file nightly-task.md",
+  'tomte chat "write a fibonacci function in Python"',
+  'tomte chat --model gpt-5.5-pro --reasoning high "refactor module X"',
+  'echo "read CLAUDE.md and summarize" | tomte chat',
+  "tomte run --cwd /srv/project --prompt-file nightly-task.md",
 ];
 
 /** Security model. Honest about the no-sandbox tradeoff. */
 export const security: { title: string; body: string }[] = [
   {
     title: "Destructive commands are flagged",
-    body: "run_shell executes directly on your machine. There is no sandbox yet, so opencli flags obvious destructive commands like rm -rf on home or system paths, curl piped to a shell, mkfs, and force-pushes, and refuses them until you explicitly override.",
+    body: "run_shell executes directly on your machine. There is no sandbox yet, so tomte flags obvious destructive commands like rm -rf on home or system paths, curl piped to a shell, mkfs, and force-pushes, and refuses them until you explicitly override.",
   },
   {
     title: "Secrets stay out of the shell",
@@ -356,7 +356,7 @@ export const faq: { q: string; a: string }[] = [
   },
   {
     q: "Is my code sent anywhere, and is it sandboxed?",
-    a: "Your prompts and the files the agent reads go to the provider you choose, the same as any coding assistant. run_shell runs directly on your machine with no sandbox yet, so review destructive commands. opencli flags the obvious ones.",
+    a: "Your prompts and the files the agent reads go to the provider you choose, the same as any coding assistant. run_shell runs directly on your machine with no sandbox yet, so review destructive commands. tomte flags the obvious ones.",
   },
   {
     q: "What platforms run it?",

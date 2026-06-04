@@ -1,6 +1,6 @@
 <div align="center">
 
-# `opencli`
+# `tomte`
 
 **A coding agent that lives in your terminal.**
 
@@ -17,13 +17,13 @@ runs, searches, and *reasons* its way through real work — streaming, with a fu
 and a terminal UI that stays out of the way.
 
 ```bash
-opencli            # open the TUI and start working
-opencli chat "explain what this repo does, then add a test for the parser"
+tomte            # open the TUI and start working
+tomte chat "explain what this repo does, then add a test for the parser"
 ```
 
 ## Why you might like it
 
-- **No daemon, no ceremony.** A single `opencli` binary. Launch the TUI, or fire a one-shot
+- **No daemon, no ceremony.** A single `tomte` binary. Launch the TUI, or fire a one-shot
   from a script — same agent either way.
 - **Bring your own brain.** Sign in with a ChatGPT or Claude subscription (OAuth) *or* drop in
   an API key. Switch models mid-session with `/model`.
@@ -40,41 +40,41 @@ opencli chat "explain what this repo does, then add a test for the parser"
 ## 60-second start
 
 ```bash
-git clone https://github.com/ryan-mt/opencli && cd opencli
-make install         # build --release + link to ~/.local/bin/opencli
-opencli login        # sign in (opens a browser for OAuth)
-opencli              # launch the TUI
+git clone https://github.com/ryan-mt/tomte && cd tomte
+make install         # build --release + link to ~/.local/bin/tomte
+tomte login        # sign in (opens a browser for OAuth)
+tomte              # launch the TUI
 ```
 
 Prefer a prebuilt binary? Grab the archive for your platform from the
-[latest release](https://github.com/ryan-mt/opencli/releases) and put `opencli`
-(or `opencli.exe`) on your `PATH`:
+[latest release](https://github.com/ryan-mt/tomte/releases) and put `tomte`
+(or `tomte.exe`) on your `PATH`:
 
 | Platform | Archive |
 | --- | --- |
-| Linux x86-64 | `opencli-x86_64-unknown-linux-gnu.tar.gz` |
-| macOS Intel | `opencli-x86_64-apple-darwin.tar.gz` |
-| macOS Apple Silicon | `opencli-aarch64-apple-darwin.tar.gz` |
-| Windows x86-64 | `opencli-x86_64-pc-windows-msvc.zip` |
+| Linux x86-64 | `tomte-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS Intel | `tomte-x86_64-apple-darwin.tar.gz` |
+| macOS Apple Silicon | `tomte-aarch64-apple-darwin.tar.gz` |
+| Windows x86-64 | `tomte-x86_64-pc-windows-msvc.zip` |
 
 ## Sign in your way
 
 Four doors in — use a subscription or an API key, OpenAI or Anthropic:
 
 ```bash
-opencli login                                   # OpenAI OAuth (ChatGPT Plus/Pro/Team/Enterprise)
-opencli login --api-key --provider openai       # paste an OpenAI API key
-opencli login --api-key --provider anthropic    # paste an Anthropic API key
-opencli status                                   # who am I, and on what plan?
-opencli doctor                                   # diagnose setup (auth, config, model, MCP, tools)
-opencli logout
+tomte login                                   # OpenAI OAuth (ChatGPT Plus/Pro/Team/Enterprise)
+tomte login --api-key --provider openai       # paste an OpenAI API key
+tomte login --api-key --provider anthropic    # paste an Anthropic API key
+tomte status                                   # who am I, and on what plan?
+tomte doctor                                   # diagnose setup (auth, config, model, MCP, tools)
+tomte logout
 ```
 
 Anthropic OAuth (Claude Pro/Max) is available after you acknowledge the ToS notice.
 Environment keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are picked up automatically.
 
 OAuth uses PKCE with the callback `http://localhost:1455/auth/callback`. Tokens land in
-`$XDG_CONFIG_HOME/opencli/auth.json` with owner-only permissions on Unix and refresh themselves
+`$XDG_CONFIG_HOME/tomte/auth.json` with owner-only permissions on Unix and refresh themselves
 before they expire. Non-Unix builds refuse to persist credentials until owner-only storage can
 be enforced there.
 
@@ -83,18 +83,18 @@ be enforced there.
 **Interactive — the TUI** (the default):
 
 ```bash
-opencli              # full terminal UI
-opencli resume       # reopen with the session picker
+tomte              # full terminal UI
+tomte resume       # reopen with the session picker
 ```
 
 **Headless — one-shot or piped**, perfect for scripts, cron, and `systemd`:
 
 ```bash
-opencli chat "write a fibonacci function in Python"
-opencli chat --model gpt-5.5-pro --reasoning high "refactor module X"
-echo "read CLAUDE.md and summarize" | opencli chat
+tomte chat "write a fibonacci function in Python"
+tomte chat --model gpt-5.5-pro --reasoning high "refactor module X"
+echo "read CLAUDE.md and summarize" | tomte chat
 
-opencli run --cwd /srv/project --prompt-file nightly-task.md   # scheduler-friendly alias
+tomte run --cwd /srv/project --prompt-file nightly-task.md   # scheduler-friendly alias
 ```
 
 ## The tool belt
@@ -138,11 +138,11 @@ are discovered automatically.
 ## Configuration
 
 ```bash
-opencli config --show
-opencli config --set-model gpt-5.5-pro --set-reasoning high
+tomte config --show
+tomte config --set-model gpt-5.5-pro --set-reasoning high
 ```
 
-`$XDG_CONFIG_HOME/opencli/config.json`:
+`$XDG_CONFIG_HOME/tomte/config.json`:
 
 ```json
 {
@@ -156,7 +156,7 @@ opencli config --set-model gpt-5.5-pro --set-reasoning high
 
 **Reasoning effort:** `low` · `medium` · `high` · `xhigh` — **Verbosity:** `low` · `medium` · `high`
 
-**Project overrides:** drop a `.opencli/config.json` in a repo to override settings for that
+**Project overrides:** drop a `.tomte/config.json` in a repo to override settings for that
 project on top of the global config. Because that file ships in cloned repos, only behavioral
 fields are honored — `model`, `reasoning_effort`, `verbosity`, `auto_compact`, `fallback_models`.
 Security-sensitive keys (`default_permission_mode`, `auto_approve_read` / `auto_approve_write`,
@@ -180,10 +180,10 @@ their current equivalent on startup, so an existing `config.json` keeps working.
 ## How it's built
 
 ```
-opencli/
+tomte/
 └── crates/
     ├── core/   # library: OpenAI + Anthropic clients, OAuth (PKCE), agent loop, tools
-    └── cli/    # the `opencli` binary: CLI subcommands + interactive TUI
+    └── cli/    # the `tomte` binary: CLI subcommands + interactive TUI
 ```
 
 `crates/core` holds the streaming SSE clients, the agent loop, and every tool. `crates/cli`
@@ -196,8 +196,8 @@ wraps it in subcommands (`login`, `chat`, `status`, `config`, `resume`, …) and
 1.95.0) and `ripgrep` (recommended — powers the `grep` tool).
 
 ```bash
-git clone https://github.com/ryan-mt/opencli && cd opencli
-make install      # build release + link to ~/.local/bin/opencli
+git clone https://github.com/ryan-mt/tomte && cd tomte
+make install      # build release + link to ~/.local/bin/tomte
 make link-dev     # OR: dev mode — re-runs `cargo run` on each call, no manual rebuild
 make unlink       # remove the link
 ```
@@ -214,7 +214,7 @@ make package                                         # local release archive + S
 make smoke                                           # local release smoke checks
 ```
 
-Set `OPENCLI_LIVE_SMOKE=1` with `make smoke` to also exercise live OpenAI and Anthropic
+Set `TOMTE_LIVE_SMOKE=1` with `make smoke` to also exercise live OpenAI and Anthropic
 chat/tool-call paths using the credentials already on the machine.
 
 ## Contributing
@@ -228,14 +228,14 @@ the Conventional-Commit style, and the PR flow. The short version: branch off
 ## Security
 
 - OAuth tokens refresh automatically; `auth.json` is written with owner-only permissions on Unix.
-- Project permission allow-lists reject symlinked `.opencli` paths and write with `O_NOFOLLOW`
+- Project permission allow-lists reject symlinked `.tomte` paths and write with `O_NOFOLLOW`
   on Unix, so an "allow in this project" decision cannot be redirected into another file.
 - Headless `chat` sanitizes terminal control sequences from model/tool text before writing to
-  stdout, while keeping opencli's own status styling.
+  stdout, while keeping tomte's own status styling.
 - Provider parse/SSE errors use bounded, auth-redacted excerpts instead of raw response bodies
   or event payloads.
 - `run_shell` executes **directly on your machine** — there is no sandbox yet, so review any
-  prompt that includes destructive commands. opencli flags obvious ones (`rm -rf` on system or
+  prompt that includes destructive commands. tomte flags obvious ones (`rm -rf` on system or
   home paths, `curl … | sh`, `mkfs`, raw block-device writes, force-pushes, …) and refuses them
   until you explicitly override.
 - Environment variables that look like secrets (names containing `TOKEN`, `SECRET`, `KEY`,

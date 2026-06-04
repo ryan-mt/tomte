@@ -2,7 +2,7 @@
 //!
 //! When a workspace connects many MCP servers, injecting every tool's JSON
 //! schema into each request burns context that mostly goes unused. So past a
-//! threshold (`Registry::enable_tool_search`) opencli *defers* the MCP tools:
+//! threshold (`Registry::enable_tool_search`) tomte *defers* the MCP tools:
 //! their schemas are withheld from the request, and the system prompt instead
 //! lists them by `name: description` (one line each, like the skill manifest).
 //!

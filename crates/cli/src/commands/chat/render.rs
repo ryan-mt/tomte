@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 
-use opencli_core::agent::AgentEvent;
+use tomte_core::agent::AgentEvent;
 
 pub(crate) enum TextEventOutcome {
     Continue,
@@ -55,7 +55,7 @@ pub(crate) fn render_text_event<W: Write>(
                     .get(&call_id)
                     .is_some_and(|name| name == "ask_user_question")
             {
-                if let Some(rendered) = opencli_core::tools::ask::render_ask_envelope(&output) {
+                if let Some(rendered) = tomte_core::tools::ask::render_ask_envelope(&output) {
                     let rendered = sanitize_terminal_text(&rendered);
                     writeln!(stdout, "\n{rendered}").ok();
                     return TextEventOutcome::Continue;
@@ -187,8 +187,8 @@ fn sanitize_terminal_text(text: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::{render_text_event, TextEventOutcome};
-    use opencli_core::agent::AgentEvent;
     use std::collections::HashMap;
+    use tomte_core::agent::AgentEvent;
 
     #[test]
     fn text_renderer_prints_plan_exit_payload() {

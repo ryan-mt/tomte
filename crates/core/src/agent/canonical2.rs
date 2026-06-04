@@ -423,10 +423,10 @@ pub(super) fn json_type_label(value: &Value) -> &'static str {
     }
 }
 
-/// Opt-in wire diagnostic (`OPENCLI_DEBUG_WIRE=1`). Lets the user confirm the
+/// Opt-in wire diagnostic (`TOMTE_DEBUG_WIRE=1`). Lets the user confirm the
 /// reasoning effort they selected is actually carried to the provider and that
 /// the model spent reasoning tokens — provider-agnostic, so it works the same
 /// for OpenAI, Anthropic, and any future provider on the shared agent loop.
 pub(super) fn wire_debug_enabled() -> bool {
-    std::env::var_os("OPENCLI_DEBUG_WIRE").is_some()
+    std::env::var_os("TOMTE_DEBUG_WIRE").is_some()
 }

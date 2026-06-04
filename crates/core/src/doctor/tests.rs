@@ -144,9 +144,9 @@ fn render_includes_titles_glyphs_and_summary() {
 
 #[test]
 fn binary_on_path_finds_a_file_in_a_synthetic_path_dir() {
-    let dir = std::env::temp_dir().join(format!("opencli-doctor-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("tomte-doctor-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let bin = dir.join("opencli-fake-bin");
+    let bin = dir.join("tomte-fake-bin");
     std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
 
     // Absolute path: checked directly.

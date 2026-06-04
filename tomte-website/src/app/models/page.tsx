@@ -8,7 +8,7 @@ import { Reveal } from "@/components/Reveal";
 export const metadata: Metadata = {
   title: "Models",
   description:
-    "Providers and models OpenCLI supports: the OpenAI GPT-5 family, the Anthropic Claude 4 family, and any OpenAI-compatible endpoint.",
+    "Providers and models Tomte supports: the OpenAI GPT-5 family, the Anthropic Claude 4 family, and any OpenAI-compatible endpoint.",
 };
 
 const ACCENT_HEX: Record<string, string> = {
@@ -38,7 +38,7 @@ export default function Models() {
       <PageHeader
         kicker="Reference"
         title="Point it at any provider."
-        intro="OpenCLI is provider-agnostic. Sign in with a subscription or an API key, switch models mid-session, and add any OpenAI-compatible endpoint. This catalogue reflects the latest release."
+        intro="Tomte is provider-agnostic. Sign in with a subscription or an API key, switch models mid-session, and add any OpenAI-compatible endpoint. This catalogue reflects the latest release."
       />
 
       {/* Providers. */}

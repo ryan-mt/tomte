@@ -86,7 +86,7 @@ pub async fn save_current_session_record(
         a.to_session_record().await
     };
     apply_host_state_to_session_record(app, &mut record);
-    if let Err(e) = opencli_core::session::save(&record) {
+    if let Err(e) = tomte_core::session::save(&record) {
         tracing::debug!(error = %e, "session save with host state failed");
     }
     app.pending_session_save = false;

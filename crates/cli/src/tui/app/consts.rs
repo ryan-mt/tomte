@@ -2,8 +2,8 @@
 
 use super::*;
 
-pub const GOAL_START_PREFIX: &str = "[opencli:/goal start]";
-pub const GOAL_CONTINUATION_PREFIX: &str = "[opencli:/goal continuation]";
+pub const GOAL_START_PREFIX: &str = "[tomte:/goal start]";
+pub const GOAL_CONTINUATION_PREFIX: &str = "[tomte:/goal continuation]";
 /// Max words allowed in a `/goal` objective. The objective is re-injected into
 /// context on every autonomous continuation turn, so an overlong one crowds out
 /// the actual work and degrades the model's reasoning ("mất thông minh"). ~100
@@ -30,8 +30,8 @@ pub fn goal_word_count(objective: &str) -> usize {
 pub fn goal_exceeds_limit(objective: &str) -> bool {
     goal_word_count(objective) > GOAL_MAX_WORDS || objective.chars().count() > GOAL_MAX_CHARS
 }
-pub const PLAN_APPROVED_PREFIX: &str = "[opencli:/plan approved]";
-pub const PLAN_REJECTED_PREFIX: &str = "[opencli:/plan rejected]";
+pub const PLAN_APPROVED_PREFIX: &str = "[tomte:/plan approved]";
+pub const PLAN_REJECTED_PREFIX: &str = "[tomte:/plan rejected]";
 pub const TODO_RECENT_COMPLETED_TTL: Duration = Duration::from_secs(30);
 /// Cap on in-memory composer recall history so a multi-day session can't grow
 /// it without bound. Oldest entries are dropped past this.

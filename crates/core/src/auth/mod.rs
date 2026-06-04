@@ -151,7 +151,7 @@ async fn resolve_openai(record: &AuthRecord) -> Result<Credential> {
         }
     }
     Err(anyhow::anyhow!(
-        "Not signed in for OpenAI. Run `opencli login` or set OPENAI_API_KEY."
+        "Not signed in for OpenAI. Run `tomte login` or set OPENAI_API_KEY."
     ))
 }
 
@@ -196,7 +196,7 @@ async fn resolve_anthropic(record: &AuthRecord) -> Result<Credential> {
         }
     }
     Err(anyhow::anyhow!(
-        "Not signed in for Anthropic. Run `opencli login --provider anthropic` or set ANTHROPIC_API_KEY."
+        "Not signed in for Anthropic. Run `tomte login --provider anthropic` or set ANTHROPIC_API_KEY."
     ))
 }
 

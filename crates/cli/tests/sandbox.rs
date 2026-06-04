@@ -1,6 +1,6 @@
 //! End-to-end checks that the OS sandbox helper actually confines a command.
 //! Linux-only (the helper applies Landlock + seccomp). Each test spawns the real
-//! `opencli __sandbox …` helper as a child, so the restrictions apply to that
+//! `tomte __sandbox …` helper as a child, so the restrictions apply to that
 //! child and never to the test runner.
 #![cfg(target_os = "linux")]
 
@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 
 fn run_sandboxed(writable: &str, network: bool, command: &str) -> Output {
     let policy = format!(r#"{{"writable_roots":["{writable}"],"network":{network}}}"#);
-    Command::new(env!("CARGO_BIN_EXE_opencli"))
+    Command::new(env!("CARGO_BIN_EXE_tomte"))
         .args(["__sandbox", "--policy", &policy, "--", "sh", "-c", command])
         .output()
         .expect("spawn sandbox helper")
@@ -25,7 +25,7 @@ fn landlock_active() -> bool {
 }
 
 fn tmp_workspace(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("opencli-sb-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("tomte-sb-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -55,7 +55,7 @@ fn write_outside_workspace_is_denied() {
         return;
     }
     let dir = tmp_workspace("out");
-    let probe = "/etc/opencli_sandbox_probe";
+    let probe = "/etc/tomte_sandbox_probe";
     let out = run_sandboxed(
         dir.to_str().unwrap(),
         false,

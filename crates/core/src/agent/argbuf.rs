@@ -362,7 +362,7 @@ pub(super) fn safe_tool_error_message(raw_name: &str, output: &str) -> String {
     let name = safe_system_reminder_text(name, SAFE_TOOL_HISTORY_NAME_CHARS);
     let output = safe_system_reminder_text(output.trim(), SAFE_TOOL_HISTORY_ERROR_CHARS);
     format!(
-        "<system-reminder>opencli could not execute tool `{name}`. The tool call was not recorded as a function_call because it does not match the active tool schema. Error: {output}</system-reminder>"
+        "<system-reminder>tomte could not execute tool `{name}`. The tool call was not recorded as a function_call because it does not match the active tool schema. Error: {output}</system-reminder>"
     )
 }
 

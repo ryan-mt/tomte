@@ -60,7 +60,7 @@ const fn anthropic(
     }
 }
 
-/// Every model opencli surfaces after sign-in, in display order (best general
+/// Every model tomte surfaces after sign-in, in display order (best general
 /// default first) within each provider. Facts verified against the published
 /// model docs (June 2026); ids not listed here fall back to the `family_*` rules.
 const MODELS: &[ModelInfo] = &[
@@ -255,7 +255,7 @@ fn family_supports_adaptive_thinking(model: &str) -> bool {
 }
 
 /// Parse the `(major, minor)` version from a `claude-<tier>-<major>-<minor>` id
-/// — the shape every Claude model opencli surfaces uses (a trailing date
+/// — the shape every Claude model tomte surfaces uses (a trailing date
 /// snapshot is ignored). Returns `None` for ids that don't fit, so callers fall
 /// back to a safe default rather than guessing.
 fn claude_version(model_lc: &str) -> Option<(u32, u32)> {

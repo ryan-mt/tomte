@@ -7,10 +7,10 @@ import { Reveal } from "@/components/Reveal";
 
 const allTools = toolBelt.flatMap((g) => g.tools);
 
-const sessionDemo = `opencli                       # launch the terminal UI
-opencli chat "add a test for the parser"
-opencli chat --model claude-opus-4-8 --reasoning high "refactor auth"
-echo "summarize CLAUDE.md" | opencli chat`;
+const sessionDemo = `tomte                       # launch the terminal UI
+tomte chat "add a test for the parser"
+tomte chat --model claude-opus-4-8 --reasoning high "refactor auth"
+echo "summarize CLAUDE.md" | tomte chat`;
 
 export default function Home() {
   return (
@@ -119,7 +119,7 @@ export default function Home() {
               Launch the full terminal UI, or go headless for scripts, cron, and systemd. Same agent either way.
             </p>
             <p className="mt-4 font-mono text-[12.5px] text-ink-3">
-              opencli, opencli resume, opencli chat, opencli run
+              tomte, tomte resume, tomte chat, tomte run
             </p>
           </div>
           <CodeBlock label="terminal" code={sessionDemo} />

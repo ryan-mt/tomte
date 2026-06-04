@@ -13,7 +13,7 @@ fn invalid_project_permissions_path(message: &'static str) -> io::Error {
 }
 
 fn validate_existing_permissions_path(cwd: &Path) -> io::Result<()> {
-    let dir = cwd.join(".opencli");
+    let dir = cwd.join(".tomte");
     match std::fs::symlink_metadata(&dir) {
         Ok(meta) => {
             if meta.file_type().is_symlink() {
@@ -107,7 +107,7 @@ pub(super) fn read_permissions_at(path: &Path) -> ProjectPermissions {
     }
 }
 
-/// The in-repo `<cwd>/.opencli/permissions.json`. Symlinked dir/file is treated
+/// The in-repo `<cwd>/.tomte/permissions.json`. Symlinked dir/file is treated
 /// as empty so a project link can't redirect the read.
 pub(super) fn load_project_file(cwd: &Path) -> ProjectPermissions {
     if validate_existing_permissions_path(cwd).is_err() {
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn user_allow_store_persists_and_is_idempotent() {
         let tmp = std::env::temp_dir().join(format!(
-            "opencli-perm-test-{}-{}",
+            "tomte-perm-test-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));
@@ -191,15 +191,15 @@ mod tests {
 
     #[test]
     fn project_file_allow_is_ignored_but_deny_is_honored() {
-        // A cloned repo's `.opencli/permissions.json` may tighten (deny) but must
+        // A cloned repo's `.tomte/permissions.json` may tighten (deny) but must
         // not silently grant (allow) — that is the whole point of the user store.
         let tmp = std::env::temp_dir().join(format!(
-            "opencli-perm-trust-{}-{}",
+            "tomte-perm-trust-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));
         let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(tmp.join(".opencli")).unwrap();
+        std::fs::create_dir_all(tmp.join(".tomte")).unwrap();
         std::fs::write(
             permissions_path(&tmp),
             r#"{"allow":["write_file","run_shell(curl:*)"],"deny":["run_shell(rm:*)"]}"#,
@@ -244,9 +244,9 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let base =
-            std::env::temp_dir().join(format!("opencli-perm-dir-link-{}", rand::random::<u64>()));
+            std::env::temp_dir().join(format!("tomte-perm-dir-link-{}", rand::random::<u64>()));
         let outside =
-            std::env::temp_dir().join(format!("opencli-perm-dir-target-{}", rand::random::<u64>()));
+            std::env::temp_dir().join(format!("tomte-perm-dir-target-{}", rand::random::<u64>()));
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&outside);
         std::fs::create_dir_all(&base).unwrap();
@@ -271,11 +271,9 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let base =
-            std::env::temp_dir().join(format!("opencli-perm-file-link-{}", rand::random::<u64>()));
-        let outside = std::env::temp_dir().join(format!(
-            "opencli-perm-file-target-{}",
-            rand::random::<u64>()
-        ));
+            std::env::temp_dir().join(format!("tomte-perm-file-link-{}", rand::random::<u64>()));
+        let outside =
+            std::env::temp_dir().join(format!("tomte-perm-file-target-{}", rand::random::<u64>()));
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_file(&outside);
         std::fs::create_dir_all(&base).unwrap();

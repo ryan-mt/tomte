@@ -41,7 +41,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  /export [path]      save conversation as markdown\n  \
                  /compact            ask the agent to compact the conversation\n  \
                  /todos              show the session todo list\n  \
-                 /about              show opencli version + build info\n  \
+                 /about              show tomte version + build info\n  \
                  /perms [on|off]     toggle the approval modal for writes/shell\n  \
                  /undo               revert the most recent file edit\n  \
                  /quit               exit\n\n\
@@ -81,7 +81,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                             .available_models()
                             .iter()
                             .map(|m| {
-                                let win = opencli_core::agent::context_window_label(m);
+                                let win = tomte_core::agent::context_window_label(m);
                                 format!("  · {m:<20} ({win} context)")
                             })
                             .collect::<Vec<_>>()
@@ -162,7 +162,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                         catalog.provider
                     ));
                     for m in catalog.models {
-                        let win = opencli_core::agent::context_window_label(m);
+                        let win = tomte_core::agent::context_window_label(m);
                         text.push_str(&format!("\n    · {m:<20} ({win} context)"));
                     }
                 }
@@ -341,7 +341,7 @@ pub fn split_slash_command(cmd: &str) -> (&str, &str) {
 /// chars/4 estimate of the visible conversation — user/assistant/reasoning/tool
 /// I/O and system notes on screen. Feeds the "Messages" category of the
 /// `/context` report; the prompt-side categories (system prompt, tool schemas,
-/// skills, …) are estimated in `opencli_core::context_report`.
+/// skills, …) are estimated in `tomte_core::context_report`.
 pub fn estimate_messages_tokens(blocks: &[Block]) -> u64 {
     fn est(s: &str) -> u64 {
         (s.chars().count() as u64).div_ceil(4)
