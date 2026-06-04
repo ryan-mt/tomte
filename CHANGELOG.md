@@ -82,6 +82,7 @@
 - Session files, project `SKILL.md`s, and subagent definitions are now read through a shared size-capped, regular-file-only helper, so a planted multi-GB file or a symlink to `/dev/zero` in a cloned repo (or the sessions dir) can't OOM the CLI when they're enumerated.
 - `web_search` now matches `web_fetch`'s SSRF hardening: its HTTP client follows redirects only to non-blocked http(s) addresses (a hijacked backend can't 302 it to cloud metadata or `127.0.0.1`), and result URLs with `file://`/`javascript:`/`data:` schemes are dropped instead of surfaced to the model.
 - A custom OpenAI-compatible provider's `base_url` must now be `https` (or an `http://localhost` proxy) so the API key isn't sent in cleartext. HTTP-error and non-streaming response bodies across the OpenAI/Anthropic clients are now bounded by the same auth-redacted 160-char excerpt as the parse path.
+- A project-local subagent (a `.opencli`/`.claude`/`.codex/agents/<name>.md` shipped in a cloned repo) is now confined to read-only tools even under Auto mode or `--dangerously-skip-permissions`, so an attacker-authored agent can't run `run_shell`/`write_file` with its own system prompt. Put trusted mutating agents in your global config.
 
 ## 0.0.1-beta.4
 

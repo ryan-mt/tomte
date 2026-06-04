@@ -302,7 +302,9 @@ Behaviour:\n\
         if !def.system_prompt.trim().is_empty() {
             agent.system_prompt = def.system_prompt.clone();
         }
-        let enforce_plan_mode = child_requires_plan_mode(ctx, a.requires_plan_mode());
+        let project_local = crate::subagent::is_project_local(&ctx.cwd, &subagent_type);
+        let enforce_plan_mode =
+            child_requires_plan_mode(ctx, a.requires_plan_mode(), project_local);
         if enforce_plan_mode {
             agent.approval = ApprovalMode::Plan;
             agent.require_approval = true;
@@ -413,8 +415,17 @@ Behaviour:\n\
     }
 }
 
-fn child_requires_plan_mode(ctx: &ToolContext, requested_plan_mode: bool) -> bool {
-    requested_plan_mode
+fn child_requires_plan_mode(
+    ctx: &ToolContext,
+    requested_plan_mode: bool,
+    project_local: bool,
+) -> bool {
+    // A project-local (cwd-relative) subagent definition is attacker-controlled
+    // (it ships in a cloned repo), so it never gets mutating tools — even under
+    // Auto / --dangerously-skip-permissions, where the parent-mode checks would
+    // otherwise let it run run_shell/write_file with the repo's unbounded prompt.
+    project_local
+        || requested_plan_mode
         || ctx.approval == ApprovalMode::Plan
         || (ctx.require_approval && ctx.approval != ApprovalMode::Auto)
 }
