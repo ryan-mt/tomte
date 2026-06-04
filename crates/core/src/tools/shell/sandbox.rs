@@ -212,4 +212,70 @@ mod tests {
         assert!(policy.writable_roots.is_empty());
         assert!(!policy.network);
     }
+
+    /// End-to-end of the wiring the helper-only integration tests skip: that
+    /// `shell_command` (resolve → wrap) actually re-execs us as the `__sandbox`
+    /// helper with the right policy for a confined mode.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn workspace_write_wraps_as_sandbox_helper() {
+        let config = Config::default(); // workspace-write, network off
+        let cmd = shell_command("echo hi", &config, Path::new("."));
+        let std_cmd = cmd.as_std();
+        assert_eq!(
+            std_cmd.get_program(),
+            std::env::current_exe().unwrap().as_os_str(),
+            "should re-exec our own binary as the sandbox helper"
+        );
+        let args: Vec<String> = std_cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        // __sandbox --policy <json> -- sh -c "echo hi"
+        assert_eq!(args.first().map(String::as_str), Some("__sandbox"));
+        assert_eq!(args.get(1).map(String::as_str), Some("--policy"));
+        assert!(
+            args[2].contains("\"network\":false"),
+            "policy json: {}",
+            args[2]
+        );
+        assert_eq!(&args[args.len() - 4..], ["--", "sh", "-c", "echo hi"]);
+    }
+
+    /// read-only must wrap with no writable roots (so the helper denies writes).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_only_wraps_with_empty_writable_roots() {
+        let mut config = Config::default();
+        config.sandbox.mode = "read-only".to_string();
+        let cmd = shell_command("ls", &config, Path::new("."));
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args[2].contains("\"writable_roots\":[]"),
+            "policy json: {}",
+            args[2]
+        );
+    }
+
+    /// danger-full-access bypasses the helper entirely and runs a plain shell.
+    #[test]
+    fn danger_full_access_runs_plain_shell_not_helper() {
+        let mut config = Config::default();
+        config.sandbox.mode = "danger-full-access".to_string();
+        let cmd = shell_command("echo hi", &config, Path::new("."));
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|a| a == "__sandbox"),
+            "danger mode must not use the helper"
+        );
+        assert!(args.iter().any(|a| a == "echo hi"));
+    }
 }

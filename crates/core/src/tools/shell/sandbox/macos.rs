@@ -50,3 +50,49 @@ fn build_profile(policy: &SandboxPolicy) -> String {
     p.push_str(")\n");
     p
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{build_profile, SandboxPolicy};
+    use std::path::PathBuf;
+
+    #[test]
+    fn profile_denies_writes_and_network_by_default() {
+        let policy = SandboxPolicy {
+            writable_roots: vec![PathBuf::from("/work/ws")],
+            network: false,
+        };
+        let p = build_profile(&policy);
+        assert!(p.contains("(version 1)"));
+        assert!(p.contains("(deny network*)"), "profile: {p}");
+        assert!(p.contains("(deny file-write*)"), "profile: {p}");
+        assert!(p.contains("(subpath \"/work/ws\")"), "profile: {p}");
+        // Harmless device nodes stay writable in every mode.
+        assert!(p.contains("/dev/null"), "profile: {p}");
+    }
+
+    #[test]
+    fn profile_allows_network_when_enabled() {
+        let policy = SandboxPolicy {
+            writable_roots: Vec::new(),
+            network: true,
+        };
+        let p = build_profile(&policy);
+        assert!(
+            !p.contains("(deny network*)"),
+            "network must not be denied when enabled: {p}"
+        );
+        assert!(p.contains("(deny file-write*)"), "profile: {p}");
+    }
+
+    #[test]
+    fn profile_escapes_quotes_in_paths() {
+        let policy = SandboxPolicy {
+            writable_roots: vec![PathBuf::from("/weird\"dir")],
+            network: false,
+        };
+        let p = build_profile(&policy);
+        // The `"` must be backslash-escaped inside the SBPL string literal.
+        assert!(p.contains("/weird\\\"dir"), "profile: {p}");
+    }
+}
