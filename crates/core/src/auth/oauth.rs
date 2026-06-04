@@ -174,6 +174,30 @@ pub async fn login_with_browser(open_browser: bool) -> Result<AuthRecord> {
     Ok(record)
 }
 
+/// Classify an OAuth loopback callback's query params. `None` means the request
+/// is not our redirect — its `state` is missing or doesn't match our per-login
+/// nonce (a browser prefetch/favicon probe, or a forged/stray request) — so it
+/// must be ignored rather than allowed to abort a login still waiting for the
+/// real callback. `Some(Ok(code))` / `Some(Err(_))` is our callback to act on.
+fn classify_callback(
+    params: &HashMap<String, String>,
+    expected_state: &str,
+) -> Option<Result<String>> {
+    if params.get("state").map(String::as_str) != Some(expected_state) {
+        return None;
+    }
+    if let Some(err) = params.get("error") {
+        let desc = params.get("error_description").cloned().unwrap_or_default();
+        return Some(Err(anyhow!(friendly_oauth_error(err, &desc))));
+    }
+    Some(
+        params
+            .get("code")
+            .cloned()
+            .ok_or_else(|| anyhow!("missing code in callback")),
+    )
+}
+
 async fn spawn_callback_server(
     expected_state: &str,
 ) -> Result<(
@@ -198,22 +222,13 @@ async fn spawn_callback_server(
         State(st): State<AppState>,
         Query(params): Query<HashMap<String, String>>,
     ) -> Html<String> {
-        let result: Result<String> = (|| {
-            let state = params.get("state").cloned().unwrap_or_default();
-            if state != st.expected_state {
-                return Err(anyhow!("OAuth state mismatch"));
-            }
-            if let Some(err) = params.get("error") {
-                let desc = params.get("error_description").cloned().unwrap_or_default();
-                let friendly = friendly_oauth_error(err, &desc);
-                return Err(anyhow!(friendly));
-            }
-            let code = params
-                .get("code")
-                .cloned()
-                .ok_or_else(|| anyhow!("missing code in callback"))?;
-            Ok(code)
-        })();
+        let Some(result) = classify_callback(&params, &st.expected_state) else {
+            // Not our redirect (state missing/mismatched) — ignore it WITHOUT
+            // consuming the result channel or shutting the server down, so the
+            // genuine callback can still complete the login. The caller's login
+            // timeout still releases the port if none ever arrives.
+            return Html(include_str!("../assets/error.html").to_string());
+        };
         let ok = result.is_ok();
         let mut guard = st.tx.lock().await;
         if let Some(tx) = guard.take() {
@@ -459,7 +474,43 @@ fn extract_account_id(id_token: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::callback_redirect_uri;
+    use super::{callback_redirect_uri, classify_callback};
+    use std::collections::HashMap;
+
+    fn params(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn classify_callback_ignores_state_mismatch_but_acts_on_ours() {
+        // Wrong or missing state -> not our redirect -> ignored (None), so a
+        // stray request can't abort a login still waiting for the real callback.
+        assert!(
+            classify_callback(&params(&[("state", "wrong"), ("code", "c")]), "right").is_none()
+        );
+        assert!(classify_callback(&params(&[("code", "c")]), "right").is_none());
+        // Matching state with a code -> our callback, yields the code.
+        assert!(matches!(
+            classify_callback(&params(&[("state", "right"), ("code", "abc")]), "right"),
+            Some(Ok(c)) if c == "abc"
+        ));
+        // Matching state carrying an OAuth error -> resolve as Err (not ignored).
+        assert!(matches!(
+            classify_callback(
+                &params(&[("state", "right"), ("error", "access_denied")]),
+                "right"
+            ),
+            Some(Err(_))
+        ));
+        // Matching state but no code -> Err, not silently ignored.
+        assert!(matches!(
+            classify_callback(&params(&[("state", "right")]), "right"),
+            Some(Err(_))
+        ));
+    }
 
     #[test]
     fn callback_redirect_uri_uses_same_ipv4_host_as_listener() {
