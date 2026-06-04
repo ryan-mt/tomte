@@ -6,13 +6,16 @@
 //! specific model id — a fallback entry is opaque, and the only thing we
 //! classify is the *shape* of a provider error string.
 //!
-//! The turn loop is intentionally NOT wired to use these yet. Reactive
-//! cross-provider failover needs two more guards before it is safe to land —
-//! (1) a credential-availability precheck so falling over to a provider with no
-//! stored credential doesn't turn a clear rate-limit into a confusing auth
-//! error, and (2) classifying fatal/overflow errors *before* overload so a
-//! 400/401/refusal isn't mistaken for "try a different model". Shipping the
-//! inert primitives first keeps the live turn path untouched until those land.
+//! These are consumed by the turn loop's `try_fail_over` (see `agent/turn.rs`),
+//! which wraps them in the two guards that make reactive failover safe: it
+//! builds each candidate via [`crate::client::LlmClient::for_config`] and skips
+//! one with no usable credential (so falling over never turns a clear rate-limit
+//! into a confusing auth error), and it classifies fatal/overflow errors
+//! *before* overload — via [`is_quota_or_overload`] plus
+//! [`crate::agent::is_context_overflow_message`] — so a 400/401/refusal or a
+//! context overflow is never mistaken for "try a different model". It runs only
+//! on the pre-stream send error, never mid-stream, so a fail-over can't replay
+//! output already shown to the user.
 
 use crate::config::Config;
 

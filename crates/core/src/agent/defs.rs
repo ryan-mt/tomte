@@ -38,6 +38,16 @@ pub(super) const MAX_FALLBACK_ATTEMPTS: usize = 2;
 /// Heuristic match for a provider's "input too large for the context window"
 /// rejection across OpenAI / Anthropic / OpenAI-compatible phrasings. The single
 /// source of truth the agent's auto-recovery and the TUI's error hint both use.
+///
+/// Also matches HTTP 413, which OpenAI-compatible endpoints (Groq, etc.) return
+/// when the request body exceeds the server's size cap — shedding stale tool
+/// output is the right recovery there too. We anchor on the canonical reason
+/// text ("payload too large" / "request entity too large"), which
+/// `reqwest::StatusCode::Display` always appends, rather than the bare number
+/// "413": a token count like "Requested 41300" contains "413", and OpenAI's
+/// *429* tokens-per-minute rate-limit reads "Request too large …", which must
+/// fail over to another model, not shed context. Keeping the needles textual
+/// avoids both false positives.
 pub fn is_context_overflow_message(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     m.contains("context window")
@@ -48,6 +58,8 @@ pub fn is_context_overflow_message(message: &str) -> bool {
         || m.contains("too many tokens")
         || m.contains("exceeds the context")
         || m.contains("reduce the length")
+        || m.contains("payload too large")
+        || m.contains("request entity too large")
 }
 
 /// A streamed response whose SSE feed ended before its terminal event
@@ -70,7 +82,44 @@ pub(super) fn is_stream_transport_error(message: &str) -> bool {
 
 #[cfg(test)]
 mod stream_error_tests {
-    use super::{is_stream_transport_error, is_stream_truncation_error};
+    use super::{
+        is_context_overflow_message, is_stream_transport_error, is_stream_truncation_error,
+    };
+
+    #[test]
+    fn classifies_413_payload_too_large_as_overflow() {
+        // OpenAI-compatible endpoints (e.g. Groq) reject an oversized request
+        // body with HTTP 413. `StatusCode::Display` always appends the canonical
+        // reason, so the surfaced error carries "Payload Too Large" — treat it as
+        // an overflow so the turn sheds stale tool output and retries.
+        for msg in [
+            "groq 413 Payload Too Large: request body too large",
+            "Anthropic 413 Request Entity Too Large",
+        ] {
+            assert!(
+                is_context_overflow_message(msg),
+                "should be overflow: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_treat_tpm_rate_limit_as_overflow() {
+        // OpenAI's 429 tokens-per-minute rate-limit message reads "Request too
+        // large …" and embeds a token count ("Requested 41300" contains "413").
+        // It must NOT be read as a context overflow — that would shed context and
+        // retry the same model instead of failing over. Guards the deliberate
+        // choice to match the canonical 413 reason text, never a numeric needle.
+        for msg in [
+            "OpenAI 429 Request too large for gpt-5.5 on tokens per min (TPM): Limit 30000, Requested 41300",
+            "rate_limit_exceeded: too many requests",
+        ] {
+            assert!(
+                !is_context_overflow_message(msg),
+                "should NOT be overflow: {msg}"
+            );
+        }
+    }
 
     #[test]
     fn classifies_each_provider_truncation_message() {

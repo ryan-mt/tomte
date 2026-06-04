@@ -7,6 +7,7 @@
 - Added left-drag text selection in the TUI — drag to highlight and copy on release (no Shift needed); handles wide CJK/emoji characters and clears on the next key, scroll, or click.
 - `/help` now documents composer history recall (↑/↓ on the first/last line) and the new left-drag selection.
 - Added automatic, provider-agnostic model failover: when the active model is rate-limited or overloaded, the turn switches to the next model in `fallback_models` and continues. Off by default; never fails over mid-stream or to a provider you aren't signed in to.
+- An HTTP 413 (payload too large) from an OpenAI-compatible endpoint (e.g. Groq) now triggers the same shed-stale-output-and-retry recovery as a native context overflow instead of hard-failing the turn. Matched on the canonical reason text, so a 429 tokens-per-minute rate-limit (whose token count can contain "413") still fails over rather than shedding.
 - `/cost` is now accurate and per-model: spend is tallied per model and split by billing class (input, output, cache read, cache write), Anthropic models are priced from their own rates, and the tally survives `/resume`.
 - Added project-scoped config: a `.opencli/config.json` overrides global `config.json` for that project. Only safe fields are honored (`model`, `reasoning_effort`, `verbosity`, `auto_compact`, `fallback_models`); security keys are ignored, so a cloned repo can't disable approvals or redirect the model.
 - Added `opencli-website/` — the marketing & docs site (static Next.js), auto-deployed to Vercel at https://opencli-website.vercel.app.
