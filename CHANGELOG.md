@@ -2,7 +2,7 @@
 
 ## 0.0.2
 
-- Renamed the project from `opencli` to `tomte` — the binary, crates (`tomte`/`tomte-core`), config dir (`~/.config/tomte`, project-local `.tomte/`), `TOMTE_*` env vars, and HTTP user-agent. Breaking: the old `~/.config/opencli` is no longer read, so re-run `tomte login`.
+- Renamed the project from `opencli` to `tomte` — the binary, crates (`tomte`/`tomte-core`), config dir (`~/.config/tomte`, project-local `.tomte/`), `TOMTE_*` env vars, the login-screen ASCII logo, and HTTP user-agent. Breaking: the old `~/.config/opencli` is no longer read, so re-run `tomte login`.
 - Added an OS-level sandbox for `run_shell`: commands run under Landlock + seccomp (Linux) or `sandbox-exec` (macOS), confining file writes to the workspace and blocking outbound network by default — so an auto-approved or prompt-injected command can't escape the project or exfiltrate. Modes `read-only` / `workspace-write` (default) / `danger-full-access`; `tomte doctor` shows the active mode. Other platforms run unsandboxed with a warning.
 - Sandbox mode and network can now be overridden per run: `--sandbox <mode>` / `--sandbox-allow-net` on `chat`/`run`, or the `TOMTE_SANDBOX_MODE` / `TOMTE_SANDBOX_NETWORK` env vars (precedence CLI > env > config). Per-run overrides never persist to `config.json`, and `doctor` reports the effective mode.
 - The Linux `run_shell` sandbox now applies conservative resource limits (inherited across the command tree): `RLIMIT_CORE=0` to block core dumps and a 4 GiB `RLIMIT_FSIZE` single-file cap so a runaway command can't fill the disk. RAM, CPU, and process counts stay uncapped to avoid breaking builds.
