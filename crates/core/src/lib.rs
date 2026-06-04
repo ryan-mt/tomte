@@ -25,4 +25,7 @@ mod tool_args;
 pub mod tools;
 pub mod usage;
 
+#[cfg(test)]
+mod reasoning_wire_tests;
+
 pub use anyhow::{Error, Result};

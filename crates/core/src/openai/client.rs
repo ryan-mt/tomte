@@ -54,7 +54,10 @@ const CHATGPT_BACKEND_BASE: &str = "https://chatgpt.com/backend-api/codex";
 /// own IR→wire boundary; every native provider must sanitize foreign reasoning
 /// the same way at its send boundary. Dropping is lossless here: the OpenAI path
 /// never stores its own reasoning ids today, so nothing legitimate is lost.
-fn strip_unsendable_reasoning(input: &mut Vec<InputItem>) {
+///
+/// `pub(crate)` so the cross-provider contract test in `reasoning_wire_tests`
+/// can assert this boundary alongside the Anthropic and Chat translators.
+pub(crate) fn strip_unsendable_reasoning(input: &mut Vec<InputItem>) {
     input.retain(|item| match item {
         InputItem::Reasoning { id, signature, .. } => !id.trim().is_empty() && signature.is_none(),
         _ => true,
