@@ -3,8 +3,10 @@
 //! The permission layer decides *whether* a command may run; this layer decides
 //! *what it can touch once running*. They are orthogonal: even an allowed,
 //! bypass-mode, or `--dangerously-skip-permissions` command executes inside the
-//! sandbox, so a prompt-injected `curl … | sh` or `rm -rf ~` cannot reach the
-//! network or write outside the workspace.
+//! sandbox. On Linux and macOS that stops a prompt-injected `curl … | sh` or
+//! `rm -rf ~` from reaching the network or writing outside the workspace; on
+//! Windows the sandbox is best-effort process-tree cleanup only and does NOT
+//! confine the filesystem or network (see the per-OS notes below).
 //!
 //! Mechanism per OS:
 //!   - **Linux**: a re-exec helper (`<exe> __sandbox --policy <json> -- sh -c
@@ -13,6 +15,10 @@
 //!     shell. Restrictions are inherited across `execve` and by every
 //!     descendant. See [`linux`].
 //!   - **macOS**: wraps the command with `sandbox-exec -p <SBPL profile>`.
+//!   - **Windows**: a re-exec helper runs the command inside a Job Object with
+//!     `KILL_ON_JOB_CLOSE` — best-effort process-tree cleanup only. Filesystem
+//!     and network are NOT confined (no cheap Windows equivalent); `doctor`
+//!     still reports the platform as unsandboxed. See [`windows`].
 //!   - **Other platforms**: no enforcement — the command runs unsandboxed and
 //!     `doctor` reports the gap.
 
@@ -27,6 +33,8 @@ use crate::config::Config;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+mod windows;
 
 /// Enforcement level. Vocabulary mirrors Codex for familiarity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,7 +135,12 @@ fn wrap_for_platform(command: &str, policy: &SandboxPolicy) -> Option<Command> {
     macos::wrap(command, policy)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+fn wrap_for_platform(command: &str, policy: &SandboxPolicy) -> Option<Command> {
+    windows::wrap(command, policy)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn wrap_for_platform(_command: &str, _policy: &SandboxPolicy) -> Option<Command> {
     None
 }
@@ -149,10 +162,14 @@ pub fn maybe_exec_helper() {
     {
         std::process::exit(linux::run_helper(args));
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        std::process::exit(windows::run_helper(args));
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = args;
-        eprintln!("tomte: the sandbox helper is only supported on Linux");
+        eprintln!("tomte: the sandbox helper is not supported on this platform");
         std::process::exit(70);
     }
 }
