@@ -113,6 +113,24 @@ async fn create_then_view_roundtrip() {
 }
 
 #[tokio::test]
+async fn view_range_reversed_is_error_not_panic() {
+    // A model-supplied reversed range (start > end after clamping) must surface
+    // an error, not panic the `lines[start..=end]` slice.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    cmd_create(root, Some("notes"), Some("l1\nl2\nl3\nl4"))
+        .await
+        .unwrap();
+    // [2, 0] clamps to start=2, end=0 — previously `lines[2..=0]` panicked.
+    assert!(cmd_view(root, Some("notes.md"), Some([2, 0])).is_err());
+    // A negative end (clamped to 0) below a positive start is likewise rejected.
+    assert!(cmd_view(root, Some("notes.md"), Some([3, -5])).is_err());
+    // A valid forward range still works (0-based inclusive).
+    let ok = cmd_view(root, Some("notes.md"), Some([1, 2])).unwrap();
+    assert!(ok.contains("l2") && ok.contains("l3"));
+}
+
+#[tokio::test]
 async fn create_twice_fails() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();

@@ -288,9 +288,9 @@ fn cmd_view(root: &Path, path: Option<&str>, view_range: Option<[i64; 2]>) -> Re
     let (body, header) = if let Some([start, end]) = view_range {
         let start = start.max(0) as usize;
         let end = (end.max(0) as usize).min(lines.len().saturating_sub(1));
-        if start >= lines.len() {
+        if start >= lines.len() || start > end {
             bail!(
-                "view_range start {start} is past the end of {path:?} ({} lines)",
+                "invalid view_range [{start}, {end}] for {path:?} ({} lines)",
                 lines.len()
             );
         }
