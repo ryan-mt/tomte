@@ -50,6 +50,18 @@ fn parse_anthropic_response(text: &str) -> Result<serde_json::Value> {
     })
 }
 
+/// A 200 Messages body with `stop_reason: refusal` is a safety block, not a
+/// usable completion. Surface it as an error, mirroring the streaming pump
+/// (`message_stop` refusal in stream.rs).
+fn check_message_block(body: &serde_json::Value) -> Result<()> {
+    if body.get("stop_reason").and_then(|s| s.as_str()) == Some("refusal") {
+        return Err(anyhow!(
+            "response blocked by the provider safety classifier (stop_reason: refusal)"
+        ));
+    }
+    Ok(())
+}
+
 /// Compute the `anthropic-beta` header value, or `None` when no betas apply.
 /// OAuth always carries the claude-code/oauth betas; the 1M context beta is
 /// appended on top for any 1M-window model. On the API-key path the only beta
@@ -181,7 +193,9 @@ impl AnthropicClient {
                 crate::sensitive::error_excerpt(&text)
             ));
         }
-        parse_anthropic_response(&text)
+        let parsed = parse_anthropic_response(&text)?;
+        check_message_block(&parsed)?;
+        Ok(parsed)
     }
 
     /// Prepend the Claude Code identity line to the system prompt when using
@@ -230,7 +244,18 @@ impl crate::client::ProviderClient for AnthropicClient {
 
 #[cfg(test)]
 mod beta_header_tests {
-    use super::{anthropic_beta_value, parse_anthropic_response, CONTEXT_1M_BETA, OAUTH_BETA};
+    use super::{
+        anthropic_beta_value, check_message_block, parse_anthropic_response, CONTEXT_1M_BETA,
+        OAUTH_BETA,
+    };
+
+    #[test]
+    fn check_message_block_flags_refusal() {
+        use serde_json::json;
+        assert!(check_message_block(&json!({"stop_reason": "refusal"})).is_err());
+        assert!(check_message_block(&json!({"stop_reason": "end_turn"})).is_ok());
+        assert!(check_message_block(&json!({"content": []})).is_ok());
+    }
 
     #[test]
     fn redacts_auth_values_from_error_bodies() {

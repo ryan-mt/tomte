@@ -33,6 +33,26 @@ fn parse_json_response(text: &str) -> Result<serde_json::Value> {
     })
 }
 
+/// A 200 Responses body can still encode a blocked or failed turn. Surface it as
+/// an error instead of a silent empty "success", mirroring the streaming pump
+/// (`response.incomplete` content_filter / `response.failed` in stream.rs).
+fn check_responses_block(body: &serde_json::Value) -> Result<()> {
+    let incomplete_reason = body
+        .get("incomplete_details")
+        .and_then(|d| d.get("reason"))
+        .and_then(|r| r.as_str());
+    if incomplete_reason == Some("content_filter") {
+        return Err(anyhow!(
+            "response blocked by the provider content filter \
+             (incomplete_details.reason: content_filter)"
+        ));
+    }
+    if body.get("status").and_then(|s| s.as_str()) == Some("failed") {
+        return Err(anyhow!("response failed (status: failed)"));
+    }
+    Ok(())
+}
+
 const API_BASE: &str = "https://api.openai.com/v1";
 const CHATGPT_BACKEND_BASE: &str = "https://chatgpt.com/backend-api/codex";
 
@@ -178,7 +198,9 @@ impl OpenAiClient {
                 crate::sensitive::error_excerpt(&text)
             ));
         }
-        parse_json_response(&text)
+        let parsed = parse_json_response(&text)?;
+        check_responses_block(&parsed)?;
+        Ok(parsed)
     }
 
     fn apply_credential_defaults(&self, req: &mut ResponsesRequest) {
@@ -289,9 +311,26 @@ impl crate::client::ProviderClient for OpenAiClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_openai_reasoning_effort, parse_json_response, strip_unsendable_reasoning,
+        check_responses_block, normalize_openai_reasoning_effort, parse_json_response,
+        strip_unsendable_reasoning,
     };
     use crate::openai::models::{InputItem, MessageContent};
+
+    #[test]
+    fn check_responses_block_flags_content_filter_and_failed() {
+        use serde_json::json;
+        assert!(check_responses_block(
+            &json!({"status": "incomplete", "incomplete_details": {"reason": "content_filter"}})
+        )
+        .is_err());
+        assert!(check_responses_block(&json!({"status": "failed"})).is_err());
+        // A normal completion, or a benign incomplete reason, passes through.
+        assert!(check_responses_block(&json!({"status": "completed"})).is_ok());
+        assert!(check_responses_block(
+            &json!({"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}})
+        )
+        .is_ok());
+    }
 
     #[test]
     fn strips_empty_id_reasoning_but_keeps_real_ids_and_other_items() {
