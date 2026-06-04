@@ -133,6 +133,12 @@ fn apply_filters(
         if r.title.is_empty() || r.url.is_empty() {
             continue;
         }
+        // Only surface http(s) results: a decoded uddg target can be a
+        // `file://`, `javascript:`, or `data:` URL, which must not reach the
+        // model (or a later web_fetch).
+        if !is_http_url(&r.url) {
+            continue;
+        }
         if is_search_ad_or_tracking_url(&r.url) {
             continue;
         }
@@ -224,6 +230,27 @@ Parameters:\n\
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .timeout(Duration::from_secs(20))
+            // SSRF guard parity with web_fetch: a compromised or MITM'd search
+            // backend could 302 us to an internal address (cloud metadata,
+            // 127.0.0.1, RFC1918). Follow only http(s) redirects to non-blocked
+            // literal IPs, capped at a few hops.
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 4 {
+                    return attempt.stop();
+                }
+                let url = attempt.url();
+                if !matches!(url.scheme(), "http" | "https") {
+                    return attempt.stop();
+                }
+                if let Some(host) = url.host_str() {
+                    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                        if super::is_blocked_ip(&ip) {
+                            return attempt.stop();
+                        }
+                    }
+                }
+                attempt.follow()
+            }))
             .build()?;
         let mut last_err: Option<String> = None;
         for backend in Backend::ALL {
@@ -386,6 +413,15 @@ fn host_of(url: &str) -> String {
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
         .unwrap_or_default()
+}
+
+/// Whether a result URL is a plain web URL safe to surface. Drops `file://`,
+/// `javascript:`, `data:`, and other non-web schemes a decoded uddg target
+/// could carry.
+fn is_http_url(url: &str) -> bool {
+    url::Url::parse(url)
+        .map(|u| matches!(u.scheme(), "http" | "https"))
+        .unwrap_or(false)
 }
 
 fn is_search_ad_or_tracking_url(raw: &str) -> bool {

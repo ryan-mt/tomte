@@ -80,6 +80,7 @@
 - MCP servers and lifecycle hooks now get `run_shell`'s secret-env scrub: inherited API keys, tokens, and live agent sockets are stripped before spawn so a third-party MCP package or a hook can't exfiltrate them. Pass a server's needed secret via its explicit `env` map.
 - State directories are now owner-only (`0o700`) and log files `0o600`: the per-project session dir, the logs dir, and the config tree are hardened at startup. `config_dir` no longer falls back to the working directory (which risked git-committing `auth.json`) — it uses `~/.config` or a temp dir.
 - Session files, project `SKILL.md`s, and subagent definitions are now read through a shared size-capped, regular-file-only helper, so a planted multi-GB file or a symlink to `/dev/zero` in a cloned repo (or the sessions dir) can't OOM the CLI when they're enumerated.
+- `web_search` now matches `web_fetch`'s SSRF hardening: its HTTP client follows redirects only to non-blocked http(s) addresses (a hijacked backend can't 302 it to cloud metadata or `127.0.0.1`), and result URLs with `file://`/`javascript:`/`data:` schemes are dropped instead of surfaced to the model.
 
 ## 0.0.1-beta.4
 

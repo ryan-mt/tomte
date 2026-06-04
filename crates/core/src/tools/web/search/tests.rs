@@ -5,6 +5,24 @@ const SAMPLE: &str = r#"<a rel="nofollow" class="result__a" href="//duckduckgo.c
 const MOJEEK_SAMPLE: &str = r#"<a class="title" title="https://tokio.rs/" href="https://tokio.rs/">Tokio - async <b>runtime</b></a></h2><p class="s"><strong>Tokio</strong> is an async runtime.</p><a class="title" title="https://github.com/tokio-rs/tokio" href="https://github.com/tokio-rs/tokio">GitHub tokio-rs</a></h2><p class="s">The source repo.</p>"#;
 
 #[test]
+fn apply_filters_drops_non_http_schemes() {
+    let mk = |url: &str| SearchResult {
+        title: "t".into(),
+        url: url.into(),
+        snippet: String::new(),
+    };
+    let raw = vec![
+        mk("https://tokio.rs/"),
+        mk("javascript:alert(1)"),
+        mk("file:///etc/passwd"),
+        mk("data:text/html,x"),
+    ];
+    let out = apply_filters(raw, 10, None, None);
+    assert_eq!(out.len(), 1, "only the http(s) result should survive");
+    assert_eq!(out[0].url, "https://tokio.rs/");
+}
+
+#[test]
 fn ddg_parses_title_url_and_snippet() {
     let r = parse_ddg(SAMPLE);
     assert_eq!(r.len(), 2);
