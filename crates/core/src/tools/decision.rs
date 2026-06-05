@@ -93,6 +93,7 @@ The model in play and a timestamp are stamped automatically — do not pass them
             bail!("record_decision requires both a `decision` and a `why`.");
         }
         let record = DecisionRecord {
+            anchor: decisions::capture_anchor(&ctx.cwd, &loc),
             loc: loc.clone(),
             decision: a.decision.trim().to_string(),
             why: a.why.trim().to_string(),

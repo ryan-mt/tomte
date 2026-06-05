@@ -108,6 +108,10 @@ enum Command {
         /// List every recorded decision.
         #[arg(long)]
         all: bool,
+        /// Reconcile the trail against the working tree: heal decisions whose
+        /// line drifted, and flag any whose code is gone. Pillar 5 — Drift Watch.
+        #[arg(long)]
+        reconcile: bool,
         /// Working directory (defaults to the current directory).
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
@@ -233,7 +237,12 @@ async fn async_main() -> Result<()> {
             set_model,
             set_reasoning,
         }) => commands::config_cmd::run(show, set_model, set_reasoning).await,
-        Some(Command::Why { loc, all, cwd }) => commands::why::run(loc, all, cwd).await,
+        Some(Command::Why {
+            loc,
+            all,
+            reconcile,
+            cwd,
+        }) => commands::why::run(loc, all, reconcile, cwd).await,
     }
 }
 

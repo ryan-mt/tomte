@@ -32,6 +32,12 @@ pub struct DecisionRecord {
     pub model: String,
     /// Wall-clock epoch milliseconds the decision was recorded.
     pub ts: u64,
+    /// A snapshot of the trimmed source line at `loc` when the decision was
+    /// recorded. Lets `reconcile` re-locate the decision after the code moves,
+    /// so `tomte why` never cites a line that has drifted. `None` for older
+    /// records and for file-only locations (no `:line`). Pillar 5 — Drift Watch.
+    #[serde(default)]
+    pub anchor: Option<String>,
 }
 
 /// `<config>/projects/<key>/decisions.jsonl` — sibling of the memory store,
@@ -85,6 +91,142 @@ pub(crate) fn load_at(path: &Path) -> Vec<DecisionRecord> {
 pub fn for_loc(cwd: &Path, loc: &str) -> Vec<DecisionRecord> {
     let needle = loc.trim();
     load(cwd).into_iter().filter(|d| d.loc == needle).collect()
+}
+
+// ---- Drift Watch: reconcile the trail against the working tree (Pillar 5) ---
+
+/// Split a `loc` into its file part and an optional 1-based line number. A
+/// trailing `:<digits>` is the line; anything else is a file-only location.
+/// `src/a.rs:88` -> (`src/a.rs`, Some(88)); `src/a.rs` -> (`src/a.rs`, None).
+fn parse_loc(loc: &str) -> (&str, Option<usize>) {
+    match loc.rsplit_once(':') {
+        Some((file, line)) if !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit()) => {
+            match line.parse::<usize>() {
+                Ok(n) if n >= 1 => (file, Some(n)),
+                _ => (loc, None),
+            }
+        }
+        _ => (loc, None),
+    }
+}
+
+/// Snapshot the trimmed source line at `loc` for use as a drift anchor. Returns
+/// `None` for a file-only `loc`, a missing file, an out-of-range line, or a
+/// blank line (a blank anchor would match everywhere and is useless).
+pub fn capture_anchor(cwd: &Path, loc: &str) -> Option<String> {
+    let (file, line) = parse_loc(loc.trim());
+    let n = line?;
+    let text = std::fs::read_to_string(cwd.join(file)).ok()?;
+    let raw = text.lines().nth(n - 1)?.trim();
+    if raw.is_empty() {
+        None
+    } else {
+        Some(raw.to_string())
+    }
+}
+
+/// What `reconcile` found, for the `tomte why --reconcile` summary.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ReconcileReport {
+    /// Records whose anchored line is still where the `loc` says — left as is.
+    pub present: usize,
+    /// Records with no anchor or a file-only `loc` — nothing to reconcile.
+    pub skipped: usize,
+    /// `(old_loc, new_loc)` for records whose line drifted and self-healed.
+    pub moved: Vec<(String, String)>,
+    /// `loc`s whose anchored line is gone from the file entirely.
+    pub gone: Vec<String>,
+    /// `loc`s whose anchored line now appears in 2+ places — can't auto-heal.
+    pub ambiguous: Vec<String>,
+}
+
+impl ReconcileReport {
+    /// True when at least one record drifted and a rewrite is warranted.
+    pub fn changed(&self) -> bool {
+        !self.moved.is_empty()
+    }
+    /// `loc`s that need a human's eyes: gone or ambiguous.
+    pub fn stale(&self) -> usize {
+        self.gone.len() + self.ambiguous.len()
+    }
+}
+
+/// Reconcile every anchored decision against the current working tree: heal the
+/// `loc` of any whose line merely moved, and flag any whose line is gone or
+/// ambiguous. Records that moved are persisted (atomic rewrite of the trail);
+/// nothing else is touched. Records with no anchor (older format) or a file-only
+/// `loc` are left exactly as they are. The fix for `for_loc`'s exact-line match
+/// going stale the moment code shifts. Pillar 5 — Drift Watch (A1).
+pub fn reconcile(cwd: &Path) -> ReconcileReport {
+    reconcile_at(&store_path(cwd), cwd)
+}
+
+/// `reconcile` with the store path and the source-file root passed separately,
+/// so tests can drive the logic without touching the real config directory.
+pub(crate) fn reconcile_at(store: &Path, root: &Path) -> ReconcileReport {
+    let mut records = load_at(store);
+    let mut report = ReconcileReport::default();
+
+    for rec in records.iter_mut() {
+        let Some(anchor) = rec.anchor.clone() else {
+            report.skipped += 1;
+            continue;
+        };
+        let (file, line) = parse_loc(&rec.loc);
+        let Some(n) = line else {
+            report.skipped += 1;
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(root.join(file)) else {
+            report.gone.push(rec.loc.clone());
+            continue;
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.get(n - 1).map(|l| l.trim()) == Some(anchor.as_str()) {
+            report.present += 1;
+            continue;
+        }
+        let hits: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.trim() == anchor)
+            .map(|(i, _)| i + 1)
+            .collect();
+        match hits.as_slice() {
+            [only] => {
+                let new_loc = format!("{file}:{only}");
+                report.moved.push((rec.loc.clone(), new_loc.clone()));
+                rec.loc = new_loc;
+            }
+            [] => report.gone.push(rec.loc.clone()),
+            _ => report.ambiguous.push(rec.loc.clone()),
+        }
+    }
+
+    if report.changed() {
+        let _ = save_all(store, &records);
+    }
+    report
+}
+
+/// Atomically rewrite the whole trail (used by `reconcile` after a heal): write
+/// to a sibling temp file, then rename over the store so a crash can't leave a
+/// half-written trail. Malformed lines that `load_at` skipped are not preserved
+/// — a reconcile normalizes the file.
+fn save_all(path: &Path, records: &[DecisionRecord]) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let mut body = String::new();
+    for r in records {
+        body.push_str(&serde_json::to_string(r).context("serialize decision")?);
+        body.push('\n');
+    }
+    let tmp = path.with_extension("jsonl.tmp");
+    std::fs::write(&tmp, body).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
+    Ok(())
 }
 
 // ---- CLI rendering (`tomte why`) -------------------------------------------
@@ -217,6 +359,7 @@ mod tests {
             rejected: vec!["panic!() -> crashes callers".into()],
             model: model.into(),
             ts: 1,
+            anchor: None,
         }
     }
 
@@ -281,5 +424,98 @@ mod tests {
         assert!(all.contains("src/a.rs:1"));
         assert!(render_for_loc(&[], "x:1").contains("no decision"));
         assert!(render_all(&[]).contains("empty"));
+    }
+
+    // ---- Drift Watch (Pillar 5, A1) ----
+
+    fn anchored(loc: &str, anchor: &str) -> DecisionRecord {
+        let mut r = rec(loc, "gpt-5.5");
+        r.anchor = Some(anchor.into());
+        r
+    }
+
+    fn src_root(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tomte_src_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn parse_loc_splits_trailing_line_number() {
+        assert_eq!(parse_loc("src/a.rs:88"), ("src/a.rs", Some(88)));
+        assert_eq!(parse_loc("src/a.rs"), ("src/a.rs", None));
+        // 0 is not a 1-based line; a non-numeric suffix is part of the path.
+        assert_eq!(parse_loc("src/a.rs:0"), ("src/a.rs:0", None));
+        assert_eq!(parse_loc("weird:name"), ("weird:name", None));
+    }
+
+    #[test]
+    fn capture_anchor_snapshots_the_trimmed_line() {
+        let root = src_root("cap");
+        std::fs::write(root.join("src/c.rs"), "fn a() {}\n    let z = 1;\n").unwrap();
+        assert_eq!(
+            capture_anchor(&root, "src/c.rs:2"),
+            Some("let z = 1;".to_string())
+        );
+        assert_eq!(capture_anchor(&root, "src/c.rs"), None); // file-only loc
+        assert_eq!(capture_anchor(&root, "src/c.rs:99"), None); // out of range
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reconcile_heals_a_moved_line() {
+        let store = tmp("rec_move");
+        let root = src_root("rec_move");
+        // The anchored line drifted from line 1 to line 3.
+        std::fs::write(
+            root.join("src/a.rs"),
+            "// header\n// added\nlet token = mint();\n",
+        )
+        .unwrap();
+        append_at(&store, &anchored("src/a.rs:1", "let token = mint();")).unwrap();
+
+        let report = reconcile_at(&store, &root);
+        assert_eq!(
+            report.moved,
+            vec![("src/a.rs:1".to_string(), "src/a.rs:3".to_string())]
+        );
+        // The heal is persisted, so `tomte why src/a.rs:3` now finds it.
+        assert_eq!(load_at(&store)[0].loc, "src/a.rs:3");
+        let _ = std::fs::remove_dir_all(store.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reconcile_flags_gone_and_ambiguous() {
+        let store = tmp("rec_stale");
+        let root = src_root("rec_stale");
+        std::fs::write(root.join("src/dup.rs"), "a();\nx();\nx();\n").unwrap();
+        std::fs::write(root.join("src/gone.rs"), "// nothing here\n").unwrap();
+        append_at(&store, &anchored("src/dup.rs:1", "x();")).unwrap();
+        append_at(&store, &anchored("src/gone.rs:1", "removed();")).unwrap();
+
+        let report = reconcile_at(&store, &root);
+        assert_eq!(report.ambiguous, vec!["src/dup.rs:1".to_string()]);
+        assert_eq!(report.gone, vec!["src/gone.rs:1".to_string()]);
+        assert!(!report.changed());
+        let _ = std::fs::remove_dir_all(store.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reconcile_skips_unanchored_and_keeps_present() {
+        let store = tmp("rec_keep");
+        let root = src_root("rec_keep");
+        std::fs::write(root.join("src/p.rs"), "fn main() {}\n").unwrap();
+        append_at(&store, &anchored("src/p.rs:1", "fn main() {}")).unwrap(); // present
+        append_at(&store, &rec("src/p.rs:1", "gpt-5.5")).unwrap(); // no anchor → skipped
+
+        let report = reconcile_at(&store, &root);
+        assert_eq!(report.present, 1);
+        assert_eq!(report.skipped, 1);
+        assert!(!report.changed());
+        let _ = std::fs::remove_dir_all(store.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
