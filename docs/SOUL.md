@@ -64,10 +64,11 @@ tomte vibe-codes — calmly and legibly — not a replacement for it.
 3. **Keep vibe-coding foreground.** Chat + watch-it-work stays the default and the heart.
 4. **No core changes before 0.0.2 (ships 2026-06-08).** Stability first; soul-bets staged after.
 
-## 5. The four pillars
+## 5. The pillars
 
 Each pillar is an *open* lane (evidence in §10) that also *is* the custodian. Together they
-form one stance, not a feature pile.
+form one stance, not a feature pile. Pillars 1–4 are the foundation; Pillar 5 is a newer lane that
+builds *on top of* them (and is staged last).
 
 **Pillar 1 — Glass-box: legible & bounded.**
 Narrate intent, scope, and cost *before* acting; show the blast radius; no silent multi-minute
@@ -94,6 +95,16 @@ one-line "left in order" summary at end of turn; a disciplined, calm palette (ac
 one muted accent); notifications only at decision points; the diff shown before it's applied.
 (Fixes the real, widely-cited Claude Code/Gemini scrollback+flicker complaint.) The custodian
 *leaves the room tidy*. Built on the existing ratatui/crossterm stack.
+
+**Pillar 5 — The custodian's conscience: the active decision trail.** *(Proposed; builds on 1, 2 & 4.)*
+The Pillar-2 trail today is inert — replayed verbatim, never reconciled against the code it describes.
+Pillar 5 makes it *active*: it reconciles itself against the working tree (a decision never cites code
+that moved or vanished), surfaces a file's recorded decisions in the Pillar-1 pre-flight *before* an
+edit could break one, and lets **only a human** overturn a decision — on the record, in the Pillar-4
+end-of-turn summary. A promise one model made weeks ago confronts the edit another model is about to
+make today; that needs durable rejected-alternatives + a model stamp + cross-model replay + an active
+gate all at once, so no single-vendor or write-only-memory tool can copy it. (The endpoint of
+"multi-model as plumbing.") Design: `docs/pillar-5-conscience.md`. The custodian *keeps its own promises*.
 
 *Cross-cutting enabler:* normalized **cost/token receipts** across providers (a multi-model-only
 advantage) support Pillars 1 and 4.
@@ -144,6 +155,13 @@ them in tomte's own idiom.
 ### Stage 3 — Pillar 3 (voice) + cost receipts
 - Per-provider voice calibration; normalized cross-provider cost display.
 - Verify: consistent stance across a model switch; cost figures reconcile with provider usage.
+
+### Stage 4 — Pillar 5 (the conscience): the active decision trail
+- Make the Pillar-2 trail self-auditing: reconcile against the tree, confront edits in the Pillar-1
+  pre-flight, log human overrides in the Pillar-4 summary. **Depends on Pillars 1 & 4;
+  design-and-approve before coding.** Full design in `docs/pillar-5-conscience.md`.
+- Verify: a decision self-heals after its code moves; an edit that contradicts a recorded decision is
+  surfaced before it lands; only a human clears it, and the override appears in the end-of-turn summary.
 
 Every stage keeps the vibe-coding loop and a foreground fallback.
 
