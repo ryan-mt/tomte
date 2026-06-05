@@ -3,8 +3,12 @@
 use super::super::test_support::{ctx, grep_available, missing_rg, rg_available, write};
 use super::*;
 
+// async-aware so the guard can be held across the `.await` below without tripping
+// `clippy::await_holding_lock` (a std MutexGuard across an await can stall the runtime).
+// LazyLock because tokio::sync::Mutex::new is not const and statics need a const init.
 #[cfg(unix)]
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ENV_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 fn grep_args(pattern: &str) -> GrepArgs {
     GrepArgs {
@@ -71,7 +75,7 @@ fn grep_output_mode_accepts_common_model_aliases() {
 async fn grep_scrubs_secret_env_from_rg_child() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let fake_rg = dir.path().join("fake-rg");
     std::fs::write(
