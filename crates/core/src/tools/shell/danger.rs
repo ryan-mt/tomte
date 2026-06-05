@@ -3,38 +3,26 @@
 
 pub fn classify_danger(command: &str) -> Option<&'static str> {
     let lower = command.to_ascii_lowercase();
-    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    let scan = normalize_shell_scan(&lower);
+    let tokens: Vec<&str> = scan.split_whitespace().collect();
+    let raw_tokens: Vec<&str> = lower.split_whitespace().collect();
     let command_names: Vec<String> = tokens.iter().map(|t| shell_token_command_name(t)).collect();
+    let raw_command_names: Vec<String> = raw_tokens
+        .iter()
+        .map(|t| shell_token_command_name(t))
+        .collect();
     let has = |t: &str| command_names.iter().any(|name| name == t);
     // Case-preserving tokens for the few flags whose case matters (`git branch
     // -D` force-delete vs the benign `-d`), since `lower`/`tokens` are lowercased.
     let orig_tokens: Vec<&str> = command.split_whitespace().collect();
-    let stripped: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
+    let stripped: String = scan.chars().filter(|c| !c.is_whitespace()).collect();
     if stripped.contains(":(){:|:&};:") {
         return Some("fork bomb pattern detected");
     }
-    if let Some(rm_idx) = command_names.iter().position(|n| n == "rm") {
-        let is_recursive = tokens.iter().any(|t| {
-            matches!(*t, "-rf" | "-fr" | "-r" | "-R" | "--recursive")
-                || (t.starts_with('-')
-                    && !t.starts_with("--")
-                    && t.contains('r')
-                    && t.contains('f'))
-        });
-        if is_recursive {
-            // Deletion targets are the non-flag tokens AFTER the `rm` executable.
-            // Command/wrapper words (`rm`, `/bin/rm`, `sudo …`) sit at or before
-            // `rm_idx`, so an executable path like `/bin/rm` isn't mistaken for a
-            // target under `/bin` — yet a genuine target like `/etc/sudo` (which
-            // appears after rm) is still inspected.
-            let dangerous_target = tokens
-                .iter()
-                .skip(rm_idx + 1)
-                .any(|t| !t.starts_with('-') && is_dangerous_rm_target(t));
-            if dangerous_target {
-                return Some("recursive rm targeting root, home, or glob");
-            }
-        }
+    if detects_recursive_dangerous_rm(&tokens, &command_names)
+        || detects_recursive_dangerous_rm(&raw_tokens, &raw_command_names)
+    {
+        return Some("recursive rm targeting root, home, or glob");
     }
     if command_names
         .iter()
@@ -244,13 +232,109 @@ fn is_versioned_name(name: &str, base: &str) -> bool {
         })
 }
 
+fn detects_recursive_dangerous_rm(tokens: &[&str], command_names: &[String]) -> bool {
+    let Some(rm_idx) = command_names.iter().position(|n| n == "rm") else {
+        return false;
+    };
+    let is_recursive = tokens.iter().any(|t| {
+        matches!(*t, "-rf" | "-fr" | "-r" | "-R" | "--recursive")
+            || (t.starts_with('-') && !t.starts_with("--") && t.contains('r') && t.contains('f'))
+    });
+    is_recursive
+        && tokens
+            .iter()
+            .skip(rm_idx + 1)
+            .any(|t| !t.starts_with('-') && is_dangerous_rm_target(t))
+}
+
 fn shell_token_command_name(token: &str) -> String {
     let token = token.trim_end_matches([';', '&', '|']);
-    // Shells let quotes appear anywhere inside a word (`r''m`, `"rm"`, `rm''`
-    // all execute `rm`), so strip every quote char — not just the surrounding
-    // ones — before taking the basename, otherwise `r''m -rf /` slips past.
-    let literal: String = token.chars().filter(|c| !matches!(c, '"' | '\'')).collect();
-    literal.rsplit(['/', '\\']).next().unwrap_or("").to_string()
+    let normalized = normalize_shell_scan(token);
+    let literal = normalized.split_whitespace().next().unwrap_or("");
+    let literal: String = literal
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\''))
+        .collect();
+    literal.rsplit('/').next().unwrap_or("").to_string()
+}
+
+fn normalize_shell_scan(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => {
+                if let Some(next) = chars.get(i + 1) {
+                    out.push(*next);
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            '\'' => {
+                out.push('\'');
+                i += 1;
+                while let Some(ch) = chars.get(i) {
+                    out.push(*ch);
+                    i += 1;
+                    if *ch == '\'' {
+                        break;
+                    }
+                }
+            }
+            '"' => i += 1,
+            '$' => i = push_shell_param(&chars, i, &mut out),
+            ch => {
+                out.push(ch);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn push_shell_param(chars: &[char], dollar: usize, out: &mut String) -> usize {
+    let next = dollar + 1;
+    if chars.get(next) == Some(&'{') {
+        if let Some(end) = chars
+            .iter()
+            .enumerate()
+            .skip(next + 1)
+            .find_map(|(i, ch)| (*ch == '}').then_some(i))
+        {
+            let body: String = chars[next + 1..end].iter().collect();
+            let name: String = body
+                .chars()
+                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                .collect();
+            if name.eq_ignore_ascii_case("ifs") {
+                out.push(' ');
+            } else if !body.contains(':') && !name.is_empty() {
+                out.push('$');
+                out.push_str(&name);
+            }
+            return end + 1;
+        }
+    }
+    let name_end = chars
+        .iter()
+        .enumerate()
+        .skip(next)
+        .find_map(|(i, ch)| (!ch.is_ascii_alphanumeric() && *ch != '_').then_some(i))
+        .unwrap_or(chars.len());
+    if name_end == next {
+        out.push('$');
+        return next;
+    }
+    let name: String = chars[next..name_end].iter().collect();
+    if name.eq_ignore_ascii_case("ifs") {
+        out.push(' ');
+    } else {
+        out.push('$');
+        out.push_str(&name);
+    }
+    name_end
 }
 
 fn git_checkout_discards_worktree(tokens: &[&str]) -> bool {

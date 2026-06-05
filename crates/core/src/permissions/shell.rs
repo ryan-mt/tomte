@@ -38,12 +38,96 @@ fn shell_segments(cmd: &str) -> Vec<&str> {
 /// runs. Mirrors the danger classifier's `shell_token_command_name` so the deny
 /// list and the danger gate agree on what a word executes.
 fn program_name(word: &str) -> String {
-    let literal: String = word.chars().filter(|c| !matches!(c, '"' | '\'')).collect();
+    let literal = normalize_shell_scan(word);
+    let literal = literal.split_whitespace().next().unwrap_or("");
+    let literal: String = literal
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\''))
+        .collect();
     // The shell separates a glued redirect (`curl>out`, `rm<x`) into the program
     // plus a redirection even without surrounding spaces, so the program a word
     // runs ends at the first `<`/`>`. Stop there before taking the basename.
     let literal = literal.split(['<', '>']).next().unwrap_or("");
-    literal.rsplit(['/', '\\']).next().unwrap_or("").to_string()
+    literal.rsplit('/').next().unwrap_or("").to_string()
+}
+
+fn normalize_shell_scan(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => {
+                if let Some(next) = chars.get(i + 1) {
+                    out.push(*next);
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            '\'' => {
+                out.push('\'');
+                i += 1;
+                while let Some(ch) = chars.get(i) {
+                    out.push(*ch);
+                    i += 1;
+                    if *ch == '\'' {
+                        break;
+                    }
+                }
+            }
+            '"' => i += 1,
+            '$' => i = push_shell_param(&chars, i, &mut out),
+            ch => {
+                out.push(ch);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn push_shell_param(chars: &[char], dollar: usize, out: &mut String) -> usize {
+    let next = dollar + 1;
+    if chars.get(next) == Some(&'{') {
+        if let Some(end) = chars
+            .iter()
+            .enumerate()
+            .skip(next + 1)
+            .find_map(|(i, ch)| (*ch == '}').then_some(i))
+        {
+            let body: String = chars[next + 1..end].iter().collect();
+            let name: String = body
+                .chars()
+                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                .collect();
+            if name.eq_ignore_ascii_case("ifs") {
+                out.push(' ');
+            } else if !body.contains(':') && !name.is_empty() {
+                out.push('$');
+                out.push_str(&name);
+            }
+            return end + 1;
+        }
+    }
+    let name_end = chars
+        .iter()
+        .enumerate()
+        .skip(next)
+        .find_map(|(i, ch)| (!ch.is_ascii_alphanumeric() && *ch != '_').then_some(i))
+        .unwrap_or(chars.len());
+    if name_end == next {
+        out.push('$');
+        return next;
+    }
+    let name: String = chars[next..name_end].iter().collect();
+    if name.eq_ignore_ascii_case("ifs") {
+        out.push(' ');
+    } else {
+        out.push('$');
+        out.push_str(&name);
+    }
+    name_end
 }
 
 /// Program candidates one segment runs, peeling wrapper/interpreter prefixes:
@@ -189,10 +273,12 @@ pub(super) fn run_shell_rule_matches(prog: &str, args: &Value, mode: MatchMode) 
             // substitution into separate segments so a hidden `(rm …)`,
             // `{ rm …; }`, `$(rm …)` or `` `rm …` `` is still seen.
             let exposed = cmd.replace(['(', ')', '`', '{', '}'], "\n");
-            shell_segments(&exposed).iter().any(|seg| {
-                segment_deny_programs(seg)
-                    .iter()
-                    .any(|p| p.as_str() == prog)
+            [cmd, exposed.as_str()].iter().any(|source| {
+                shell_segments(source).iter().any(|seg| {
+                    segment_deny_programs(seg)
+                        .iter()
+                        .any(|p| p.as_str() == prog)
+                })
             })
         }
         // Narrow: every segment must run exactly `prog` with no wrapper, no

@@ -119,8 +119,11 @@ fn deny_run_shell_is_not_bypassed_by_quotes_value_flags_or_substitution() {
         deny: vec!["run_shell(rm:*)".into()],
     };
     for cmd in [
-        "\"rm\" -rf /",          // quoted program name
-        "r''m -rf /",            // quotes inside the word
+        "\"rm\" -rf /", // quoted program name
+        "r''m -rf /",   // quotes inside the word
+        "r\\m -rf /",
+        "r${EMPTY:-}m -rf /",
+        "rm${IFS}-rf${IFS}/",
         "sudo -u root rm -rf /", // value-bearing wrapper flag hides the program
         "nice -n 19 rm -rf /",   // ditto
         "timeout 5 rm -rf /",    // positional wrapper argument hides the program
