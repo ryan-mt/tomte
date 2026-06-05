@@ -18,8 +18,11 @@ done
 | `tour.rs` | all four | the whole custodian experience in one coherent flow |
 | `calm_preview.rs` | 4 — calm terminal | inline viewport keeps scrollback · "left in order" receipt · calm palette |
 | `glass_box.rs` | 1 — glass-box | pre-flight intent / scope / cost · visible blast radius |
-| `why_trail.rs` | 2 — memory of why | writes + reads a decision trail · survives the model switch |
+| `why_trail.rs` | 2 — memory of why | a tiny `tomte why` CLI: writes + reads real JSONL · query a loc · survives the model switch |
 | `voice.rs` | 3 — voice with a spine | generic vs. opinionated — receipts, not sycophancy |
+
+`why_trail.rs` doubles as a tiny CLI: after running it, try `/tmp/why_trail why src/cache.rs:42`
+or `/tmp/why_trail why --all` to read the same on-disk trail a fresh session would.
 
 Each verified by `rustc -D warnings` (clean compile) + run. **Next:** build these into tomte
 itself after 0.0.2, starting with Pillar 4 (see [`pillar-4-calm-terminal.md`](../pillar-4-calm-terminal.md)).
