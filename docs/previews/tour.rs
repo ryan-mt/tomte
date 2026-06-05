@@ -1,4 +1,4 @@
-//! Unified guided tour of the tomte "quiet custodian" direction — all four
+//! Unified guided tour of the tomte "quiet custodian" direction — all five
 //! pillars in ONE coherent runnable flow, so the whole vision can be seen and
 //! judged in a single command.
 //!
@@ -26,6 +26,9 @@ fn ok() -> String {
 }
 fn bad() -> String {
     fg(216, 131, 131)
+}
+fn amber() -> String {
+    fg(210, 180, 120)
 }
 
 fn step(n: u8, label: &str) {
@@ -116,8 +119,29 @@ fn main() {
         text()
     );
 
+    step(5, "the conscience — a past decision confronts a risky edit");
     println!(
-        "\n{}{}calm · legible · remembers · opinionated — multi-model underneath.{}",
+        "     {}later · /model claude · about to edit src/parser.rs{RESET}",
+        faint()
+    );
+    println!(
+        "     {}house rules{RESET}  {}chose Err over panic  (recorded by gpt-5.5){RESET}",
+        faint(),
+        text()
+    );
+    println!(
+        "     {}self-check (claude){RESET}  {}CONFLICT — this edit reintroduces panic!(){RESET}",
+        faint(),
+        bad()
+    );
+    println!(
+        "     {}⚠{RESET} {}only you can clear it — the override lands in the end-of-turn summary{RESET}",
+        amber(),
+        faint()
+    );
+
+    println!(
+        "\n{}{}calm · legible · remembers · opinionated · keeps its word — multi-model underneath.{}",
         BOLD,
         sage(),
         RESET
