@@ -138,6 +138,12 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             collapse_reasoning_into_thought(app);
             app.is_thinking = false;
             finish_open_assistant_block(&mut app.blocks);
+            // SOUL Pillar 4: leave a tidy "left in order" receipt of what this
+            // turn changed (files / tests / why), pushed as the turn's last block.
+            // A pure Q&A turn that changed nothing produces no receipt.
+            if let Some(receipt) = build_turn_summary(&app.blocks) {
+                app.blocks.push(receipt);
+            }
             app.busy = false;
             app.turn_started_at = None;
             app.status_line.clear();

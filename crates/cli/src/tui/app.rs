@@ -52,6 +52,7 @@ mod resume;
 mod slash;
 mod slash2;
 mod slash3;
+mod summary;
 mod turn;
 mod types;
 
@@ -68,6 +69,7 @@ pub use resume::*;
 pub use slash::*;
 pub use slash2::*;
 pub use slash3::*;
+pub use summary::*;
 pub use turn::*;
 pub use types::*;
 

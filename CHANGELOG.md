@@ -2,6 +2,7 @@
 
 ## 0.0.2
 
+- Added a "left in order" end-of-turn receipt (SOUL Pillar 4) — a turn that changes something now closes with one tidy line: files touched, tests run (pass/fail read from the shell exit code), and the *why* it recorded; a pure question-and-answer turn shows nothing
 - Renamed the project from `opencli` to `tomte` — the binary, crates (`tomte`/`tomte-core`), config dir (`~/.config/tomte`, project-local `.tomte/`), `TOMTE_*` env vars, the login-screen ASCII logo, and HTTP user-agent — breaking: the old `~/.config/opencli` is no longer read, so re-run `tomte login`
 - Added a cross-model decision trail (Pillar 2) — a `record_decision` tool logs *why* a non-obvious change was made (the reasoning and rejected alternatives, keyed to a `file:line` and stamped with the model in play) to an append-only `decisions.jsonl`, re-injected each session so a later session or a different model inherits the reasoning rather than a lossy summary
 - Added `tomte why <loc>` / `tomte why --all` and a `/why` command to read the decision trail back; recording is auto-approved interactively and disabled in unattended headless runs, like `memory`
