@@ -275,6 +275,20 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
                 Err(e) => app.blocks.push(Block::System(format!("git diff: {e}"))),
             }
         }
+        "why" => {
+            // Read-only view of the decision trail: why earlier changes were
+            // made, and by which model. `arg` narrows to one `file:line`.
+            let arg = arg.trim();
+            let report = if arg.is_empty() {
+                tomte_core::decisions::render_all(&tomte_core::decisions::load(&app.cwd))
+            } else {
+                tomte_core::decisions::render_for_loc(
+                    &tomte_core::decisions::for_loc(&app.cwd, arg),
+                    arg,
+                )
+            };
+            app.blocks.push(Block::System(report));
+        }
         "review" => {
             let prompt = "Review the uncommitted changes in this repository. Run `git diff` (or \
                           the run_shell tool) to see them, then assess for correctness, security \

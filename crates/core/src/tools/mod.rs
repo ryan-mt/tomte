@@ -1,4 +1,5 @@
 pub mod ask;
+pub mod decision;
 pub mod dispatch;
 pub mod fs;
 pub mod goal;

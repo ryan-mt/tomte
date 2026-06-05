@@ -2,6 +2,8 @@
 
 ## 0.0.2
 
+- Added the decision trail (Pillar 2): a `record_decision` tool logs *why* a non-obvious change was made — the reasoning and the rejected alternatives, keyed to a `file:line` and stamped with the model in play — into an append-only `decisions.jsonl` beside the memory store. The trail is re-injected into each session, so a later session or a different model inherits the reasoning rather than a lossy summary; read it back with `tomte why <loc>` / `tomte why --all` or the `/why` command. Auto-approved interactively and disabled in unattended headless runs, like `memory`.
+
 - Renamed the project from `opencli` to `tomte` — the binary, crates (`tomte`/`tomte-core`), config dir (`~/.config/tomte`, project-local `.tomte/`), `TOMTE_*` env vars, the login-screen ASCII logo, and HTTP user-agent. Breaking: the old `~/.config/opencli` is no longer read, so re-run `tomte login`.
 - Added an OS-level sandbox for `run_shell`: commands run under Landlock + seccomp (Linux) or `sandbox-exec` (macOS), confining file writes to the workspace and blocking outbound network by default — so an auto-approved or prompt-injected command can't escape the project or exfiltrate. Modes `read-only` / `workspace-write` (default) / `danger-full-access`; `tomte doctor` shows the active mode. Other platforms run unsandboxed with a warning.
 - Sandbox mode and network can now be overridden per run: `--sandbox <mode>` / `--sandbox-allow-net` on `chat`/`run`, or the `TOMTE_SANDBOX_MODE` / `TOMTE_SANDBOX_NETWORK` env vars (precedence CLI > env > config). Per-run overrides never persist to `config.json`, and `doctor` reports the effective mode.

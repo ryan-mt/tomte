@@ -6,6 +6,7 @@ pub mod client;
 pub mod command;
 pub mod config;
 pub mod context_report;
+pub mod decisions;
 pub mod doctor;
 pub mod fallback;
 pub mod hooks;

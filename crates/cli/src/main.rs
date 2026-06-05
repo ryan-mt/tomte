@@ -97,6 +97,21 @@ enum Command {
         #[arg(long)]
         set_reasoning: Option<String>,
     },
+    /// Show the decision trail: why earlier changes were made, and by which
+    /// model. `tomte why <file:line>` explains one location; `tomte why --all`
+    /// lists the whole trail. The agent records it with the `record_decision`
+    /// tool, and it survives across sessions and model switches.
+    Why {
+        /// Code location to explain, e.g. `src/parser.rs:88`. Omit (or pass
+        /// `--all`) to list the whole trail.
+        loc: Option<String>,
+        /// List every recorded decision.
+        #[arg(long)]
+        all: bool,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
 }
 
 fn init_tracing(stderr_logs: bool) {
@@ -218,6 +233,7 @@ async fn async_main() -> Result<()> {
             set_model,
             set_reasoning,
         }) => commands::config_cmd::run(show, set_model, set_reasoning).await,
+        Some(Command::Why { loc, all, cwd }) => commands::why::run(loc, all, cwd).await,
     }
 }
 

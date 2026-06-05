@@ -36,6 +36,11 @@ pub fn slash_commands() -> Vec<PickerItem> {
         item("memory", "/memory", "show CLAUDE.md"),
         item("diff", "/diff", "show `git diff` for the working tree"),
         item(
+            "why",
+            "/why",
+            "show the decision trail (why changes were made)",
+        ),
+        item(
             "review",
             "/review",
             "ask the agent to review uncommitted changes",

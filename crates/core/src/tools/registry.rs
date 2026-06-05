@@ -5,8 +5,8 @@
 use crate::openai::Tool;
 
 use super::{
-    ask, dispatch, fs, goal, lsp, memory, notebook, plan, search, shell, skill, todo, tool_search,
-    wait, web, worktree, BuiltinTool,
+    ask, decision, dispatch, fs, goal, lsp, memory, notebook, plan, search, shell, skill, todo,
+    tool_search, wait, web, worktree, BuiltinTool,
 };
 
 pub struct Registry {
@@ -43,6 +43,7 @@ impl Registry {
                 Box::new(web::WebSearch),
                 Box::new(lsp::Lsp),
                 Box::new(memory::Memory),
+                Box::new(decision::RecordDecision),
                 Box::new(notebook::NotebookEdit),
                 Box::new(plan::EnterPlanMode),
                 Box::new(plan::ExitPlanMode),

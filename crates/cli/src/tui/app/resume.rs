@@ -49,6 +49,7 @@ pub async fn apply_resume(
             a.approval = app.approval;
             a.apply_project_memory();
             a.apply_memory_store();
+            a.apply_decision_trail();
             a.apply_skill_manifest();
             a.load_mcp().await.ok();
             a.restore_from(record);

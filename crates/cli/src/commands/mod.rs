@@ -3,3 +3,4 @@ pub mod chat;
 pub mod config_cmd;
 pub mod doctor;
 pub mod login;
+pub mod why;

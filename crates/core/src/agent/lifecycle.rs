@@ -136,6 +136,16 @@ impl Agent {
         crate::tools::memory::apply_store_to_prompt(&mut self.system_prompt, &self.cwd);
     }
 
+    /// Re-inject the project's decision trail (`crate::decisions`) so the
+    /// reasoning behind earlier changes survives across sessions AND model
+    /// switches — a new or switched-to model inherits the *why*, not a lossy
+    /// summary. Marker-block based and idempotent, like `apply_memory_store`;
+    /// call it right after that so their blocks stay in a stable order. No-ops
+    /// when the trail is empty.
+    pub fn apply_decision_trail(&mut self) {
+        crate::decisions::apply_trail_to_prompt(&mut self.system_prompt, &self.cwd);
+    }
+
     /// Discover every installed skill (tomte + Claude Code + Codex + project)
     /// and append a compact manifest to the system prompt so the model knows
     /// what playbooks exist and can load any one on demand via the `skill`
@@ -166,6 +176,7 @@ impl Agent {
         self.system_prompt = default_system_prompt();
         self.apply_project_memory();
         self.apply_memory_store();
+        self.apply_decision_trail();
         self.apply_skill_manifest();
         // The registry keeps its deferred MCP tools across a refresh, so the
         // rebuilt prompt must re-advertise them; otherwise their schemas stay
