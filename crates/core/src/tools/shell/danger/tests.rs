@@ -133,6 +133,20 @@ fn classify_danger_flags_destructive_patterns() {
         "rm -rf /System",
         "rm -rf /Library/app",
         "rm -rf /Users/bob",
+        // Single-quoted leading path/device components must not bypass the
+        // prefix/exact matchers: normalize_shell_scan drops the quote delimiters,
+        // so the shell-equivalent collapses are seen (of='/dev/sda' -> of=/dev/sda,
+        // /'etc' -> /etc, '/' -> /). Regression for the single-quote bypass.
+        "dd if=/dev/zero of='/dev/sda' bs=1M",
+        "shred '/dev/sda'",
+        "wipefs -a '/dev/sdb'",
+        "tee '/dev/sda'",
+        "truncate -s 0 '/dev/sda'",
+        "cp evil.img '/dev/sda'",
+        "echo x > '/dev/sda'",
+        "rm -rf /'etc'",
+        "rm -rf '/etc'",
+        "chmod -R 777 '/'",
         ":(){ :|:& };:",
     ] {
         assert!(classify_danger(cmd).is_some(), "expected `{cmd}` flagged");

@@ -273,13 +273,21 @@ fn normalize_shell_scan(input: &str) -> String {
                 }
             }
             '\'' => {
-                out.push('\'');
+                // A single-quoted span is a shell literal: the delimiters must be
+                // dropped (so prefix/exact path matchers see the real token, e.g.
+                // `'/dev/sda'` -> `/dev/sda`, `/'etc'` -> `/etc`, `'/'` -> `/`),
+                // and `$`/`~` inside it are inert (no expansion), so they are
+                // dropped too — otherwise the unquoted-expansion heuristics would
+                // misfire on a literal like `'$HOME'` (a file named `$HOME`, not
+                // the home dir). Double quotes are handled below and DO expand `$`.
                 i += 1;
                 while let Some(ch) = chars.get(i) {
-                    out.push(*ch);
                     i += 1;
                     if *ch == '\'' {
                         break;
+                    }
+                    if *ch != '$' && *ch != '~' {
+                        out.push(*ch);
                     }
                 }
             }

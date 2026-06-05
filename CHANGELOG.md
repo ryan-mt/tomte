@@ -63,6 +63,7 @@
 - Fixed a permission-deny bypass — a `dir/**` deny rule now also blocks operating on `dir` itself (e.g. `list_dir(.git)`), not only its children, so a denied directory's contents can no longer be listed
 - Fixed `read_file` on a large binary — a non-UTF-8 file over the 5 MB cap is now described as binary like a small one (with its true size) instead of surfacing a raw UTF-8 decode error
 - Fixed assorted TUI/tool issues — `/clear` now resets the agent's conversation history, not just the visible transcript, so the model (and your token count) actually start fresh; a `---` rule following a line that merely contains `|` is no longer misrendered as a table; a `run_shell` result whose own output contains `exit_code:`/`--- stderr ---` lines can't spoof the rendered exit code or stream split; a resume whose client fails to build reopens the picker instead of dropping the request; and `tool_search`'s `select:` path honors `max_results`
+- Closed a single-quote bypass in the `run_shell` destructive-command classifier — a quoted leading path or device (`dd … of='/dev/sda'`, `rm -rf /'etc'`, `chmod -R 777 '/'`, `shred '/dev/sda'`) now has its quote delimiters normalized away so the disk-wipe and critical-path guards still fire, while a single-quoted literal like `'$HOME'` stays non-expanding
 
 ## 0.0.1-beta.4
 
