@@ -154,32 +154,7 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
             Block::Welcome => {
                 render_welcome(&mut lines, app);
             }
-            Block::User(text) => {
-                // User turns render as a full-width gray block (like Claude
-                // Code): every wrapped line is padded with spaces carrying the
-                // background so the fill reaches the right edge.
-                let user_bg = palette::SURFACE;
-                let chevron_style = Style::default()
-                    .fg(palette::INFO)
-                    .bg(user_bg)
-                    .add_modifier(Modifier::BOLD);
-                let body_style = Style::default().fg(palette::TEXT).bg(user_bg);
-                let mut first = true;
-                for raw in text.split('\n') {
-                    for w in wrap(raw, inner_width.saturating_sub(2)) {
-                        let prefix = if first { "> " } else { "  " };
-                        first = false;
-                        let used = 2 + unicode_width::UnicodeWidthStr::width(w.as_str());
-                        let pad = inner_width.saturating_sub(used);
-                        lines.push(Line::from(vec![
-                            Span::styled(prefix.to_string(), chevron_style),
-                            Span::styled(w, body_style),
-                            Span::styled(" ".repeat(pad), body_style),
-                        ]));
-                    }
-                }
-                lines.push(Line::raw(""));
-            }
+            Block::User(text) => push_user_lines(&mut lines, text, inner_width),
             Block::Assistant { .. } => {
                 push_assistant_lines(&mut lines, &app.blocks[i], inner_width);
             }
@@ -293,6 +268,34 @@ pub(super) fn push_assistant_lines(
         }
         lines.push(Line::raw(""));
     }
+}
+
+/// Render a `User` block as the full-width gray stanza (like Claude Code): each
+/// wrapped line is padded with background-carrying spaces so the fill reaches
+/// the right edge. Shared by the alt-screen transcript (`render_chat`) and the
+/// inline viewport so both render the user's turn identically.
+pub(super) fn push_user_lines(lines: &mut Vec<Line<'static>>, text: &str, inner_width: usize) {
+    let user_bg = palette::SURFACE;
+    let chevron_style = Style::default()
+        .fg(palette::INFO)
+        .bg(user_bg)
+        .add_modifier(Modifier::BOLD);
+    let body_style = Style::default().fg(palette::TEXT).bg(user_bg);
+    let mut first = true;
+    for raw in text.split('\n') {
+        for w in wrap(raw, inner_width.saturating_sub(2)) {
+            let prefix = if first { "> " } else { "  " };
+            first = false;
+            let used = 2 + unicode_width::UnicodeWidthStr::width(w.as_str());
+            let pad = inner_width.saturating_sub(used);
+            lines.push(Line::from(vec![
+                Span::styled(prefix.to_string(), chevron_style),
+                Span::styled(w, body_style),
+                Span::styled(" ".repeat(pad), body_style),
+            ]));
+        }
+    }
+    lines.push(Line::raw(""));
 }
 
 /// Compute a cheap fingerprint of a block's mutable content. Streaming

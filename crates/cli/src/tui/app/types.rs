@@ -67,6 +67,38 @@ pub enum Screen {
     Chat,
 }
 
+/// How the TUI occupies the terminal (SOUL.md Pillar 4 — the calm, tidy
+/// terminal).
+///
+/// - `AltScreen` (default): the proven 0.0.2 renderer — full-screen alternate
+///   buffer, in-app scroll/selection. Unchanged behavior.
+/// - `Inline`: an inline viewport that leaves finished turns in the terminal's
+///   own scrollback (via `Terminal::insert_before`) and never enters the
+///   alternate screen or captures the mouse, so native scroll + copy keep
+///   working. Opt-in so existing behavior is untouched for everyone else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderMode {
+    AltScreen,
+    Inline,
+}
+
+impl RenderMode {
+    /// Resolve from the environment. `TOMTE_INLINE=1` (or `true`/`yes`/`on`)
+    /// opts into the inline viewport; anything else keeps the alternate screen.
+    pub fn from_env() -> Self {
+        Self::from_env_value(std::env::var("TOMTE_INLINE").ok().as_deref())
+    }
+
+    /// Pure parse of the `TOMTE_INLINE` value, split out so it can be tested
+    /// without mutating process-global environment state.
+    pub fn from_env_value(v: Option<&str>) -> Self {
+        match v {
+            Some(s) if matches!(s.trim(), "1" | "true" | "yes" | "on") => Self::Inline,
+            _ => Self::AltScreen,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Block {
     Welcome,
@@ -122,8 +154,15 @@ pub struct SubagentView {
 
 pub struct App {
     pub screen: Screen,
+    /// Alternate-screen vs inline viewport (Pillar 4). Fixed at startup from
+    /// the environment; see [`RenderMode`].
+    pub render_mode: RenderMode,
     pub login: LoginScreen,
     pub blocks: Vec<Block>,
+    /// Inline mode only: how many leading `blocks` have already been pushed to
+    /// the terminal's native scrollback via `insert_before`. The live viewport
+    /// renders only `blocks[committed_blocks..]`. Unused in alt-screen mode.
+    pub committed_blocks: usize,
     pub input: TextInput,
     pub busy: bool,
     pub cwd: std::path::PathBuf,

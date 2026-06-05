@@ -65,6 +65,8 @@ pub async fn apply_resume(
     }
 
     app.blocks.clear();
+    // Inline mode: the restored transcript re-commits to scrollback from the top.
+    app.committed_blocks = 0;
     app.blocks.push(Block::Welcome);
     app.blocks.extend(rebuilt);
     app.blocks.push(Block::System(format!(

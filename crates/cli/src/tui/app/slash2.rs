@@ -46,6 +46,7 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
         }
         "clear" => {
             app.blocks.clear();
+            app.committed_blocks = 0;
             if app.active_goal.take().is_some() {
                 app.pending_session_save = true;
             }

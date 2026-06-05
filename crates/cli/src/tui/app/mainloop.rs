@@ -244,6 +244,13 @@ pub async fn main_loop(
             finish_hatch(&mut app);
         }
 
+        // Inline mode (Pillar 4): push finished turns into the terminal's native
+        // scrollback before drawing, so the slim live viewport only ever holds
+        // the active turn. A no-op in alt-screen mode.
+        if app.render_mode == RenderMode::Inline && app.screen == Screen::Chat {
+            commit_finished_blocks(&mut app, terminal);
+        }
+
         if !app.busy || last_draw.elapsed() >= frame_budget {
             let completed = terminal.draw(|f| {
                 app.last_width = f.area().width;
@@ -254,7 +261,13 @@ pub async fn main_loop(
                             login::render(f, f.area(), &app.login, stage, login_err.as_deref());
                         }
                     }
-                    Screen::Chat => ui::render(f, &mut app),
+                    Screen::Chat => {
+                        if app.render_mode == RenderMode::Inline {
+                            ui::render_inline(f, &mut app);
+                        } else {
+                            ui::render(f, &mut app);
+                        }
+                    }
                 }
             })?;
             // While a drag is active, keep a copy of the rendered frame so the
@@ -394,4 +407,56 @@ pub fn finish_hatch(app: &mut App) {
         app.buddy_pet = Some(h.pet);
         app.buddy_hidden = false;
     }
+}
+
+/// SOUL Pillar 4 (inline viewport): push finished blocks into the terminal's
+/// native scrollback via `insert_before`, so the live viewport only ever
+/// renders the active turn. "Finished" = every block but the last while a turn
+/// streams (the last may still grow); when idle, every block. Already-committed
+/// blocks are tracked by `app.committed_blocks`.
+/// Index one past the last block safe to push to scrollback this tick: while a
+/// turn streams, the final block may still grow, so it stays live; when idle,
+/// every block is finished. Split out as a pure fn for testing.
+pub fn committed_end(blocks_len: usize, busy: bool) -> usize {
+    if busy {
+        blocks_len.saturating_sub(1)
+    } else {
+        blocks_len
+    }
+}
+
+pub fn commit_finished_blocks<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+) {
+    // A /clear or /resume that shrank or replaced the transcript resets the
+    // cursor (those sites reset it explicitly; this backstops a missed one).
+    if app.committed_blocks > app.blocks.len() {
+        app.committed_blocks = 0;
+    }
+    let end = committed_end(app.blocks.len(), app.busy);
+    if app.committed_blocks >= end {
+        return;
+    }
+    let width = terminal
+        .size()
+        .map(|s| s.width)
+        .unwrap_or(app.last_width)
+        .max(1);
+    let inner_width = width.saturating_sub(2) as usize;
+    let lines = ui::inline_blocks_to_lines(
+        &app.blocks[app.committed_blocks..end],
+        inner_width,
+        app.expanded_tools,
+        app,
+    );
+    app.committed_blocks = end;
+    if lines.is_empty() {
+        return;
+    }
+    // height = line count; insert_before chunks it to the terminal height.
+    let height = lines.len() as u16;
+    let _ = terminal.insert_before(height, move |buf| {
+        ratatui::widgets::Widget::render(ratatui::widgets::Paragraph::new(lines), buf.area, buf);
+    });
 }

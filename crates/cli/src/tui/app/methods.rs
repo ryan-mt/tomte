@@ -13,8 +13,10 @@ impl App {
         let screen = initial_screen(auth_mode, has_supported_env_key());
         let mut app = Self {
             screen,
+            render_mode: RenderMode::from_env(),
             login: LoginScreen::new(),
             blocks,
+            committed_blocks: 0,
             input: TextInput::default(),
             busy: false,
             cwd,

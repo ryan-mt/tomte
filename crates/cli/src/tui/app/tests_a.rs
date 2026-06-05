@@ -289,3 +289,122 @@ async fn buddy_starts_hatch_then_locks() {
         "expected the locked note"
     );
 }
+
+// --- Pillar 4: inline viewport ---
+
+fn streaming_assistant(text: &str, done: bool) -> Block {
+    Block::Assistant {
+        text: text.into(),
+        reasoning: String::new(),
+        done,
+        thought_for_secs: None,
+        reasoning_started_at: None,
+    }
+}
+
+#[test]
+fn render_mode_parses_env_value() {
+    assert_eq!(RenderMode::from_env_value(Some("1")), RenderMode::Inline);
+    assert_eq!(RenderMode::from_env_value(Some(" on ")), RenderMode::Inline);
+    assert_eq!(RenderMode::from_env_value(Some("true")), RenderMode::Inline);
+    assert_eq!(RenderMode::from_env_value(Some("0")), RenderMode::AltScreen);
+    assert_eq!(RenderMode::from_env_value(None), RenderMode::AltScreen);
+    assert_eq!(
+        RenderMode::from_env_value(Some("nope")),
+        RenderMode::AltScreen
+    );
+}
+
+#[test]
+fn committed_end_keeps_streaming_block_while_busy() {
+    assert_eq!(committed_end(5, true), 4);
+    assert_eq!(committed_end(5, false), 5);
+    assert_eq!(committed_end(0, true), 0);
+    assert_eq!(committed_end(0, false), 0);
+}
+
+#[test]
+fn render_inline_shows_live_tail_not_committed_history() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = App::new();
+    app.render_mode = RenderMode::Inline;
+    app.blocks = vec![
+        Block::User("OLDUSERMARK".into()),
+        streaming_assistant("OLDANSWERMARK", true),
+        streaming_assistant("LIVEANSWERMARK", false),
+    ];
+    // First two blocks have already been pushed to native scrollback.
+    app.committed_blocks = 2;
+    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+    terminal
+        .draw(|f| crate::tui::ui::render_inline(f, &mut app))
+        .unwrap();
+    let dump: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        dump.contains("LIVEANSWERMARK"),
+        "the live tail must render in the inline viewport"
+    );
+    assert!(
+        !dump.contains("OLDANSWERMARK") && !dump.contains("OLDUSERMARK"),
+        "committed history must NOT be redrawn in the viewport (it lives in scrollback)"
+    );
+}
+
+#[test]
+fn commit_advances_cursor_and_leaves_streaming_block() {
+    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, TerminalOptions, Viewport};
+    let mut app = App::new();
+    app.render_mode = RenderMode::Inline;
+    app.committed_blocks = 0;
+    app.blocks = vec![
+        Block::User("q".into()),
+        streaming_assistant("streaming…", false),
+    ];
+    app.busy = true;
+    let mut terminal = Terminal::with_options(
+        TestBackend::new(80, 12),
+        TerminalOptions {
+            viewport: Viewport::Inline(6),
+        },
+    )
+    .unwrap();
+    commit_finished_blocks(&mut app, &mut terminal);
+    assert_eq!(
+        app.committed_blocks, 1,
+        "while busy, only the finished User block commits; the streaming block stays live"
+    );
+    // Turn finishes: the streaming block is now finished and commits too.
+    app.busy = false;
+    commit_finished_blocks(&mut app, &mut terminal);
+    assert_eq!(app.committed_blocks, 2);
+}
+
+#[test]
+fn commit_resets_after_transcript_shrinks() {
+    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, TerminalOptions, Viewport};
+    let mut app = App::new();
+    app.render_mode = RenderMode::Inline;
+    app.blocks = vec![Block::System("x".into())];
+    app.committed_blocks = 9; // stale (simulates a /clear that shrank the transcript)
+    let mut terminal = Terminal::with_options(
+        TestBackend::new(80, 12),
+        TerminalOptions {
+            viewport: Viewport::Inline(6),
+        },
+    )
+    .unwrap();
+    commit_finished_blocks(&mut app, &mut terminal);
+    assert_eq!(
+        app.committed_blocks, 1,
+        "a stale cursor past the end resets to 0, then commits the surviving block"
+    );
+}

@@ -133,6 +133,7 @@ pub async fn handle_key(
         KeyCode::Char('d') if ctrl && app.input.is_empty() => return Ok(true),
         KeyCode::Char('l') if ctrl => {
             app.blocks.clear();
+            app.committed_blocks = 0;
         }
         KeyCode::Char('u') if ctrl => {
             app.input.clear();
