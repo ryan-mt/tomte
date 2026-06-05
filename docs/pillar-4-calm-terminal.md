@@ -72,8 +72,8 @@ and leaves a tidy receipt. That is the custodian, made visible.
 ## Implementation plan (after 0.0.2) + verification
 
 - **B1** `entry.rs` — `Viewport::Inline` instead of `EnterAlternateScreen`; update
-  `restore_terminal`. *Verify:* launch, run a turn, exit → prior shell scrollback is intact;
-  mouse-scroll and copy work.
+  `restore_terminal`. *Verify:* launch, run a turn, exit → prior shell scrollback is intact.
+  (Native mouse-scroll/copy are **not** free here — see the mouse-capture decision below.)
 - **B2** `mainloop.rs` + `ui.rs` — commit finished-turn blocks via `insert_before`; shrink the
   live layout to active-turn + input + status. *Verify:* long turns leave no flicker; scroll-up
   shows real history, never jumps to top.
@@ -84,4 +84,28 @@ and leaves a tidy receipt. That is the custodian, made visible.
 
 **Safety:** stage behind the current renderer; keep alt-screen as a fallback until B1–B2 are
 verified on a real terminal across turns. The proven core stays the safety net (`SOUL.md` §8).
-```
+
+## Build-readiness: the mouse-capture decision (DECIDE before B1)
+
+The "scroll with the mouse, copy like any command" promise above is **not free** — it collides
+with a feature tomte already ships. `entry.rs:59` enables `EnableMouseCapture`, and
+`mainloop.rs:313-351` uses it for real: in-app scroll (`ScrollUp/Down`), a click-drag text
+**selection** (`Down/Drag/Up(Left)` → `app.selection` → `finish_selection`), and **clickable
+targets** (a plain click → `handle_left_click`: jump / fleet toggle). While capture is on the
+terminal never sees the mouse, so native scroll and native click-drag copy *cannot* work — no
+matter how inline the viewport is. So this is a real fork, not a one-line cleanup:
+
+- **A — Cede the mouse to the terminal** *(purest custodian).* Drop `EnableMouseCapture`; native
+  scroll + selection/copy return for free. **Cost:** lose the in-app selection and the clickable
+  jump/fleet targets (or re-bind them to the keyboard). Matches "don't hijack the terminal" 1:1 —
+  and in inline mode the in-app `ScrollUp/Down` handler has almost nothing left to scroll anyway
+  (the transcript now lives in native scrollback), so capture mostly just *blocks* the wheel.
+- **B — Keep capture, keep the features.** Then the headline promise is false: strike "copy like
+  any command" from the pitch and lean on tomte's own selection→clipboard instead.
+- **C — Stage it.** Ship **B1 = inline viewport only, mouse untouched** first: that alone delivers
+  the big win (finished turns in native scrollback, no alt-screen, no flicker) at near-zero risk.
+  Decide the mouse (A vs B) as a separate **B1b** once the viewport is proven.
+
+**Recommendation:** C now, trending to A — the scrollback win is the meme-killer and is independent
+of the mouse, so don't let the harder selection/clickable-target call delay it. Mark **DECIDE**
+(human call) per `clone-audit.md`.

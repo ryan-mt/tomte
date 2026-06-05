@@ -135,7 +135,8 @@ them in tomte's own idiom.
 - [x] Reposition README + website away from clone framing toward the custodian / multi-model
       stance — clone-tells removed, both build green.
 - [x] Audit tomte against the clone-tells in §2 → `docs/clone-audit.md`.
-- [x] Runnable, std-only previews of all 4 pillars → `docs/previews/` (verified compile + run).
+- [x] Runnable, std-only previews of all 5 pillars (incl. the proposed Pillar 5 conscience) →
+      `docs/previews/` (verified compile + run).
 - Verify: repo builds green; no behavioral diff. ✓ cargo test + release + next build all exit 0.
 
 ### Stage 1 — After 0.0.2: first visible pillar, small surface
