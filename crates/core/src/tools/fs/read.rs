@@ -95,20 +95,6 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
             }
             Err(e) => return Err(e).with_context(|| format!("read {}", a.path)),
         };
-        // Record that this file was read this session so write_file/edit_file
-        // can refuse to clobber a file the model never looked at. Keyed on the
-        // canonical resolved path so later write/edit lookups match regardless
-        // of how the path was spelled. Recorded for every read variant (full,
-        // slice, empty, large) since they all pass through here first. The
-        // (mtime, size) snapshot lets a later edit detect the file changed on
-        // disk since this read and force a re-read.
-        {
-            let mut session = ctx.session.lock().await;
-            session.read_files.insert(path.clone());
-            session
-                .read_file_meta
-                .insert(path.clone(), (meta.modified().ok(), Some(meta.len())));
-        }
         if a.limit == Some(0) {
             return Err(anyhow!("limit must be greater than 0"));
         }
@@ -124,59 +110,79 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         }
         let start = a.offset.unwrap_or(0);
         let effective_limit = a.limit.unwrap_or(DEFAULT_LINE_LIMIT);
-        if meta.len() > MAX_BYTES {
-            return read_large_text_slice(
+        let out = if meta.len() > MAX_BYTES {
+            read_large_text_slice(
                 &path,
                 &a.path,
                 meta.len(),
                 start,
                 effective_limit,
                 MAX_LINE_CHARS,
-            );
-        }
-        let bytes = tokio::fs::read(&path)
-            .await
-            .with_context(|| format!("read {}", path.display()))?;
-        let text = match String::from_utf8(bytes) {
-            Ok(t) => t,
-            Err(e) => {
-                // Non-UTF-8: an image, PDF, or other binary. read_file can't
-                // render it as text, so return an informative summary instead
-                // of a cryptic decode error. The file is already recorded as
-                // read above, so write_file may overwrite it if intended.
-                let raw = e.as_bytes();
-                let size = raw.len() as u64;
-                return Ok(describe_binary(&a.path, raw, size));
+            )?
+        } else {
+            let bytes = tokio::fs::read(&path)
+                .await
+                .with_context(|| format!("read {}", path.display()))?;
+            match String::from_utf8(bytes) {
+                Ok(text) => {
+                    render_text_read(&a.path, &text, start, effective_limit, MAX_LINE_CHARS)
+                }
+                Err(e) => {
+                    let raw = e.as_bytes();
+                    let size = raw.len() as u64;
+                    describe_binary(&a.path, raw, size)
+                }
             }
         };
-        if text.is_empty() {
-            return Ok(format!(
-                "<system-reminder>The file `{}` exists but is empty.</system-reminder>\n",
-                a.path
-            ));
-        }
-        let lines: Vec<&str> = text.lines().collect();
-        let total = lines.len();
-        let start = start.min(total);
-        let end = start.saturating_add(effective_limit).min(total);
-        let mut out = String::new();
-        for (i, line) in lines[start..end].iter().enumerate() {
-            out.push_str(&numbered_line(start + i + 1, line, false, MAX_LINE_CHARS));
-        }
-        // Tell the model how to grab the next slice when we hit the cap.
-        if end < total {
-            let remaining = total - end;
-            out.push_str(&format!(
-                "<system-reminder>Showing lines {}-{} of {}. {} more line(s) remain — call read_file again with offset={} and an explicit limit to continue.</system-reminder>\n",
-                start + 1,
-                end,
-                total,
-                remaining,
-                end
-            ));
-        }
+        record_successful_read(ctx, &path, &meta).await;
         Ok(out)
     }
+}
+
+async fn record_successful_read(
+    ctx: &ToolContext,
+    path: &std::path::Path,
+    meta: &std::fs::Metadata,
+) {
+    let mut session = ctx.session.lock().await;
+    session.read_files.insert(path.to_path_buf());
+    session
+        .read_file_meta
+        .insert(path.to_path_buf(), (meta.modified().ok(), Some(meta.len())));
+}
+
+fn render_text_read(
+    display_path: &str,
+    text: &str,
+    start: usize,
+    limit: usize,
+    max_line_chars: usize,
+) -> String {
+    if text.is_empty() {
+        return format!(
+            "<system-reminder>The file `{display_path}` exists but is empty.</system-reminder>\n"
+        );
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let total = lines.len();
+    let start = start.min(total);
+    let end = start.saturating_add(limit).min(total);
+    let mut out = String::new();
+    for (i, line) in lines[start..end].iter().enumerate() {
+        out.push_str(&numbered_line(start + i + 1, line, false, max_line_chars));
+    }
+    if end < total {
+        let remaining = total - end;
+        out.push_str(&format!(
+            "<system-reminder>Showing lines {}-{} of {}. {} more line(s) remain — call read_file again with offset={} and an explicit limit to continue.</system-reminder>\n",
+            start + 1,
+            end,
+            total,
+            remaining,
+            end
+        ));
+    }
+    out
 }
 
 /// One-line summary for a binary file that `read_file` can't show as text —

@@ -221,6 +221,35 @@ async fn read_file_rejects_zero_limit() {
 }
 
 #[tokio::test]
+async fn failed_read_file_does_not_authorize_overwrite() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("small.txt"), "original\n").unwrap();
+    let ctx = ctx(dir.path().to_path_buf());
+
+    ReadFile
+        .execute(read_args("small.txt", None, Some(0)), &ctx)
+        .await
+        .unwrap_err();
+
+    let err = WriteFile
+        .execute(
+            json!({"path": "small.txt", "content": "replacement\n"}),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        err.to_string().contains("was not read this session"),
+        "got: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("small.txt")).unwrap(),
+        "original\n"
+    );
+}
+
+#[tokio::test]
 async fn read_file_rejects_limit_above_hard_cap() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("small.txt"), "hello\n").unwrap();
