@@ -19,3 +19,6 @@ Cargo.lock.bak
 
 # codegraph index
 .codegraph/
+
+# strategy / design docs — kept local, not pushed
+/docs/
