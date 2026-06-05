@@ -25,6 +25,20 @@ fn read_text_file_capped_enforces_bounds() {
     assert!(read_text_file_capped(std::path::Path::new("/dev/zero"), u64::MAX).is_err());
 }
 
+#[cfg(unix)]
+#[test]
+fn read_text_file_capped_rejects_symlinks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("secret.txt");
+    let link = tmp.path().join("AGENTS.md");
+    std::fs::write(&target, "secret").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let err = read_text_file_capped(&link, 1024).unwrap_err();
+
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+}
+
 #[test]
 fn project_config_overrides_safe_fields_only() {
     let tmp = tempfile::tempdir().unwrap();

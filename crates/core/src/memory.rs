@@ -130,7 +130,8 @@ fn format_memory_block(entries: &[MemoryEntry]) -> String {
 fn pick_memory_file(dir: &Path) -> Option<(PathBuf, String)> {
     for name in MEMORY_CANDIDATES {
         let path = dir.join(name);
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(text) = crate::config::read_text_file_capped(&path, PROJECT_DOC_MAX_BYTES as u64)
+        else {
             continue;
         };
         let trimmed = text.trim();
@@ -260,6 +261,23 @@ mod tests {
         std::fs::remove_file(dir.join("AGENTS.md")).unwrap();
         let (_, text) = pick_memory_file(dir).unwrap();
         assert_eq!(text, "CLAUDE");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pick_memory_file_rejects_symlinked_instructions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "SECRET").unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), repo.join("AGENTS.md")).unwrap();
+
+        assert!(
+            pick_memory_file(&repo).is_none(),
+            "symlinked instruction files must not be injected into the prompt"
+        );
     }
 
     #[test]

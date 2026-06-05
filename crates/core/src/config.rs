@@ -347,14 +347,19 @@ fn overlay_project_config(mut cfg: Config, cwd: &Path) -> Config {
     cfg
 }
 
-/// Read an attacker-influenceable text file bounded to `max_bytes` and
-/// restricted to a regular file. `metadata` follows symlinks, so a symlink to
-/// `/dev/zero` resolves to a character device (not a regular file) and is
-/// rejected, and a multi-GB planted file is rejected by the size cap — either
-/// would otherwise exhaust memory in `read_to_string`. Returns `NotFound` when
-/// absent so callers can distinguish "missing" from "rejected".
+/// Read an attacker-influenceable text file bounded to `max_bytes`, restricted
+/// to a non-symlink regular file. A planted symlink must not redirect a project
+/// instruction/config path to local secrets, and a multi-GB planted file must
+/// not exhaust memory in `read_to_string`. Returns `NotFound` when absent so
+/// callers can distinguish "missing" from "rejected".
 pub(crate) fn read_text_file_capped(path: &Path, max_bytes: u64) -> std::io::Result<String> {
-    let meta = std::fs::metadata(path)?;
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is a symlink", path.display()),
+        ));
+    }
     if !meta.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
