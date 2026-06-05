@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowRight, GithubLogo } from "@phosphor-icons/react/dist/ssr";
 import { site, capabilities, toolBelt, toolCount } from "@/lib/content";
 import { Switchboard } from "@/components/Switchboard";
+import { DecisionTrail } from "@/components/DecisionTrail";
 import { CodeBlock } from "@/components/CodeBlock";
 import { Reveal } from "@/components/Reveal";
 
@@ -50,6 +51,13 @@ export default function Home() {
       <section className="border-b border-line">
         <div className="mx-auto max-w-[1200px] px-5 py-16 sm:px-8 sm:py-24">
           <Switchboard />
+        </div>
+      </section>
+
+      {/* The moat: the decision trail, cross-model. */}
+      <section className="border-b border-line bg-bg-2">
+        <div className="mx-auto max-w-[1200px] px-5 py-16 sm:px-8 sm:py-24">
+          <DecisionTrail />
         </div>
       </section>
 

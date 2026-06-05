@@ -109,6 +109,65 @@ export const capabilities: Capability[] = [
   },
 ];
 
+/**
+ * Pillar 2, the decision trail ("memory of why"). Powers the moat demo on the
+ * home page: every change is recorded with its reasoning and rejected
+ * alternatives, and the record survives a mid-task switch to another model.
+ */
+export type Decision = {
+  /** file:line the decision lives at */
+  loc: string;
+  /** the choice that was made */
+  decision: string;
+  /** the reasoning behind it */
+  why: string;
+  /** alternatives considered and dropped */
+  rejected: string[];
+  /** the model that recorded it */
+  model: string;
+  /** the turn it was decided on */
+  turn: number;
+};
+
+export const decisionTrail: Decision[] = [
+  {
+    loc: "src/api/auth.rs:15",
+    decision: "Verify the JWT signature before decoding any claims",
+    why: "Claims are attacker-controlled. Trusting them before verification is the bug class behind most JWT CVEs.",
+    rejected: [
+      "decode then verify: opens a TOCTOU window",
+      "skip the exp check: tokens would never expire",
+    ],
+    model: "gpt-5.5",
+    turn: 2,
+  },
+  {
+    loc: "src/cache.rs:42",
+    decision: "Bound the cache with LRU eviction at 1024 entries",
+    why: "Unbounded growth runs the process out of memory under load. Profiling holds the hit rate above 90% at 1024.",
+    rejected: [
+      "unbounded HashMap: out of memory under load",
+      "TTL only: cold keys still pin memory",
+    ],
+    model: "gpt-5.5",
+    turn: 4,
+  },
+  {
+    loc: "src/parser.rs:88",
+    decision: "Empty input returns Err, not a panic",
+    why: "The parser validates at the boundary. A library must never crash its caller.",
+    rejected: ["panic: crashes callers", "Ok(0): silently hides the error"],
+    model: "gpt-5.5",
+    turn: 5,
+  },
+];
+
+/** Models offered in the moat demo's "model in play" toggle. */
+export const trailModels: { id: string; accent: "oai" | "ant" }[] = [
+  { id: "gpt-5.5", accent: "oai" },
+  { id: "claude-opus-4-8", accent: "ant" },
+];
+
 /** The tool belt, grouped exactly as the agent exposes it. 25 tools total. */
 export type ToolGroup = { group: string; blurb: string; tools: string[] };
 
