@@ -115,6 +115,15 @@ fn glob_inner(p: &[u8], t: &[u8]) -> bool {
     if p.is_empty() {
         return t.is_empty();
     }
+    // A trailing `/**` also matches the bare prefix directory itself, not only
+    // its children: a deny rule `dir/**` is meant to cover operating on `dir`
+    // (e.g. `list_dir(dir)`), so `.git/**` must match `.git`. `t` is empty here
+    // when the literal prefix consumed the whole path; a `/`-led `t` is the
+    // children case the `**` arm already handles. A non-`/` continuation
+    // (`a/**` vs `ab`) correctly stays unmatched.
+    if p == b"/**" {
+        return t.is_empty() || t.first() == Some(&b'/');
+    }
     match p[0] {
         b'*' if p.get(1) == Some(&b'*') => {
             // `**` — match any chars including `/`.
@@ -320,6 +329,29 @@ mod tests {
         assert_eq!(
             decide(&perms, "write_file", &json!({"path": "../secret"})),
             Decision::Ask
+        );
+    }
+
+    #[test]
+    fn deny_dir_globstar_also_blocks_the_bare_dir() {
+        // `dir/**` must cover operating on `dir` itself (e.g. listing it), not
+        // only its children — otherwise `list_dir(.git)` leaks the denied tree.
+        assert!(glob_match(".git/**", ".git"));
+        assert!(glob_match("src/**", "src"));
+        // A non-`/` continuation is still a different path, not a match.
+        assert!(!glob_match("src/**", "srcfoo"));
+        let perms = ProjectPermissions {
+            allow: vec![],
+            deny: vec!["list_dir(.git/**)".into()],
+        };
+        assert_eq!(
+            decide(&perms, "list_dir", &json!({"path": ".git"})),
+            Decision::Deny
+        );
+        // Children stay denied too (no regression).
+        assert_eq!(
+            decide(&perms, "list_dir", &json!({"path": ".git/config"})),
+            Decision::Deny
         );
     }
 

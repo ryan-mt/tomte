@@ -52,6 +52,11 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
             app.pending_goal_replacement = None;
             app.pending_plan_exit = None;
             remove_pending_goal_continuations(&mut app.message_queue);
+            // Clearing the transcript UI alone left the model's full history in
+            // context. main_loop drains this to reset the agent's history too,
+            // so the next turn actually starts fresh (same deferred-agent-op
+            // pattern as `pending_undo`).
+            app.pending_clear = true;
         }
         "resume" => {
             app.open_overlay(OverlayKind::ResumePicker);

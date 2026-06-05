@@ -94,6 +94,25 @@ fn parse_function_delta_accepts_call_id_and_arguments_delta() {
 }
 
 #[test]
+fn parse_function_delta_keeps_bare_null_value_mid_stream() {
+    // A streamed argument fragment that is exactly `null` is the real value of a
+    // nullable field (e.g. the streamed value of `"limit": null`), not the
+    // leading empty-args placeholder. It must survive verbatim — dropping it here
+    // corrupts the accumulated args into `{"limit": }`, which fails to parse at
+    // dispatch. (The leading placeholder is stripped downstream in the buffer.)
+    let ev = parse_event(
+        r#"{"type":"response.function_call_arguments.delta","call_id":"call_1","arguments_delta":"null"}"#,
+    )
+    .unwrap();
+    match ev {
+        ResponseStreamEvent::FunctionCallArgsDelta { delta, .. } => {
+            assert_eq!(delta, "null");
+        }
+        other => panic!("expected FunctionCallArgsDelta, got {other:?}"),
+    }
+}
+
+#[test]
 fn parse_incomplete_content_filter_surfaces_error() {
     // A Responses-shaped endpoint that blocks output via `response.incomplete`
     // with reason `content_filter` must surface an error, not finalize an empty

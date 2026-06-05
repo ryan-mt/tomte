@@ -274,7 +274,10 @@ pub(super) fn wrap_spans(
 /// True when `line` is a GFM table separator row, e.g. `|---|:--:|---|`.
 pub(super) fn is_table_separator(line: &str) -> bool {
     let t = line.trim();
-    if !t.contains('-') {
+    // Require a `|`: a separator delimits columns. Otherwise a bare `---`
+    // thematic break (valid CommonMark, common in assistant output) following
+    // any line that merely contains a `|` would be misread as a table.
+    if !t.contains('-') || !t.contains('|') {
         return false;
     }
     t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))

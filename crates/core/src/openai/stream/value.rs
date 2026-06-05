@@ -1,6 +1,5 @@
 //! JSON value/string extraction helpers for Responses-API stream events.
 
-use crate::tool_args::normalize_argument_fragment;
 use serde_json::Value;
 
 pub(super) fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
@@ -88,7 +87,14 @@ pub(super) fn first_argument_value(value: &Value, keys: &[&str]) -> Option<Strin
 pub(super) fn argument_string_value(value: Option<&Value>) -> Option<String> {
     match value? {
         Value::Null => None,
-        Value::String(s) => normalize_argument_fragment(s).map(str::to_string),
+        // Raw streamed JSON-text fragment: keep it verbatim, exactly like the
+        // Chat path's `chat_argument_string_value`. A bare `null`/`{}`/`[]`
+        // arriving mid-stream is the real value of a field (e.g. the streamed
+        // value of `"limit": null`); normalizing here would corrupt args into
+        // `"limit": ,`. The LEADING empty-args placeholder is dropped downstream
+        // by `ToolArgsBuffer::push` while its buffer is still empty.
+        Value::String(s) if s.is_empty() => None,
+        Value::String(s) => Some(s.clone()),
         Value::Array(arr) if arr.is_empty() => None,
         Value::Object(map) if map.is_empty() => None,
         Value::Number(n) => Some(n.to_string()),

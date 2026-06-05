@@ -8,13 +8,15 @@ pub(crate) fn redact_auth_in(body: &str) -> String {
             let start = search_from + rel;
             // Only treat the prefix as a real token start at a word boundary, so
             // benign substrings (`disk-usage`, `risk-free`, `ask-them`) aren't
-            // mangled in error output. A real token always sits after a quote,
-            // `=`/`:`, whitespace, or the string start — never glued onto a
-            // preceding identifier character.
+            // mangled in error output. Those are still protected because the
+            // prefix there sits inside a word, preceded by an alphanumeric. A
+            // separator (`-`/`_`/quote/`=`/`:`/whitespace) before the prefix is a
+            // real token boundary, so a token glued after one (`x-api-key-sk-…`,
+            // `token_sk-…`) must still be redacted.
             let preceded_by_ident = out[..start]
                 .chars()
                 .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+                .is_some_and(|c| c.is_alphanumeric());
             if preceded_by_ident {
                 search_from = start + token.len();
                 continue;

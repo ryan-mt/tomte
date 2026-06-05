@@ -176,8 +176,15 @@ pub(super) fn chat_tool_call_index(
     tool_call: &Value,
     fallback_position: usize,
 ) -> u32 {
-    if let Some(index) = tool_call.get("index").and_then(|v| v.as_u64()) {
-        return index as u32;
+    // An out-of-range index would silently truncate under `as u32` and could
+    // collide with a legitimate slot, so drop through to id/position resolution
+    // when it does not fit — exactly as a missing index does.
+    if let Some(index) = tool_call
+        .get("index")
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u32::try_from(v).ok())
+    {
+        return index;
     }
     if let Some(id) = chat_tool_call_id(tool_call) {
         if let Some((index, _)) = tools.iter().find(|(_, acc)| acc.id == id) {
@@ -188,6 +195,20 @@ pub(super) fn chat_tool_call_index(
             index = index.saturating_add(1);
         }
         return index;
+    }
+    // No index and no id: a bare continuation fragment. A single-element
+    // continuation chunk lands here at position 0; if exactly one tool call is
+    // in flight it can only belong to that call, so route to it rather than
+    // trusting chunk-local position — which would split the call onto a fresh
+    // slot 0 if its established index is non-zero. (When one chunk carries
+    // several anonymous calls, the later ones arrive at a non-zero fallback
+    // position and keep their own distinct slots.)
+    if fallback_position == 0 {
+        if let Some((index, _)) = tools.iter().next() {
+            if tools.len() == 1 {
+                return *index;
+            }
+        }
     }
     fallback_position as u32
 }
@@ -221,5 +242,33 @@ mod tests {
         });
 
         assert_eq!(chat_tool_call_id(&tool_call).as_deref(), Some("toolu_123"));
+    }
+
+    #[test]
+    fn tool_call_index_routes_lone_continuation_and_rejects_huge_index() {
+        let acc = || ToolAcc {
+            id: "call_a".into(),
+            name: Some("read_file".into()),
+            args: String::new(),
+            args_truncated: false,
+            added: true,
+            emitted_args_len: 0,
+        };
+        // One call established at a non-zero index. A bare continuation fragment
+        // (no `index`, no `id`) arriving at position 0 must route to that call,
+        // not split onto a fresh slot 0.
+        let mut tools: BTreeMap<u32, ToolAcc> = BTreeMap::new();
+        tools.insert(5, acc());
+        let cont = json!({"function": {"arguments": "{\"path\":"}});
+        assert_eq!(chat_tool_call_index(&tools, &cont, 0), 5);
+
+        // An out-of-range `index` must not truncate via `as u32` into a colliding
+        // slot; with no id it falls through to the position fallback.
+        let huge = json!({ "index": 4_294_967_296u64 });
+        assert_eq!(chat_tool_call_index(&tools, &huge, 3), 3);
+
+        // A valid in-range index is honored unchanged.
+        let ok = json!({ "index": 2 });
+        assert_eq!(chat_tool_call_index(&tools, &ok, 0), 2);
     }
 }

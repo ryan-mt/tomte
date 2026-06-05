@@ -38,11 +38,16 @@ fn build_profile(policy: &SandboxPolicy) -> String {
     p.push_str("    (literal \"/dev/tty\")\n");
     p.push_str("    (subpath \"/dev/fd\")\n");
     for root in &policy.writable_roots {
+        let lossy = root.to_string_lossy();
+        // A newline (or other control char) in a path could terminate the
+        // `(subpath "...")` literal early and inject top-level SBPL directives
+        // (e.g. re-allowing writes/network), defeating the confinement. Such a
+        // path is never a legitimate writable root, so drop it — fail closed.
+        if lossy.chars().any(|c| c.is_control()) {
+            continue;
+        }
         // SBPL string literal: escape backslashes and quotes.
-        let escaped = root
-            .to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
+        let escaped = lossy.replace('\\', "\\\\").replace('"', "\\\"");
         p.push_str("    (subpath \"");
         p.push_str(&escaped);
         p.push_str("\")\n");
@@ -94,5 +99,19 @@ mod tests {
         let p = build_profile(&policy);
         // The `"` must be backslash-escaped inside the SBPL string literal.
         assert!(p.contains("/weird\\\"dir"), "profile: {p}");
+    }
+
+    #[test]
+    fn profile_drops_paths_with_control_chars() {
+        // A newline-bearing root must be dropped, not emitted, so it can't
+        // inject a top-level directive into the profile.
+        let policy = SandboxPolicy {
+            writable_roots: vec![PathBuf::from("/work\n(allow file-write*)")],
+            network: false,
+        };
+        let p = build_profile(&policy);
+        assert!(!p.contains("/work"), "poisoned root must be dropped: {p}");
+        // Exactly the one intended deny remains; no injected allow.
+        assert_eq!(p.matches("(allow file-write*").count(), 1, "profile: {p}");
     }
 }

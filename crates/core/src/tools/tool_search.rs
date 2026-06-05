@@ -56,6 +56,7 @@ impl ToolSearch {
                 .catalog
                 .iter()
                 .filter(|c| names.contains(c.name.as_str()))
+                .take(max)
                 .cloned()
                 .collect();
         }
@@ -232,6 +233,18 @@ mod tests {
         let hits = ts.search("select:mcp__slack__post_message", 8);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "mcp__slack__post_message");
+    }
+
+    #[test]
+    fn select_respects_max_results() {
+        // The documented `max_results` cap must apply to the `select:` path too,
+        // not only the keyword path.
+        let ts = fresh();
+        let hits = ts.search(
+            "select:mcp__github__create_issue,mcp__github__list_pulls,mcp__slack__post_message",
+            2,
+        );
+        assert_eq!(hits.len(), 2);
     }
 
     #[test]

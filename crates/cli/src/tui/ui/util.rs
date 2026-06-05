@@ -81,40 +81,38 @@ pub(super) fn append_numbered(
     }
 }
 
+/// Parse the fixed `run_shell` framing (`exit_code: …\n--- stdout ---\n…\n---
+/// stderr ---\n…`) positionally, so command output that happens to contain a
+/// line like `exit_code: 0` or `--- stderr ---` can't spoof the code or the
+/// section split. Only the first line is authoritative for the exit code, and
+/// stderr is split on the first `--- stderr ---` that follows the stdout marker.
 pub(super) fn parse_shell_output(text: &str) -> (i32, String, String) {
-    let mut code = 0i32;
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    let mut section = 0; // 0=preamble, 1=stdout, 2=stderr
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("exit_code: ") {
-            code = rest.trim().parse().unwrap_or(0);
-            continue;
-        }
-        if line.starts_with("--- stdout") {
-            section = 1;
-            continue;
-        }
-        if line.starts_with("--- stderr") {
-            section = 2;
-            continue;
-        }
-        match section {
-            1 => {
-                if !stdout.is_empty() {
-                    stdout.push('\n');
-                }
-                stdout.push_str(line);
-            }
-            2 => {
-                if !stderr.is_empty() {
-                    stderr.push('\n');
-                }
-                stderr.push_str(line);
-            }
-            _ => {}
-        }
-    }
+    let lines: Vec<&str> = text.lines().collect();
+
+    // The exit code is authoritative only on the very first line.
+    let code = lines
+        .first()
+        .and_then(|l| l.strip_prefix("exit_code: "))
+        .and_then(|rest| rest.trim().parse().ok())
+        .unwrap_or(0);
+
+    // Everything up to the first `--- stdout ---` is preamble (ignored).
+    let Some(stdout_start) = lines.iter().position(|l| l.starts_with("--- stdout")) else {
+        return (code, String::new(), String::new());
+    };
+    // stderr opens at the first `--- stderr ---` AFTER the stdout marker; any
+    // earlier marker-looking line is stdout content, not framing.
+    let stderr_start = lines[stdout_start + 1..]
+        .iter()
+        .position(|l| l.starts_with("--- stderr"))
+        .map(|rel| stdout_start + 1 + rel);
+
+    let stdout_end = stderr_start.unwrap_or(lines.len());
+    let stdout = lines[stdout_start + 1..stdout_end].join("\n");
+    let stderr = match stderr_start {
+        Some(s) => lines[s + 1..].join("\n"),
+        None => String::new(),
+    };
     (code, stdout, stderr)
 }
 
@@ -303,4 +301,29 @@ where
         .map(|line| wrap_visual_rows(line, content_w, None).0.len())
         .sum::<usize>()
         .max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_shell_output;
+
+    #[test]
+    fn parse_shell_output_parses_well_formed_framing() {
+        let raw = "exit_code: 0\n--- stdout ---\nhello\n--- stderr ---\n";
+        let (code, stdout, stderr) = parse_shell_output(raw);
+        assert_eq!((code, stdout.as_str(), stderr.as_str()), (0, "hello", ""));
+    }
+
+    #[test]
+    fn parse_shell_output_ignores_spoofed_framing_in_content() {
+        // Output lines that look like framing — a second `exit_code:`, an earlier
+        // `--- stderr ---` — must be treated as plain content. Only the first line
+        // is authoritative for the code, and stderr splits on the first marker
+        // AFTER the stdout marker.
+        let raw = "exit_code: 1\n--- stdout ---\nexit_code: 0\n--- stderr ---\nreal error";
+        let (code, stdout, stderr) = parse_shell_output(raw);
+        assert_eq!(code, 1, "only the first line sets the exit code");
+        assert_eq!(stdout, "exit_code: 0");
+        assert_eq!(stderr, "real error");
+    }
 }

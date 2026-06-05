@@ -37,8 +37,13 @@ pub async fn apply_resume(
             let client = match LlmClient::for_config(&app.config).await {
                 Ok(c) => c,
                 Err(e) => {
-                    app.blocks
-                        .push(Block::System(format!("resume client error: {e}")));
+                    // The id was already taken by main_loop, so the resume intent
+                    // would otherwise be silently dropped. Reopen the picker so the
+                    // user can retry — user-driven, so no auto-retry loop.
+                    app.blocks.push(Block::System(format!(
+                        "resume client error: {e} — pick a session to retry"
+                    )));
+                    app.open_overlay(OverlayKind::ResumePicker);
                     return;
                 }
             };

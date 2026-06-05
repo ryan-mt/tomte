@@ -218,6 +218,10 @@ pub struct App {
     /// Set true by `/undo` so main_loop can invoke `Agent::undo_last_edit()`
     /// on the next tick (slash handlers don't have the agent Arc).
     pub pending_undo: bool,
+    /// Set true by `/clear` so main_loop can invoke `Agent::clear_history()` on
+    /// the next tick (slash handlers don't have the agent Arc). The transcript
+    /// UI is cleared immediately in the handler; this resets the model's context.
+    pub pending_clear: bool,
     /// Set true by `/compact` or the auto-compact trigger so main_loop can call
     /// `Agent::compact_history()` on the next tick (slash/event handlers don't
     /// have the agent Arc).

@@ -129,10 +129,12 @@ fn suppress_headless_control_tool_body(name: &str) -> bool {
 }
 
 fn sanitize_terminal_text(text: &str) -> Cow<'_, str> {
-    if !text
-        .bytes()
-        .any(|byte| (byte < 0x20 && byte != b'\n') || byte == 0x7f)
-    {
+    // Flag exactly the chars the slow path alters: every control char except
+    // `\n`. `char::is_control()` covers C0 (incl. ESC, `\r`, `\t`), DEL, AND the
+    // 8-bit C1 controls (U+0080..=U+009F) that many terminals treat as CSI/OSC/
+    // DCS introducers — so a pure-C1 escape no longer slips through the fast
+    // path. Ordinary non-ASCII (CJK, emoji, accented Latin) is not flagged.
+    if !text.chars().any(|c| c.is_control() && c != '\n') {
         return Cow::Borrowed(text);
     }
 
@@ -174,7 +176,10 @@ fn sanitize_terminal_text(text: &str) -> Cow<'_, str> {
                 out.push('\n');
                 col = 0;
             }
-            '\r' | '\u{00}'..='\u{08}' | '\u{0b}'..='\u{1f}' | '\u{7f}' => {}
+            // Drop C0 controls, DEL, and the 8-bit C1 controls (U+0080..=U+009F).
+            // Dropping a C1 CSI/OSC/DCS introducer leaves its now-orphaned payload
+            // as harmless plain text, so no payload-consumption arm is needed.
+            '\r' | '\u{00}'..='\u{08}' | '\u{0b}'..='\u{1f}' | '\u{7f}' | '\u{80}'..='\u{9f}' => {}
             other => {
                 out.push(other);
                 col += 1;
@@ -327,5 +332,30 @@ mod tests {
         assert!(!tool_text.contains("\x1b[2J"), "{tool_text:?}");
         assert!(!tool_text.contains('\r'), "{tool_text:?}");
         assert!(tool_text.contains("cleared\nnext"));
+    }
+
+    #[test]
+    fn text_renderer_strips_8bit_c1_control_introducers() {
+        // Pure-C1 sequences carry no 7-bit ESC, so the old byte-level fast path
+        // let them through. Terminals honoring 8-bit controls read U+009B/U+009D
+        // as CSI/OSC. The sanitizer must drop the C1 introducers (and ST).
+        let mut out = Vec::new();
+        let mut tool_names = HashMap::new();
+
+        render_text_event(
+            AgentEvent::AssistantTextDelta {
+                text: "\u{9b}2Jwiped \u{9d}52;c;clip-secret\u{9c} ok".to_string(),
+            },
+            &mut out,
+            &mut tool_names,
+        );
+
+        let text = String::from_utf8(out).unwrap();
+        for c in ['\u{9b}', '\u{9d}', '\u{9c}', '\u{90}'] {
+            assert!(!text.contains(c), "C1 control {:?} survived: {text:?}", c);
+        }
+        // The payload is demoted to harmless plain text, not interpreted.
+        assert!(text.contains("wiped"), "{text:?}");
+        assert!(text.contains("ok"), "{text:?}");
     }
 }

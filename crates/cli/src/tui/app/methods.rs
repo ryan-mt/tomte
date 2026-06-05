@@ -55,6 +55,7 @@ impl App {
             should_exit: false,
             pending_resume_id: None,
             pending_undo: false,
+            pending_clear: false,
             pending_compact: false,
             auto_compact_done_this_window: false,
             compacting: false,

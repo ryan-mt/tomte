@@ -249,14 +249,13 @@ impl Agent {
                 if let Some(u) =
                     emit_usage(&response, tx, self.config.effective_context_limit()).await
                 {
+                    // Update occupancy (it helps the next iteration shed context
+                    // before the retry) and surface the in-stream Usage/warning
+                    // telemetry — but do NOT record_cost here. A failed event that
+                    // the caller recovers from (`continue 'turn`) would otherwise
+                    // double-count: the retried Completed records the real cost on
+                    // top of this. /cost should reflect successful billed responses.
                     self.last_input_tokens = u.occupancy;
-                    let model = self.config.model.clone();
-                    self.record_cost(&model, &u);
-                    let _ = tx
-                        .send(AgentEvent::CostUpdate {
-                            usage: self.cost_usage.clone(),
-                        })
-                        .await;
                 }
                 let message = response
                     .get("error")

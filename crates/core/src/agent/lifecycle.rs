@@ -118,6 +118,19 @@ impl Agent {
         self.session_created_ms = record.meta.created_at_ms;
     }
 
+    /// Reset the conversation so the next turn starts fresh: drop the history the
+    /// model is re-sent and the context-occupancy accounting that drives
+    /// `/context` and microcompaction. Backs the `/clear` command — clearing the
+    /// transcript UI alone left the full history in context, so the model kept
+    /// (and the user kept paying for) everything. The system prompt, tools,
+    /// MCP/skill manifest, and the billed `/cost` tally are kept: they are not
+    /// conversation turns.
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        self.history_seen_len = 0;
+        self.last_input_tokens = 0;
+    }
+
     /// Append inherited memory files to the system prompt (Codex / Claude Code /
     /// tomte). At most one file per directory (`AGENTS.override.md` >
     /// `AGENTS.md` > `CLAUDE.md`), project scope is limited to the git root

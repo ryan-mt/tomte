@@ -125,7 +125,14 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         let start = a.offset.unwrap_or(0);
         let effective_limit = a.limit.unwrap_or(DEFAULT_LINE_LIMIT);
         if meta.len() > MAX_BYTES {
-            return read_large_text_slice(&path, &a.path, start, effective_limit, MAX_LINE_CHARS);
+            return read_large_text_slice(
+                &path,
+                &a.path,
+                meta.len(),
+                start,
+                effective_limit,
+                MAX_LINE_CHARS,
+            );
         }
         let bytes = tokio::fs::read(&path)
             .await
@@ -137,7 +144,9 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
                 // render it as text, so return an informative summary instead
                 // of a cryptic decode error. The file is already recorded as
                 // read above, so write_file may overwrite it if intended.
-                return Ok(describe_binary(&a.path, e.as_bytes()));
+                let raw = e.as_bytes();
+                let size = raw.len() as u64;
+                return Ok(describe_binary(&a.path, raw, size));
             }
         };
         if text.is_empty() {
@@ -171,9 +180,11 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
 }
 
 /// One-line summary for a binary file that `read_file` can't show as text —
-/// the kind (sniffed from magic bytes) and size, plus how to view an image.
-fn describe_binary(display_path: &str, bytes: &[u8]) -> String {
-    let kind = sniff_binary_kind(bytes);
+/// the kind (sniffed from `sniff`'s leading magic bytes) and `size`, plus how to
+/// view an image. `size` is passed explicitly so the large-file path can report
+/// the true file length even though it only sniffs a leading chunk.
+fn describe_binary(display_path: &str, sniff: &[u8], size: u64) -> String {
+    let kind = sniff_binary_kind(sniff);
     let is_image = matches!(
         kind,
         "PNG image" | "JPEG image" | "GIF image" | "WebP image"
@@ -188,7 +199,7 @@ fn describe_binary(display_path: &str, bytes: &[u8]) -> String {
          It is recorded as read, so write_file may overwrite it if you intend to replace it.{}</system-reminder>\n",
         display_path,
         kind,
-        bytes.len(),
+        size,
         hint
     )
 }
@@ -229,12 +240,27 @@ fn numbered_line(
 fn read_large_text_slice(
     path: &std::path::Path,
     display_path: &str,
+    file_len: u64,
     start: usize,
     limit: usize,
     max_line_chars: usize,
 ) -> Result<String> {
+    use std::io::BufRead;
     let file = std::fs::File::open(path).with_context(|| format!("read {}", path.display()))?;
     let mut reader = std::io::BufReader::new(file);
+
+    // Detect a binary/non-UTF-8 file up front and describe it (matching the
+    // small-file path) instead of erroring deep in the line loop. `fill_buf`
+    // peeks the leading chunk without consuming it, so the line loop below still
+    // reads from the start. The true size is `file_len`, not the chunk length.
+    let head = reader
+        .fill_buf()
+        .with_context(|| format!("read {}", path.display()))?;
+    if leading_bytes_are_binary(head) {
+        let head = head.to_vec();
+        return Ok(describe_binary(display_path, &head, file_len));
+    }
+
     let mut out = String::new();
     let mut line_no = 0usize;
     let mut printed = 0usize;
@@ -295,6 +321,17 @@ fn read_next_line_capped<R: std::io::BufRead>(
         if newline.is_some() {
             return Ok(Some((out, truncated)));
         }
+    }
+}
+
+/// True when a leading sniff window contains a genuinely invalid UTF-8 byte
+/// (i.e. binary), as opposed to a multibyte char merely truncated at the window
+/// boundary. `error_len() == Some(_)` means an invalid byte strictly inside the
+/// window; `None` means the window ended mid-character, which a text file can do.
+fn leading_bytes_are_binary(bytes: &[u8]) -> bool {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => false,
+        Err(e) => e.error_len().is_some(),
     }
 }
 

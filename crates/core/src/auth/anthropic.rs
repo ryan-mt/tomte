@@ -277,7 +277,16 @@ pub async fn ensure_fresh(record: &AuthRecord) -> Result<String> {
         // overflow. None here is treated as "needs refresh", not a crash.
         chrono::Duration::try_seconds(sec).and_then(|d| Utc::now().checked_add_signed(d))
     });
-    let mut updated = base_record;
+    // Re-load immediately before saving and merge ONLY our refreshed Anthropic
+    // tokens into the CURRENT on-disk record. Writing back the pre-refresh
+    // snapshot would clobber a sibling OpenAI refresh that landed during our
+    // network round-trip — restoring its already-consumed (single-use) refresh
+    // token and bricking that credential (the two providers hold separate refresh
+    // locks, so they are not serialized against each other).
+    let mut updated = match load_auth() {
+        Ok(latest) if latest.anthropic_tokens.is_some() => latest,
+        _ => base_record,
+    };
     if let Some(st) = updated.anthropic_tokens.as_mut() {
         st.access_token = refreshed.access_token.clone();
         st.refresh_token = refreshed.refresh_token;

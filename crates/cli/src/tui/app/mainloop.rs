@@ -75,6 +75,17 @@ pub async fn main_loop(
             };
             app.blocks.push(Block::System(msg));
         }
+        // `/clear` clears the transcript UI in its handler and sets this so
+        // main_loop can also reset the agent's history (the model otherwise keeps
+        // the full conversation). Deferred while compacting OR busy for the same
+        // agent-mutex reason as undo/resume above; `&&` short-circuits so the
+        // flag survives until the turn/compaction finishes.
+        if app.can_run_deferred_agent_op() && std::mem::take(&mut app.pending_clear) {
+            let mut g = agent.lock().await;
+            if let Some(a) = g.as_mut() {
+                a.clear_history();
+            }
+        }
         // `/compact` and the auto-compact trigger set this so the agent Arc can
         // stay out of the slash/event handlers. Gated on `!busy` so it never
         // runs mid-turn (it locks the same mutex `run_turn` holds). Don't use

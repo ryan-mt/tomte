@@ -245,6 +245,30 @@ async fn read_file_describes_binary_instead_of_erroring() {
 }
 
 #[tokio::test]
+async fn read_large_binary_describes_instead_of_erroring() {
+    let dir = tempfile::tempdir().unwrap();
+    // A >5MB file whose leading bytes aren't valid UTF-8 must be summarized as
+    // binary (matching the small-file path), not surface a UTF-8 decode error.
+    let mut data = vec![
+        0x89u8, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0xFF, 0x00,
+    ];
+    data.resize(5_000_001, 0u8);
+    std::fs::write(dir.path().join("big.png"), &data).unwrap();
+    // Large files require an explicit limit.
+    let out = ReadFile
+        .execute(
+            json!({"path": "big.png", "limit": 10}),
+            &ctx(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+    assert!(out.contains("PNG image"), "got: {out}");
+    assert!(out.contains("recorded as read"), "got: {out}");
+    // The true file size is reported, not the sniff-chunk length.
+    assert!(out.contains("5000001"), "got: {out}");
+}
+
+#[tokio::test]
 async fn read_binary_then_write_overwrites() {
     let dir = tempfile::tempdir().unwrap();
     let png = [

@@ -146,20 +146,80 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
         return Some("git filter-branch rewrites history destructively");
     }
     const PIPE_INTERPRETERS: &[&str] = &["sh", "bash", "zsh", "dash", "python", "perl"];
-    let pipes_into_interpreter = tokens.iter().any(|token| {
-        token
-            .rsplit_once('|')
-            .is_some_and(|(_, rhs)| pipe_rhs_is_interpreter(rhs, PIPE_INTERPRETERS))
-    }) || tokens.windows(2).any(|w| {
-        let rhs = w[1].trim_start_matches('|');
-        w[0] == "|" && pipe_rhs_is_interpreter(rhs, PIPE_INTERPRETERS)
-            || w[0].ends_with('|') && pipe_rhs_is_interpreter(w[1], PIPE_INTERPRETERS)
-            || w[1].starts_with('|') && pipe_rhs_is_interpreter(rhs, PIPE_INTERPRETERS)
-    });
+    // Split the command into pipeline stages; the first stage is the source
+    // (curl/wget), so only the downstream stages actually run the piped output.
+    let pipes_into_interpreter = lower
+        .split('|')
+        .skip(1)
+        .any(|stage| pipe_stage_runs_interpreter(stage, PIPE_INTERPRETERS));
     if (has("curl") || has("wget")) && pipes_into_interpreter {
         return Some("piping curl/wget output into a shell");
     }
     None
+}
+
+/// Known command-wrappers that re-launch a following command word, so the real
+/// interpreter hides behind them (`curl … | sudo sh`, `… | xargs sh`).
+const PIPE_WRAPPERS: &[&str] = &[
+    "sudo", "doas", "xargs", "env", "command", "nice", "nohup", "time", "stdbuf", "setsid",
+    "ionice",
+];
+
+/// True when the command that reads a pipeline stage is an interpreter — either
+/// directly (`| sh`) or behind a known wrapper (`| sudo sh`, `| env FOO=bar sh`).
+/// The scan is bounded to the stage's first command segment (it stops at `;`/`&`)
+/// so an unrelated later `sh` isn't blamed; and a benign `grep sh` / `sed
+/// 's/sh/zsh/'` stays unflagged because those tools are not wrappers, so their
+/// interpreter-named *arguments* are never inspected.
+fn pipe_stage_runs_interpreter(stage: &str, interpreters: &[&str]) -> bool {
+    let is_interp = |w: &str| {
+        let name = shell_token_command_name(w);
+        interpreters
+            .iter()
+            .any(|base| is_versioned_name(&name, base))
+    };
+    // Only the first command of the stage reads the pipe.
+    let segment = stage.split([';', '&']).next().unwrap_or(stage);
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    // The effective command is the first word that isn't a flag or a `VAR=val`
+    // env assignment.
+    let Some(first) = words
+        .iter()
+        .copied()
+        .find(|w| !w.starts_with('-') && !is_env_assignment(w))
+    else {
+        return false;
+    };
+    if is_interp(first) {
+        return true;
+    }
+    let first_name = shell_token_command_name(first);
+    if PIPE_WRAPPERS
+        .iter()
+        .any(|w| is_versioned_name(&first_name, w))
+    {
+        // Wrapper-led: we can't reliably parse each wrapper's own flags/args, so
+        // scan the segment for an interpreter — erring toward flagging, as this
+        // whole defense-in-depth gate does.
+        return words.iter().copied().any(is_interp);
+    }
+    false
+}
+
+/// A `VAR=val` shell environment assignment (a leading `env FOO=bar` form or a
+/// bare prefix assignment), which precedes the real command word in a stage.
+fn is_env_assignment(token: &str) -> bool {
+    match token.split_once('=') {
+        Some((name, _)) => {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        None => false,
+    }
 }
 
 /// A raw block-device path that a write/redirect could corrupt. Kept to the
@@ -171,17 +231,6 @@ fn is_raw_block_device(target: &str) -> bool {
         || target.starts_with("/dev/vd")
         || target.starts_with("/dev/mmcblk")
         || target.starts_with("/dev/disk")
-}
-
-fn pipe_rhs_is_interpreter(rhs: &str, interpreters: &[&str]) -> bool {
-    let rhs = rhs.trim_start_matches('|');
-    if rhs.is_empty() {
-        return false;
-    }
-    let name = shell_token_command_name(rhs);
-    interpreters
-        .iter()
-        .any(|base| is_versioned_name(&name, base))
 }
 
 /// True when `name` is `base` or `base` followed only by a version suffix
