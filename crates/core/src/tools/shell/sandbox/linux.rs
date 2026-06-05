@@ -143,7 +143,6 @@ const WRITABLE_DEVICES: &[&str] = &[
     "/dev/tty",
     "/dev/ptmx",
     "/dev/pts",
-    "/dev/shm",
 ];
 
 fn apply_landlock(policy: &SandboxPolicy) -> Result<()> {

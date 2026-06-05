@@ -85,6 +85,29 @@ fn dev_null_redirect_works() {
 }
 
 #[test]
+fn read_only_sandbox_denies_dev_shm_writes() {
+    if !landlock_active() || !Path::new("/dev/shm").exists() {
+        return;
+    }
+    let dir = tmp_workspace("devshm");
+    let marker = format!("/dev/shm/tomte-sandbox-proof-{}", std::process::id());
+    std::fs::remove_file(&marker).ok();
+    let out = run_sandboxed(
+        dir.to_str().unwrap(),
+        false,
+        &format!("printf proof > {marker}"),
+    );
+
+    assert!(
+        !out.status.success(),
+        "/dev/shm write must be denied under read-only sandbox"
+    );
+    assert!(!Path::new(&marker).exists());
+    std::fs::remove_file(&marker).ok();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn inet_socket_blocked_unix_allowed_when_network_off() {
     if Command::new("python3").arg("--version").output().is_err() {
         eprintln!("skipping: python3 not available");
