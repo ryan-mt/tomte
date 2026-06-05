@@ -193,11 +193,10 @@ pub fn project_memory_dirs(cwd: &Path) -> Vec<PathBuf> {
 
 /// Resolve the git repository root for `cwd`, or `None` when not inside a repo.
 pub fn git_root_from(cwd: &Path) -> Option<PathBuf> {
-    if let Ok(output) = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(cwd)
-        .output()
-    {
+    let mut git = std::process::Command::new("git");
+    git.args(["rev-parse", "--show-toplevel"]).current_dir(cwd);
+    crate::secret_env::scrub_secret_env_std(&mut git);
+    if let Ok(output) = git.output() {
         if output.status.success() {
             let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !root.is_empty() {

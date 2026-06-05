@@ -115,7 +115,8 @@ pub async fn enter_worktree(ctx: &ToolContext, name: Option<&str>) -> Result<Str
         .with_context(|| format!("create {}", worktrees_root.display()))?;
     let worktree_path = unique_worktree_path(&worktrees_root, &slug);
 
-    let out = Command::new("git")
+    let mut git = git_command();
+    let out = git
         .args(["worktree", "add", "-b"])
         .arg(&branch)
         .arg(&worktree_path)
@@ -189,7 +190,8 @@ pub async fn exit_worktree(
                     "worktree has {dirty} changed file(s) and {diverged} commit(s) diverging from the base; refusing to remove without discard_changes=true"
                 ));
             }
-            let remove = Command::new("git")
+            let mut git = git_command();
+            let remove = git
                 .args(["worktree", "remove", "--force"])
                 .arg(&state.worktree_path)
                 .current_dir(&state.repo_root)
@@ -208,7 +210,8 @@ pub async fn exit_worktree(
             // deletion is therefore best-effort and only reported.
             clear_worktree(ctx).await;
             set_cwd(ctx, state.original_cwd.clone()).await;
-            let branch_note = match Command::new("git")
+            let mut git = git_command();
+            let branch_note = match git
                 .args(["branch", "-D", &state.branch])
                 .current_dir(&state.repo_root)
                 .output()
@@ -309,7 +312,8 @@ async fn unique_branch(repo_root: &Path, slug: &str) -> Result<String> {
         } else {
             format!("tomte/{slug}-{idx}")
         };
-        let status = Command::new("git")
+        let mut git = git_command();
+        let status = git
             .args(["show-ref", "--verify", "--quiet"])
             .arg(format!("refs/heads/{candidate}"))
             .current_dir(repo_root)
@@ -385,12 +389,18 @@ async fn git_stdout<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<Strin
 }
 
 async fn git_output<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<std::process::Output> {
-    Command::new("git")
-        .args(args)
+    let mut git = git_command();
+    git.args(args)
         .current_dir(cwd)
         .output()
         .await
         .context("run git")
+}
+
+fn git_command() -> Command {
+    let mut git = Command::new("git");
+    crate::secret_env::scrub_secret_env(&mut git);
+    git
 }
 
 #[cfg(test)]

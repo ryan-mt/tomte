@@ -21,6 +21,7 @@ pub(super) async fn run_capped(
     mut cmd: Command,
     cap: usize,
 ) -> std::io::Result<(std::process::Output, bool)> {
+    crate::secret_env::scrub_secret_env(&mut cmd);
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);

@@ -217,12 +217,14 @@ pub(crate) fn file_candidates(cwd: &Path) -> Vec<picker::PickerItem> {
     // can't make the synchronous picker-open stall enumerating millions of files
     // (the old code buffered all of rg's stdout before capping).
     use std::io::BufRead;
-    let rg = std::process::Command::new("rg")
+    let mut rg_cmd = std::process::Command::new("rg");
+    rg_cmd
         .arg("--files")
         .current_dir(cwd)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+        .stderr(std::process::Stdio::null());
+    tomte_core::secret_env::scrub_secret_env_std(&mut rg_cmd);
+    let rg = rg_cmd.spawn();
     match rg {
         Ok(mut child) => {
             if let Some(out) = child.stdout.take() {

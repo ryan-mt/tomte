@@ -17,7 +17,7 @@ pub mod permissions;
 pub mod pricing;
 pub mod provider;
 mod retry;
-mod secret_env;
+pub mod secret_env;
 mod sensitive;
 pub mod session;
 pub mod skill;

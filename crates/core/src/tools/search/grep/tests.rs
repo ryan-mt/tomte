@@ -3,6 +3,9 @@
 use super::super::test_support::{ctx, grep_available, missing_rg, rg_available, write};
 use super::*;
 
+#[cfg(unix)]
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn grep_args(pattern: &str) -> GrepArgs {
     GrepArgs {
         pattern: pattern.to_string(),
@@ -61,6 +64,35 @@ fn grep_output_mode_accepts_common_model_aliases() {
     );
     assert_eq!(normalize_grep_output_mode(Some("counts")), Some("count"));
     assert_eq!(normalize_grep_output_mode(Some("wat")), None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn grep_scrubs_secret_env_from_rg_child() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let fake_rg = dir.path().join("fake-rg");
+    std::fs::write(
+        &fake_rg,
+        "#!/bin/sh\nif [ -n \"$TOMTE_TEST_TOKEN\" ]; then printf leaked > leaked-env; fi\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_rg, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::env::set_var("TOMTE_TEST_TOKEN", "secret");
+
+    let result = execute_grep_with_commands(
+        &grep_args("needle"),
+        &ctx(dir.path().to_path_buf()),
+        fake_rg.to_str().unwrap(),
+        "grep",
+    )
+    .await;
+
+    std::env::remove_var("TOMTE_TEST_TOKEN");
+    result.unwrap();
+    assert!(!dir.path().join("leaked-env").exists());
 }
 
 #[tokio::test]

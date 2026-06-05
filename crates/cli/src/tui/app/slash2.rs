@@ -256,11 +256,10 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
             // output means a clean tree; non-zero exit (no git, not a repo)
             // surfaces stderr so the user knows why.
             let cwd = app.cwd.clone();
-            let out = tokio::process::Command::new("git")
-                .args(["diff", "--no-color"])
-                .current_dir(&cwd)
-                .output()
-                .await;
+            let mut git = tokio::process::Command::new("git");
+            git.args(["diff", "--no-color"]).current_dir(&cwd);
+            tomte_core::secret_env::scrub_secret_env(&mut git);
+            let out = git.output().await;
             match out {
                 Ok(o) if o.status.success() => {
                     let stdout = String::from_utf8_lossy(&o.stdout);

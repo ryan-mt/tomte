@@ -88,17 +88,16 @@ Parameters:\n\
         };
 
         // Collect raw file list via ripgrep when available.
-        let raw: Option<Vec<String>> = match Command::new("rg")
-            .arg("--files")
+        let mut rg = Command::new("rg");
+        rg.arg("--files")
             .arg("--hidden")
             .arg("--glob")
             .arg(&a.pattern)
             .arg("--glob")
             .arg("!.git")
-            .current_dir(&cwd)
-            .output()
-            .await
-        {
+            .current_dir(&cwd);
+        crate::secret_env::scrub_secret_env(&mut rg);
+        let raw: Option<Vec<String>> = match rg.output().await {
             // exit 0 = matches, exit 1 = no matches — both authoritative, so an
             // empty result must NOT fall through to the looser basename-only
             // `find` matcher. Only a missing/errored rg (spawn err, exit 2+)
@@ -120,8 +119,8 @@ Parameters:\n\
             // `-name <basename>` degraded `src/**/*.rs` to matching `*.rs` in
             // every directory and dropped any pattern containing a slash
             // (`-name` never matches a `/`).
-            let find_out = Command::new("find")
-                .arg(".")
+            let mut find = Command::new("find");
+            find.arg(".")
                 .arg("-path")
                 .arg("./.git")
                 .arg("-prune")
@@ -129,9 +128,9 @@ Parameters:\n\
                 .arg("-type")
                 .arg("f")
                 .arg("-print")
-                .current_dir(&cwd)
-                .output()
-                .await?;
+                .current_dir(&cwd);
+            crate::secret_env::scrub_secret_env(&mut find);
+            let find_out = find.output().await?;
             String::from_utf8_lossy(&find_out.stdout)
                 .lines()
                 .filter(|l| !l.is_empty())

@@ -1,8 +1,6 @@
-//! Secret-bearing environment-variable scrubbing, shared by every child process
-//! the agent spawns: `run_shell`, MCP servers, and lifecycle hooks. Keeping it in
-//! one place means a token can't be exfiltrated through whichever spawner forgot
-//! to scrub. Moved here from `tools::shell::support` so non-shell spawners can
-//! reuse it.
+//! Secret-bearing environment-variable scrubbing, shared by child process
+//! spawners. Keeping it in one place means a token can't be exfiltrated through
+//! whichever helper path forgot to scrub.
 
 /// Env vars whose names contain any of these substrings are scrubbed from a
 /// child's environment. Prevents the LLM (or an untrusted MCP server / hook)
@@ -51,7 +49,15 @@ pub(crate) fn is_secret_env_name(name: &str) -> bool {
 /// tokens, and live agent sockets the agent process itself holds. A caller that
 /// must pass an intended secret (e.g. an MCP server's configured `env`) should
 /// re-apply it *after* this scrub.
-pub(crate) fn scrub_secret_env(cmd: &mut tokio::process::Command) {
+pub fn scrub_secret_env(cmd: &mut tokio::process::Command) {
+    for (k, _) in std::env::vars() {
+        if is_secret_env_name(&k) {
+            cmd.env_remove(&k);
+        }
+    }
+}
+
+pub fn scrub_secret_env_std(cmd: &mut std::process::Command) {
     for (k, _) in std::env::vars() {
         if is_secret_env_name(&k) {
             cmd.env_remove(&k);
