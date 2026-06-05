@@ -53,6 +53,26 @@ fn ssrf_blocks_v6_embedded_internal_ipv4() {
     assert!(!blocked("2606:2800:220:1:248:1893:25c8:1946"));
 }
 
+#[tokio::test]
+async fn ssrf_vets_ip_literals_without_dns() {
+    // v6 literals used to fail with a misleading DNS error because host_str()
+    // returns the bracketed form `[::1]`, which getaddrinfo can't parse — so the
+    // v6 arm of is_blocked_ip never ran on this path. They must now be parsed
+    // directly and rejected/allowed by is_blocked_ip, with no network lookup.
+    assert!(validate_ssrf_safe("http://[::1]/").await.is_err()); // loopback
+    assert!(validate_ssrf_safe("http://127.0.0.1/").await.is_err()); // loopback v4
+    assert!(validate_ssrf_safe("http://[fd00::1]/").await.is_err()); // unique-local
+    assert!(validate_ssrf_safe("http://[fe80::1]/").await.is_err()); // link-local
+    assert!(validate_ssrf_safe("http://[64:ff9b::a9fe:a9fe]/")
+        .await
+        .is_err()); // NAT64 metadata
+                    // A public v6 literal is allowed — no DNS, no spurious "DNS lookup failed".
+    let ok = validate_ssrf_safe("http://[2606:2800:220:1:248:1893:25c8:1946]/")
+        .await
+        .expect("public v6 literal must be allowed, not rejected by a DNS error");
+    assert!(ok.iter().all(|sa| !is_blocked_ip(&sa.ip())));
+}
+
 #[test]
 fn web_fetch_args_accept_camel_case_aliases() {
     let fetch: WebFetchArgs = serde_json::from_value(json!({

@@ -296,25 +296,38 @@ fn is_transient(e: &reqwest::Error) -> bool {
 /// Note: automatic redirects are disabled separately in the caller so a 302
 /// cannot bypass the check.
 async fn validate_ssrf_safe(url_str: &str) -> Result<Vec<std::net::SocketAddr>> {
+    use std::net::SocketAddr;
     let parsed = url::Url::parse(url_str).with_context(|| format!("parse URL: {url_str}"))?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| anyhow!("URL has no host: {url_str}"))?;
     let port = parsed.port_or_known_default().unwrap_or(80);
 
-    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
-        .await
-        .with_context(|| format!("DNS lookup failed for {host}"))?
-        .collect();
+    // An IP-literal host must NOT be sent through getaddrinfo: host_str() returns
+    // the bracketed form `[::1]` for a v6 literal, which lookup_host cannot parse,
+    // so every v6-literal fetch used to die with a misleading "DNS lookup failed"
+    // and the v6 arm of is_blocked_ip never ran on this path. Build the SocketAddr
+    // straight from the literal so is_blocked_ip vets it; only real domain names
+    // hit the resolver.
+    let addrs: Vec<SocketAddr> = match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => vec![SocketAddr::from((ip, port))],
+        Some(url::Host::Ipv6(ip)) => vec![SocketAddr::from((ip, port))],
+        Some(url::Host::Domain(host)) => tokio::net::lookup_host((host, port))
+            .await
+            .with_context(|| format!("DNS lookup failed for {host}"))?
+            .collect(),
+        None => return Err(anyhow!("URL has no host: {url_str}")),
+    };
 
     if addrs.is_empty() {
-        return Err(anyhow!("no addresses resolved for {host}"));
+        return Err(anyhow!(
+            "no addresses resolved for {}",
+            parsed.host_str().unwrap_or("")
+        ));
     }
 
     for sa in &addrs {
         if is_blocked_ip(&sa.ip()) {
             return Err(anyhow!(
-                "blocked: {host} resolves to {} (loopback/private/link-local)",
+                "blocked: {} resolves to {} (loopback/private/link-local)",
+                parsed.host_str().unwrap_or(""),
                 sa.ip()
             ));
         }
