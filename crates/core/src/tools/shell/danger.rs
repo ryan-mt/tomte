@@ -170,13 +170,10 @@ fn pipe_stage_runs_interpreter(stage: &str, interpreters: &[&str]) -> bool {
     // Only the first command of the stage reads the pipe.
     let segment = stage.split([';', '&']).next().unwrap_or(stage);
     let words: Vec<&str> = segment.split_whitespace().collect();
-    // Shell grouping/`exec` can hide the interpreter that actually reads the
-    // pipe (`| { sh; }`, `| ( sh )`, `| (sh)`): strip surrounding grouping
-    // punctuation and skip pure-grouping tokens so the real command word is the
-    // one classified.
-    let degroup = |w: &str| w.trim_matches(['(', ')', '{', '}']);
     // The effective command is the first word that isn't grouping, a flag, or a
-    // `VAR=val` env assignment.
+    // `VAR=val` env assignment. `degroup` strips surrounding grouping/`exec`
+    // punctuation (`| { sh; }`, `| ( sh )`, `| (sh)`) so the real command word
+    // behind it is the one classified.
     let Some(first) = words
         .iter()
         .copied()
@@ -199,6 +196,13 @@ fn pipe_stage_runs_interpreter(stage: &str, interpreters: &[&str]) -> bool {
         return words.iter().copied().map(degroup).any(is_interp);
     }
     false
+}
+
+/// Strip surrounding shell grouping punctuation from a word so the real command
+/// behind `{ … }` / `( … )` is what gets classified (`(sh)` -> `sh`). A free fn
+/// (not a closure) so the borrowed return is tied to the input's lifetime.
+fn degroup(w: &str) -> &str {
+    w.trim_matches(['(', ')', '{', '}'])
 }
 
 /// A `VAR=val` shell environment assignment (a leading `env FOO=bar` form or a
