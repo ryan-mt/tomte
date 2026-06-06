@@ -24,6 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
@@ -104,19 +105,39 @@ fn push_canonical(roots: &mut Vec<PathBuf>, path: &Path) {
     }
 }
 
+/// Whether this platform has an OS sandbox we promise to enforce. When true, a
+/// failure to build the confining command fails closed (the command is refused)
+/// rather than running unconfined; when false (Windows/other) there is no
+/// filesystem/network sandbox to begin with, so a plain shell is expected.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const PLATFORM_CONFINES: bool = true;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const PLATFORM_CONFINES: bool = false;
+
 /// Build the `Command` that runs `command` under the OS sandbox configured in
 /// `config`, working in `cwd`. Falls back to a plain shell when the sandbox is
-/// disabled (`danger-full-access`) or unsupported on this platform.
-pub fn shell_command(command: &str, config: &Config, cwd: &Path) -> Command {
+/// disabled (`danger-full-access`) or unsupported on this platform. On a
+/// confining platform (Linux/macOS), a failure to build the helper fails CLOSED
+/// (returns `Err`) rather than silently running the command unconfined.
+pub fn shell_command(command: &str, config: &Config, cwd: &Path) -> Result<Command> {
     if let Some(policy) = resolve(config, cwd) {
         if let Some(cmd) = wrap_for_platform(command, &policy) {
-            return cmd;
+            return Ok(cmd);
+        }
+        // wrap returned None. On a platform that promises confinement this is a
+        // setup failure (e.g. current_exe() unreadable, so we can't re-exec the
+        // helper) — refuse rather than run with full filesystem + network access.
+        if PLATFORM_CONFINES {
+            return Err(anyhow!(
+                "sandbox is enabled but its confinement helper could not be set up \
+                 (could not locate this executable to re-exec); refusing to run unconfined"
+            ));
         }
         tracing::warn!(
             "sandbox is enabled but unsupported on this platform; running run_shell unsandboxed"
         );
     }
-    plain_shell(command)
+    Ok(plain_shell(command))
 }
 
 fn plain_shell(command: &str) -> Command {
@@ -237,7 +258,7 @@ mod tests {
     #[test]
     fn workspace_write_wraps_as_sandbox_helper() {
         let config = Config::default(); // workspace-write, network off
-        let cmd = shell_command("echo hi", &config, Path::new("."));
+        let cmd = shell_command("echo hi", &config, Path::new(".")).unwrap();
         let std_cmd = cmd.as_std();
         assert_eq!(
             std_cmd.get_program(),
@@ -265,7 +286,7 @@ mod tests {
     fn read_only_wraps_with_empty_writable_roots() {
         let mut config = Config::default();
         config.sandbox.mode = "read-only".to_string();
-        let cmd = shell_command("ls", &config, Path::new("."));
+        let cmd = shell_command("ls", &config, Path::new(".")).unwrap();
         let args: Vec<String> = cmd
             .as_std()
             .get_args()
@@ -283,7 +304,7 @@ mod tests {
     fn danger_full_access_runs_plain_shell_not_helper() {
         let mut config = Config::default();
         config.sandbox.mode = "danger-full-access".to_string();
-        let cmd = shell_command("echo hi", &config, Path::new("."));
+        let cmd = shell_command("echo hi", &config, Path::new(".")).unwrap();
         let args: Vec<String> = cmd
             .as_std()
             .get_args()
