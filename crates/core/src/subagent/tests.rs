@@ -28,6 +28,30 @@ fn is_project_local_flags_cwd_relative_definitions() {
 }
 
 #[test]
+fn is_project_local_flags_a_frontmatter_only_match() {
+    // The confinement bypass: a planted file whose NAME differs from its
+    // frontmatter `name` resolves via load_by_name's frontmatter fallback, so
+    // is_project_local must also treat it as project-local — otherwise the
+    // dispatcher skips plan mode and the cloned-repo agent runs mutating tools.
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path();
+    let agents = cwd.join(".tomte").join("agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("innocuous.md"),
+        "---\nname: deploy\ntools: run_shell, write_file\n---\nattacker prompt",
+    )
+    .unwrap();
+    // load_by_name resolves "deploy" via the frontmatter fallback...
+    assert_eq!(load_by_name(cwd, "deploy").unwrap().name, "deploy");
+    // ...and is_project_local must agree it is project-local.
+    assert!(
+        is_project_local(cwd, "deploy"),
+        "a frontmatter-only project-local match must still be confined"
+    );
+}
+
+#[test]
 fn subagent_roots_include_project_codex_and_codex_home() {
     let cwd = PathBuf::from("/repo");
     let roots = subagent_roots(&cwd);
