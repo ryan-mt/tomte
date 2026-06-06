@@ -165,7 +165,7 @@ Parameters:\n\
             }
             tracing::warn!(command = %a.command, reason, "run_shell.dangerous_override_used");
         }
-        let mut cmd = super::sandbox::shell_command(&a.command, &ctx.config, &ctx.cwd);
+        let mut cmd = super::sandbox::shell_command(&a.command, &ctx.config, &ctx.cwd)?;
         cmd.current_dir(&ctx.cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
