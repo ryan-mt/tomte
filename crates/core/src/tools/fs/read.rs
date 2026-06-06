@@ -110,7 +110,7 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         }
         let start = a.offset.unwrap_or(0);
         let effective_limit = a.limit.unwrap_or(DEFAULT_LINE_LIMIT);
-        let out = if meta.len() > MAX_BYTES {
+        let (out, fully_read) = if meta.len() > MAX_BYTES {
             read_large_text_slice(
                 &path,
                 &a.path,
@@ -130,11 +130,13 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
                 Err(e) => {
                     let raw = e.as_bytes();
                     let size = raw.len() as u64;
-                    describe_binary(&a.path, raw, size)
+                    // A binary file's whole content is "recorded as read": the
+                    // model can't see it but may intend to replace it wholesale.
+                    (describe_binary(&a.path, raw, size), true)
                 }
             }
         };
-        record_successful_read(ctx, &path, &meta).await;
+        record_successful_read(ctx, &path, &meta, fully_read).await;
         Ok(out)
     }
 }
@@ -143,9 +145,17 @@ async fn record_successful_read(
     ctx: &ToolContext,
     path: &std::path::Path,
     meta: &std::fs::Metadata,
+    fully_read: bool,
 ) {
     let mut session = ctx.session.lock().await;
     session.read_files.insert(path.to_path_buf());
+    // Only a full read lets write_file overwrite; a partial (offset/limit) read
+    // drops the file back out so it can't discard content the model never saw.
+    if fully_read {
+        session.fully_read_files.insert(path.to_path_buf());
+    } else {
+        session.fully_read_files.remove(path);
+    }
     session
         .read_file_meta
         .insert(path.to_path_buf(), (meta.modified().ok(), Some(meta.len())));
@@ -157,11 +167,12 @@ fn render_text_read(
     start: usize,
     limit: usize,
     max_line_chars: usize,
-) -> String {
+) -> (String, bool) {
     if text.is_empty() {
-        return format!(
+        let msg = format!(
             "<system-reminder>The file `{display_path}` exists but is empty.</system-reminder>\n"
         );
+        return (msg, true);
     }
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
@@ -182,7 +193,9 @@ fn render_text_read(
             end
         ));
     }
-    out
+    // A full read starts at the top and reaches the last line untruncated.
+    let fully_read = start == 0 && end >= total;
+    (out, fully_read)
 }
 
 /// One-line summary for a binary file that `read_file` can't show as text —
@@ -250,7 +263,7 @@ fn read_large_text_slice(
     start: usize,
     limit: usize,
     max_line_chars: usize,
-) -> Result<String> {
+) -> Result<(String, bool)> {
     use std::io::BufRead;
     let file = std::fs::File::open(path).with_context(|| format!("read {}", path.display()))?;
     let mut reader = std::io::BufReader::new(file);
@@ -264,12 +277,14 @@ fn read_large_text_slice(
         .with_context(|| format!("read {}", path.display()))?;
     if leading_bytes_are_binary(head) {
         let head = head.to_vec();
-        return Ok(describe_binary(display_path, &head, file_len));
+        // A binary file's whole content is "recorded as read".
+        return Ok((describe_binary(display_path, &head, file_len), true));
     }
 
     let mut out = String::new();
     let mut line_no = 0usize;
     let mut printed = 0usize;
+    let mut hit_limit = false;
     let max_line_bytes = max_line_chars.saturating_mul(4);
 
     while let Some((bytes, was_byte_truncated)) =
@@ -277,6 +292,7 @@ fn read_large_text_slice(
     {
         if line_no >= start {
             if printed >= limit {
+                hit_limit = true;
                 out.push_str(&format!(
                     "<system-reminder>Showing a slice of large file `{display_path}`. More lines remain — call read_file again with offset={line_no} and an explicit limit to continue.</system-reminder>\n"
                 ));
@@ -293,7 +309,9 @@ fn read_large_text_slice(
         }
         line_no = line_no.saturating_add(1);
     }
-    Ok(out)
+    // Full only if we read from the very top all the way to EOF.
+    let fully_read = start == 0 && !hit_limit;
+    Ok((out, fully_read))
 }
 
 fn read_next_line_capped<R: std::io::BufRead>(

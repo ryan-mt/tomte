@@ -106,6 +106,45 @@ async fn read_then_write_overwrites_existing_file() {
 }
 
 #[tokio::test]
+async fn partial_read_does_not_authorize_overwrite() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("doc.txt"), "l1\nl2\nl3\nl4").unwrap();
+    let ctx = ctx(dir.path().to_path_buf());
+    // A partial (limit) read must NOT satisfy the read-before-overwrite guard:
+    // the model never saw lines 2-4.
+    ReadFile
+        .execute(json!({"path": "doc.txt", "limit": 1}), &ctx)
+        .await
+        .unwrap();
+    let err = WriteFile
+        .execute(json!({"path": "doc.txt", "content": "x"}), &ctx)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("read all of it"),
+        "partial read must not authorize overwrite: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("doc.txt")).unwrap(),
+        "l1\nl2\nl3\nl4",
+        "file must be untouched after the refused overwrite"
+    );
+    // A full read (no offset/limit) then authorizes the overwrite.
+    ReadFile
+        .execute(json!({"path": "doc.txt"}), &ctx)
+        .await
+        .unwrap();
+    WriteFile
+        .execute(json!({"path": "doc.txt", "content": "x"}), &ctx)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("doc.txt")).unwrap(),
+        "x"
+    );
+}
+
+#[tokio::test]
 async fn write_edit_and_multi_edit_accept_common_argument_aliases() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = ctx(dir.path().to_path_buf());
