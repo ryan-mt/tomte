@@ -122,7 +122,17 @@ fn push_unique(roots: &mut Vec<PathBuf>, path: PathBuf) {
 /// skipping noisy directories. Missing roots are silently ignored.
 fn collect_skill_files(root: &Path, out: &mut Vec<PathBuf>) {
     let mut stack = vec![(root.to_path_buf(), 0usize)];
+    // Canonical dirs already walked. MAX_SKILL_DEPTH bounds depth but NOT total
+    // work: a directory of self-referential symlinks fans out exponentially
+    // (~fanout^depth read_dir calls) since metadata() follows symlinks. Visiting
+    // each real directory at most once bounds the traversal so a planted symlink
+    // cycle can't hang startup.
+    let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     while let Some((dir, depth)) = stack.pop() {
+        let canon = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !visited.insert(canon) {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -130,7 +140,8 @@ fn collect_skill_files(root: &Path, out: &mut Vec<PathBuf>) {
             let path = entry.path();
             // metadata() follows symlinks (file_type() does not), so a symlinked
             // skill directory — common for shared/team checkouts — is traversed
-            // instead of silently skipped. MAX_SKILL_DEPTH bounds any loop.
+            // instead of silently skipped. MAX_SKILL_DEPTH caps depth and the
+            // visited-set above bounds total work against symlink cycles.
             let Ok(meta) = std::fs::metadata(&path) else {
                 continue;
             };
@@ -348,6 +359,24 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "plugin-skill");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_skill_files_bounds_a_self_referential_symlink_fan_out() {
+        // A directory of self-referential symlinks would, with a naive
+        // follow-symlinks walk, explode to ~fanout^MAX_SKILL_DEPTH directory
+        // reads and hang startup. The visited-set must bound it so this returns
+        // promptly with no skills found.
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path().join("d");
+        std::fs::create_dir(&d).unwrap();
+        for i in 0..40 {
+            std::os::unix::fs::symlink(&d, d.join(format!("s{i}"))).unwrap();
+        }
+        let mut out = Vec::new();
+        collect_skill_files(tmp.path(), &mut out);
+        assert!(out.is_empty(), "no SKILL.md exists; traversal must be bounded");
     }
 
     #[test]
