@@ -383,7 +383,10 @@ mod tests {
         };
         let block = format_memory_block(&[entry]);
         assert!(block.contains("rules") && block.contains("evil") && block.contains("more"));
-        assert!(!block.contains(store_marker), "store marker must be defanged");
+        assert!(
+            !block.contains(store_marker),
+            "store marker must be defanged"
+        );
         assert!(
             !block.contains(MEMORY_BLOCK_BEGIN),
             "inherited marker must be defanged"

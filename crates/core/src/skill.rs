@@ -376,7 +376,10 @@ mod tests {
         }
         let mut out = Vec::new();
         collect_skill_files(tmp.path(), &mut out);
-        assert!(out.is_empty(), "no SKILL.md exists; traversal must be bounded");
+        assert!(
+            out.is_empty(),
+            "no SKILL.md exists; traversal must be bounded"
+        );
     }
 
     #[test]
