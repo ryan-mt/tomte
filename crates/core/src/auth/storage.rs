@@ -52,7 +52,7 @@ fn auth_file() -> std::path::PathBuf {
     config::config_dir().join("auth.json")
 }
 
-#[cfg(any(test, not(unix)))]
+#[cfg(any(test, not(any(unix, windows))))]
 fn non_unix_secure_auth_storage_error() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -128,10 +128,79 @@ pub fn save_auth(record: &AuthRecord) -> Result<()> {
     Ok(())
 }
 
-/// Non-Unix platforms cannot yet enforce owner-only (`0o600`) permissions on the
-/// credential file, so persistence fails explicitly rather than storing tokens
-/// under inherited ACLs. (The real implementation is the Unix one above.)
-#[cfg(not(unix))]
+/// Windows: persist the credential file restricted to the current user — the
+/// analogue of the Unix `0o600`. The file lives under `%APPDATA%\tomte` (the
+/// per-user profile, not world-readable), and we additionally strip inherited
+/// ACEs and grant only the owner via `icacls`, matching the explicit
+/// enforcement the Unix path gives. Fills the gap the old hard-error left, so
+/// OAuth sign-in finally completes on Windows.
+#[cfg(windows)]
+pub fn save_auth(record: &AuthRecord) -> Result<()> {
+    use std::io::Write;
+
+    let dir = config::config_dir();
+    config::create_dir_secure(&dir)?;
+    let path = auth_file();
+    let text = serde_json::to_string_pretty(record)?;
+    // Unique temp name so two concurrent writers (e.g. both providers refreshing
+    // at once) can't truncate and tear each other's file; the atomic rename
+    // still gives all-or-nothing semantics.
+    let suffix = {
+        use rand::RngCore;
+        let mut b = [0u8; 8];
+        rand::thread_rng().fill_bytes(&mut b);
+        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    };
+    let tmp = path.with_extension(format!("tmp.{suffix}"));
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+    }
+    // Tighten to owner-only BEFORE it becomes auth.json, so the credential file
+    // is never momentarily broader than the user. Best-effort: on failure the
+    // file is still protected by the per-user profile ACL it inherits — refusing
+    // here would reinstate the very "can't sign in on Windows" bug this fixes.
+    restrict_to_owner_windows(&tmp);
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+/// Strip inherited ACEs from `path` and grant only the current user — the
+/// Windows analogue of `chmod 600`, via the always-present `icacls`. Best-effort
+/// (the file already inherits the per-user profile ACL if this can't run).
+#[cfg(windows)]
+fn restrict_to_owner_windows(path: &std::path::Path) {
+    let Some(user) = current_windows_user() else {
+        return;
+    };
+    let _ = std::process::Command::new("icacls")
+        .arg(path)
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .arg(format!("{user}:(R,W)"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// The current user as `DOMAIN\user` (or bare `user`) for an `icacls` grant.
+#[cfg(windows)]
+fn current_windows_user() -> Option<String> {
+    let user = std::env::var("USERNAME").ok().filter(|s| !s.is_empty())?;
+    match std::env::var("USERDOMAIN") {
+        Ok(domain) if !domain.is_empty() => Some(format!("{domain}\\{user}")),
+        _ => Some(user),
+    }
+}
+
+/// Exotic non-Unix, non-Windows targets can't enforce owner-only permissions, so
+/// persistence still fails explicitly rather than storing tokens unprotected.
+#[cfg(not(any(unix, windows)))]
 pub fn save_auth(_record: &AuthRecord) -> Result<()> {
     Err(non_unix_secure_auth_storage_error().into())
 }
@@ -382,6 +451,27 @@ mod logout_tests {
                 .contains("secure auth storage requires owner-only file permissions"),
             "{err}"
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_perm_tests {
+    use super::*;
+
+    #[test]
+    fn restrict_to_owner_keeps_owner_access() {
+        // Tightening the ACL must never lock the owner out of its own
+        // credential file (that would log the user out on the next read).
+        let path =
+            std::env::temp_dir().join(format!("tomte-auth-win-{}.json", rand::random::<u64>()));
+        std::fs::write(&path, "{}").unwrap();
+        restrict_to_owner_windows(&path);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{}",
+            "owner must keep read access after the ACL is tightened"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }
 
