@@ -82,6 +82,12 @@ fn classify_danger_flags_destructive_patterns() {
         // rm root-glob and variable/tilde-indirected targets.
         "rm -rf /*/",
         "rm -rf /*/*",
+        // POSIX root-equivalent spellings that all resolve to `/` (regression:
+        // these bypassed the rm classifier because they aren't the literal `/`).
+        "rm -rf //",
+        "rm -rf /.",
+        "rm -rf /..",
+        "rm -rf /./../",
         "rm -rf ~bob",
         "rm -rf ~bob/work",
         "rm -rf $X",

@@ -440,6 +440,12 @@ fn is_dangerous_rm_target(token: &str) -> bool {
     ) {
         return true;
     }
+    // POSIX root-equivalents: `//`, `/.`, `/..`, `/./../` all resolve to `/`
+    // (`..` from root stays at root) and delete the filesystem root just like
+    // `/`, which the literal list above only catches in its canonical spelling.
+    if is_root_equivalent(literal) {
+        return true;
+    }
     // Any glob rooted at `/` (`/*`, `/*/`, `/*/*`, …) hits top-level entries.
     if literal.starts_with("/*") {
         return true;
@@ -459,6 +465,15 @@ fn is_dangerous_rm_target(token: &str) -> bool {
     let double_unquoted: String = token.chars().filter(|c| *c != '"').collect();
     has_shell_var_path_prefix(&double_unquoted, "home")
         || has_shell_var_path_prefix(&double_unquoted, "pwd")
+}
+
+/// True for an absolute path that collapses to `/` under POSIX resolution —
+/// every segment after the leading slash is empty, `.`, or `..`. Catches the
+/// root-equivalent spellings (`//`, `/.`, `/..`, `/./../`) that the literal
+/// match in `is_dangerous_rm_target` would otherwise miss; never fires on a
+/// relative path (it requires the leading `/`) so it adds no false positives.
+fn is_root_equivalent(literal: &str) -> bool {
+    literal.starts_with('/') && literal.split('/').all(|s| matches!(s, "" | "." | ".."))
 }
 
 /// Best-effort detection of absolute paths whose recursive deletion would
