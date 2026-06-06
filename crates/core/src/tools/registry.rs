@@ -169,6 +169,7 @@ impl Registry {
                 "exit_worktree" => Box::new(worktree::ExitWorktree),
                 "skill" => Box::new(skill::LoadSkill),
                 "ask_user_question" => Box::new(ask::AskUserQuestion),
+                "record_decision" => Box::new(decision::RecordDecision),
                 "wait" => Box::new(wait::Wait),
                 _ => continue,
             };
@@ -268,6 +269,7 @@ fn canonical_tool_name(name: &str) -> Option<&'static str> {
         "memory" | "update_memory" | "updatememory" | "memories" => Some("memory"),
         "skill" | "load_skill" | "loadskill" => Some("skill"),
         "ask_user_question" | "askuserquestion" => Some("ask_user_question"),
+        "record_decision" | "recorddecision" => Some("record_decision"),
         "wait" | "sleep" => Some("wait"),
         "dispatch_agent" | "dispatchagent" | "agent" | "task" => Some("dispatch_agent"),
         _ => None,

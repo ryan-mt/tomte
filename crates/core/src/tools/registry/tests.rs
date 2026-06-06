@@ -154,6 +154,7 @@ fn find_accepts_provider_aliases_for_builtin_tools() {
         ("NotebookEdit", "notebook_edit"),
         ("LoadSkill", "skill"),
         ("AskUserQuestion", "ask_user_question"),
+        ("RecordDecision", "record_decision"),
         ("Agent", "dispatch_agent"),
         ("Task", "dispatch_agent"),
         ("DispatchAgent", "dispatch_agent"),
@@ -315,6 +316,18 @@ fn memory_tool_is_registered_and_advertised() {
     // A sub-agent whitelist naming the tool resolves to the canonical builtin.
     let filtered = Registry::filtered(&["memory".to_string()]);
     assert!(names(&filtered).contains(&"memory"));
+}
+
+#[test]
+fn filtered_resolves_record_decision_whitelist() {
+    // record_decision is in the standard set, so a wildcard subagent already
+    // gets it; an explicit `tools:` whitelist naming it must resolve too.
+    // `canonical_tool_name` once lacked the mapping, so the explicit-list path
+    // silently dropped the tool while the wildcard path kept it.
+    let snake = Registry::filtered(&["record_decision".to_string()]);
+    assert!(names(&snake).contains(&"record_decision"));
+    let pascal = Registry::filtered(&["RecordDecision".to_string()]);
+    assert!(names(&pascal).contains(&"record_decision"));
 }
 
 fn assert_schema_type_contains(schema: &Value, expected: &str) {
