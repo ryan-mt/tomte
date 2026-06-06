@@ -89,11 +89,15 @@ pub(super) async fn emit_usage(
         // Cast to u128 for the threshold math: `i` is an attacker-controlled
         // token count, so `i * 100` would overflow u64 on a hostile `usage`
         // (panic in debug, silent wrap in release that mis-fires the banners).
-        if i as u128 * 100 >= limit as u128 * 85 {
+        // Skip the threshold banners when the limit is unknown (`0`): the math
+        // would read every turn as ≥85% full and spam AutoCompactSuggested (and
+        // drive auto-/compact). Mirrors the `limit == 0` guard on the
+        // microcompaction path.
+        if limit > 0 && i as u128 * 100 >= limit as u128 * 85 {
             let _ = tx
                 .send(AgentEvent::AutoCompactSuggested { used: i, limit })
                 .await;
-        } else if i as u128 * 10 >= limit as u128 * 8 {
+        } else if limit > 0 && i as u128 * 10 >= limit as u128 * 8 {
             let _ = tx.send(AgentEvent::ContextWarning { used: i, limit }).await;
         }
         // A real request always reports a non-zero input count; `i == 0` means
