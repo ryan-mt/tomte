@@ -7,8 +7,12 @@
 //! live viewport that redraws in place (the screen never scrolls), and when it finishes
 //! its receipt is committed for real — so every finished turn settles into the terminal's
 //! OWN scrollback while only the active turn stays live. That is the felt difference a
-//! "quiet custodian" owes you, and it is what static screenshots cannot show. Record this
-//! for the relaunch (asciinema / vhs):
+//! "quiet custodian" owes you, and it is what static screenshots cannot show.
+//!
+//! Shipped state: this inline viewport is real but **opt-in via `TOMTE_INLINE=1`**; the
+//! 0.0.2 default is the alternate screen (it keeps in-app mouse selection / scroll /
+//! clickable targets). This preview demos what `TOMTE_INLINE=1` delivers — see
+//! docs/pillar-4-calm-terminal.md § Status. Record this for the relaunch (asciinema / vhs):
 //!
 //!   rustc -D warnings docs/previews/calm_preview.rs -o /tmp/calm_preview && /tmp/calm_preview
 //!

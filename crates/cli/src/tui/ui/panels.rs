@@ -214,6 +214,13 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
                 Span::styled(format!("{frame} "), Style::default().fg(palette::INFO))
             }
         };
+        // While running, show the live activity; once finished, show a settled
+        // past-tense verb (Claude Code's idle-teammate convention) so a done row
+        // reads "Forged · 4 steps · 1m 12s" instead of a stale in-flight phrase.
+        let activity_label = match s.done {
+            None => s.activity.clone(),
+            Some(_) => fleet_idle_verb(&s.id).to_string(),
+        };
         lines.push(Line::from(vec![
             Span::raw(" "),
             dot,
@@ -222,7 +229,7 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
             Span::styled(
                 format!(
                     "  · {} · {} steps · {}",
-                    s.activity,
+                    activity_label,
                     s.steps,
                     format_elapsed(s.started_at.elapsed())
                 ),

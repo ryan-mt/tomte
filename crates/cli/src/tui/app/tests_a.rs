@@ -513,6 +513,19 @@ fn welcome_panel_is_complete_with_setup_and_getting_started() {
 }
 
 #[test]
+fn fleet_idle_verb_is_stable_per_agent_and_from_the_pool() {
+    // A finished sub-agent's settled verb must be deterministic per id (no drift
+    // once done) and always a real entry from the past-tense pool.
+    let v = fleet_idle_verb("agent-7");
+    assert_eq!(v, fleet_idle_verb("agent-7"), "same id → same verb");
+    assert!(FLEET_IDLE_VERBS.contains(&v), "verb comes from the pool");
+    assert!(
+        FLEET_IDLE_VERBS.contains(&fleet_idle_verb("a-different-agent-id")),
+        "any id maps into the pool"
+    );
+}
+
+#[test]
 fn altscreen_pins_input_to_the_bottom() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

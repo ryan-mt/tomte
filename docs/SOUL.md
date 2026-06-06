@@ -33,9 +33,12 @@ the direction here is grounded in what the market actually looks like, not a hun
   Claude Code"*); copying another tool's UX verbatim (same slash names, same `CLAUDE.md`);
   having no opinion of your own.
 - **TUI craft.** Claude Code and Gemini CLI are widely mocked for an alt-screen takeover that
-  destroys terminal scrollback and a redraw-the-world loop that flickers. **Tomte currently
-  uses the alternate screen** (`crates/cli/src/tui/app/entry.rs`) → it's in the same trap. The
-  fix (an inline viewport that leaves output in scrollback) maps perfectly to our soul.
+  destroys terminal scrollback and a redraw-the-world loop that flickers. **Tomte defaults to
+  the alternate screen** (`crates/cli/src/tui/app/entry.rs`) → the same trap by default. The fix
+  (an inline viewport that leaves output in scrollback) maps perfectly to our soul, and it now
+  ships **opt-in via `TOMTE_INLINE=1`** — kept opt-in because tomte's in-app mouse selection,
+  scroll, and clickable targets need mouse capture, which pairs with the alt screen (see
+  `docs/pillar-4-calm-terminal.md` § Status).
 
 ## 3. The soul: the Quiet Custodian (refined by evidence)
 
@@ -95,6 +98,9 @@ one-line "left in order" summary at end of turn; a disciplined, calm palette (ac
 one muted accent); notifications only at decision points; the diff shown before it's applied.
 (Fixes the real, widely-cited Claude Code/Gemini scrollback+flicker complaint.) The custodian
 *leaves the room tidy*. Built on the existing ratatui/crossterm stack.
+*(Shipped in 0.0.2: the inline viewport, the "left in order" summary, and the calm palette all
+landed; the inline viewport is opt-in via `TOMTE_INLINE=1`, with the alternate screen still the
+default — see `docs/pillar-4-calm-terminal.md` § Status.)*
 
 **Pillar 5 — The custodian's conscience: the active decision trail.** *(Proposed; builds on 1, 2 & 4.)*
 The Pillar-2 trail today is inert — replayed verbatim, never reconciled against the code it describes.

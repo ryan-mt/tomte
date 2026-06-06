@@ -8,8 +8,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::app::{
-    spinner_word_index, todo_completion_key, App, Block, PreFlight, SPINNER_FRAMES,
-    TODO_RECENT_COMPLETED_TTL,
+    fleet_idle_verb, spinner_word_index, todo_completion_key, App, Block, PreFlight,
+    SPINNER_FRAMES, TODO_RECENT_COMPLETED_TTL,
 };
 use crate::tui::palette;
 use tomte_core::auth::AuthMode;

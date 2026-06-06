@@ -4,6 +4,18 @@
 > Goal: make tomte leave the terminal tidy and intact — the felt difference a "quiet custodian"
 > owes you — and fix the exact complaint Claude Code / Gemini CLI are mocked for.
 
+## Status (shipped in 0.0.2)
+
+The build landed: the **inline viewport** (B1–B2), the **"left in order"** end-of-turn summary
+(B3), and the **calm `palette`** (B4) are all in (`render_inline` / `commit_finished_blocks` via
+`insert_before`; `crates/cli/src/tui/palette.rs`). The mouse-capture fork below resolved as **B
+(keep capture, keep the features)**: tomte keeps in-app scroll, click-drag selection → clipboard,
+and clickable jump/fleet targets. Because those depend on mouse capture — which pairs with the
+alternate screen — the **alternate screen stays the default**, and this inline design ships
+**opt-in via `TOMTE_INLINE=1`** (`RenderMode::from_env_value`). So the "Today" picture below is
+still the default; the "Pillar 4" picture is what `TOMTE_INLINE=1` delivers. The design is kept
+here as the rationale and the trending-to-A goal.
+
 ## The problem, grounded in our code
 
 - `crates/cli/src/tui/app/entry.rs:58` enters the **alternate screen** (`EnterAlternateScreen`).

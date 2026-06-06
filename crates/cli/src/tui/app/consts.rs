@@ -308,3 +308,25 @@ pub fn resolve_spinner_words(cfg: &Config) -> Vec<String> {
 pub fn pick_spinner_seed() -> u32 {
     rand::random::<u32>()
 }
+
+/// Past-tense companion verbs for a *finished* sub-agent in the fleet view — the
+/// settled counterpart to the present-tense [`SPINNER_WORDS`]. Claude Code reads
+/// an idle teammate as "Baked · 1m 12s"; tomte keeps its own hearth-and-workshop
+/// voice and its own list. A done agent's label must not drift, so each agent
+/// gets one stable verb from [`fleet_idle_verb`].
+pub const FLEET_IDLE_VERBS: &[&str] = &[
+    "Tended", "Mended", "Whittled", "Wove", "Kindled", "Forged", "Gathered", "Tidied", "Polished",
+    "Cobbled", "Stewed", "Pottered",
+];
+
+/// A settled past-tense verb for a finished sub-agent, chosen deterministically
+/// from its id (a hash folded into a seed) so the same agent always reads the
+/// same way once done. Reuses [`spinner_word_index`] with zero elapsed, i.e. no
+/// drift — the idle analogue of the live spinner's drifting pick.
+pub fn fleet_idle_verb(agent_id: &str) -> &'static str {
+    let seed = agent_id
+        .bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    let idx = spinner_word_index(seed, Duration::ZERO, FLEET_IDLE_VERBS.len());
+    FLEET_IDLE_VERBS[idx]
+}
