@@ -2,6 +2,7 @@
 
 ## 0.0.2
 
+- Added `tomte blame <file>` — the decision trail scoped to one file, one decision per line and greppable (`tomte blame src/auth.rs | grep argon2`); the pipeable, file-scoped view of Pillar 2's trail alongside `tomte why <file:line>` (which zooms into one location) and `tomte why --all`
 - Added a "left in order" end-of-turn receipt (SOUL Pillar 4) — a turn that changes something now closes with one tidy line: files touched, tests run (pass/fail read from the shell exit code), and the *why* it recorded; a pure question-and-answer turn shows nothing
 - Added an opt-in inline viewport (SOUL Pillar 4, `TOMTE_INLINE=1`) — rather than seize the alternate screen, finished turns flow into the terminal's own native scrollback (so scroll and copy keep working) and only the live turn stays on screen; the default alt-screen renderer is unchanged
 - Renamed the project from `opencli` to `tomte` — the binary, crates (`tomte`/`tomte-core`), config dir (`~/.config/tomte`, project-local `.tomte/`), `TOMTE_*` env vars, the login-screen ASCII logo, and HTTP user-agent — breaking: the old `~/.config/opencli` is no longer read, so re-run `tomte login`

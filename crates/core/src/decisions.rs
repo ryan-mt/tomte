@@ -93,6 +93,33 @@ pub fn for_loc(cwd: &Path, loc: &str) -> Vec<DecisionRecord> {
     load(cwd).into_iter().filter(|d| d.loc == needle).collect()
 }
 
+/// Decisions recorded anywhere in a given file, in record order (oldest first).
+/// Unlike `for_loc` (which pins to an exact `file:line`), this matches on the
+/// *file* component of each `loc`, so it returns every decision in the file
+/// regardless of line. The query may be a bare path or a `file:line` — the line
+/// suffix is ignored — and `\` is normalized to `/` so a Windows-style query
+/// matches the forward-slash `loc`s the agent records. Powers `tomte blame
+/// <file>`, and is the file-scoped lookup the conscience lane (A2) reuses.
+pub fn for_file(cwd: &Path, file: &str) -> Vec<DecisionRecord> {
+    filter_for_file(load(cwd), file)
+}
+
+/// The pure filter behind `for_file`, over an already-loaded trail so the
+/// matching logic is testable without touching the real store.
+fn filter_for_file(records: Vec<DecisionRecord>, file: &str) -> Vec<DecisionRecord> {
+    let needle = normalize_file(parse_loc(file.trim()).0);
+    records
+        .into_iter()
+        .filter(|d| normalize_file(parse_loc(&d.loc).0) == needle)
+        .collect()
+}
+
+/// Normalize a file path for trail matching: trim and fold `\` to `/`, so a
+/// query typed with Windows separators lines up with the forward-slash `loc`s.
+fn normalize_file(file: &str) -> String {
+    file.trim().replace('\\', "/")
+}
+
 // ---- Drift Watch: reconcile the trail against the working tree (Pillar 5) ---
 
 /// Split a `loc` into its file part and an optional 1-based line number. A
@@ -281,6 +308,24 @@ pub fn render_all(records: &[DecisionRecord]) -> String {
     out.trim_end().to_string()
 }
 
+/// Render one file's decisions for `tomte blame <file>` — one decision per line
+/// and greppable (`tomte blame src/auth.rs | grep argon2`). Mirrors the injected
+/// trail's one-liner so the on-disk view and the in-prompt view read the same.
+/// Oldest first, matching `for_file`'s order.
+pub fn render_blame(records: &[DecisionRecord], file: &str) -> String {
+    if records.is_empty() {
+        return format!("no decisions recorded for {file}. Try `tomte why --all`.");
+    }
+    let mut out = String::new();
+    for d in records {
+        out.push_str(&format!(
+            "{} — {} (why: {}; by {})\n",
+            d.loc, d.decision, d.why, d.model
+        ));
+    }
+    out.trim_end().to_string()
+}
+
 fn gist(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -424,6 +469,40 @@ mod tests {
         assert!(all.contains("src/a.rs:1"));
         assert!(render_for_loc(&[], "x:1").contains("no decision"));
         assert!(render_all(&[]).contains("empty"));
+    }
+
+    #[test]
+    fn for_file_filters_by_file_component() {
+        let records = vec![
+            rec("src/auth.rs:10", "gpt-5.5"),
+            rec("src/auth.rs:42", "claude-opus-4-8"),
+            rec("src/other.rs:1", "gpt-5.5"),
+        ];
+        // Every decision in the file, regardless of line.
+        assert_eq!(filter_for_file(records.clone(), "src/auth.rs").len(), 2);
+        // A `file:line` query keeps the whole file (the line is ignored).
+        assert_eq!(filter_for_file(records.clone(), "src/auth.rs:999").len(), 2);
+        // A Windows-style query still matches a forward-slash loc.
+        assert_eq!(filter_for_file(records.clone(), "src\\auth.rs").len(), 2);
+        // No match → empty, not an error.
+        assert!(filter_for_file(records, "src/missing.rs").is_empty());
+    }
+
+    #[test]
+    fn render_blame_is_one_greppable_line_per_decision() {
+        let records = vec![
+            rec("src/auth.rs:10", "gpt-5.5"),
+            rec("src/auth.rs:42", "claude-opus-4-8"),
+        ];
+        let out = render_blame(&records, "src/auth.rs");
+        assert_eq!(out.lines().count(), 2);
+        // loc + decision + why + model are all greppable on the first line.
+        let first = out.lines().next().unwrap();
+        assert!(first.contains("src/auth.rs:10"));
+        assert!(first.contains("return Err on empty input"));
+        assert!(first.contains("validate at the boundary"));
+        assert!(first.contains("gpt-5.5"));
+        assert!(render_blame(&[], "src/x.rs").contains("no decisions recorded"));
     }
 
     // ---- Drift Watch (Pillar 5, A1) ----

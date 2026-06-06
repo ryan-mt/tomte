@@ -116,6 +116,18 @@ enum Command {
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
     },
+    /// List the decision trail for one file — every recorded decision in it,
+    /// one per line and greppable (`tomte blame src/auth.rs | grep argon2`).
+    /// The file-scoped, pipeable view of `tomte why`; `tomte why <file:line>`
+    /// zooms into a single location, `tomte why --all` lists everything.
+    Blame {
+        /// File whose decisions to list, e.g. `src/parser.rs`. A `file:line` is
+        /// accepted too — the line is ignored and the whole file is shown.
+        file: String,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
 }
 
 fn init_tracing(stderr_logs: bool) {
@@ -243,6 +255,7 @@ async fn async_main() -> Result<()> {
             reconcile,
             cwd,
         }) => commands::why::run(loc, all, reconcile, cwd).await,
+        Some(Command::Blame { file, cwd }) => commands::blame::run(file, cwd).await,
     }
 }
 
@@ -340,5 +353,17 @@ mod tests {
         let text_cli =
             Cli::try_parse_from(["tomte", "chat", "--output-format", "text", "hi"]).unwrap();
         assert!(!command_uses_json_output(&text_cli.command));
+    }
+
+    #[test]
+    fn blame_parses_file_and_cwd() {
+        let cli = Cli::try_parse_from(["tomte", "blame", "--cwd", "/p", "src/auth.rs"]).unwrap();
+        match cli.command {
+            Some(Command::Blame { file, cwd }) => {
+                assert_eq!(file, "src/auth.rs");
+                assert_eq!(cwd, Some(std::path::PathBuf::from("/p")));
+            }
+            other => panic!("expected blame command, got {other:?}"),
+        }
     }
 }
