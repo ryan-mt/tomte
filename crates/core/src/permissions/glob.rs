@@ -80,13 +80,12 @@ pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
     matched
 }
 
-/// Collapse runs of `*` so a pattern like `***` or `**********` can't trigger
-/// `glob_inner`'s O(n^k) backtracking — adjacent `**` groups each branch over
-/// every text offset (line 499), and the source pattern is untrusted (it comes
-/// from `.tomte/permissions.json`). A run of length 1 stays `*` (within-segment
-/// wildcard); any run of length >= 2 becomes a single `**` (cross-`/` wildcard),
-/// which is exactly what a user writing `***` intends, so no valid pattern
-/// changes meaning.
+/// Collapse runs of `*` so a pattern like `***` or `**********` normalizes to a
+/// single `**`. A run of length 1 stays `*` (within-segment wildcard); any run
+/// of length >= 2 becomes a single `**` (cross-`/` wildcard), which is exactly
+/// what a user writing `***` intends, so no valid pattern changes meaning.
+/// (`glob_inner` is memoized, so adjacent `**` groups no longer backtrack
+/// exponentially; the source pattern is untrusted — `.tomte/permissions.json`.)
 fn collapse_globstars(pattern: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(pattern.len());
     let mut stars = 0usize;
@@ -112,46 +111,49 @@ fn collapse_globstars(pattern: &str) -> Vec<u8> {
 }
 
 fn glob_inner(p: &[u8], t: &[u8]) -> bool {
-    if p.is_empty() {
-        return t.is_empty();
+    // Memoize on (pattern offset, text offset). Without a cache, adjacent `**`
+    // groups separated by literals each branch over every text offset, so an
+    // untrusted pattern like `**a**a**a…` (from `.tomte/permissions.json`)
+    // against a long non-matching path explodes to O(text_len ^ globstars).
+    // Caching each (pi, ti) state collapses that to O(pattern * text). The arms
+    // below are the same matcher, rewritten as recurrences over offsets.
+    let mut memo = vec![vec![None; t.len() + 1]; p.len() + 1];
+    glob_at(p, t, 0, 0, &mut memo)
+}
+
+fn glob_at(p: &[u8], t: &[u8], pi: usize, ti: usize, memo: &mut [Vec<Option<bool>>]) -> bool {
+    if let Some(cached) = memo[pi][ti] {
+        return cached;
     }
-    // A trailing `/**` also matches the bare prefix directory itself, not only
-    // its children: a deny rule `dir/**` is meant to cover operating on `dir`
-    // (e.g. `list_dir(dir)`), so `.git/**` must match `.git`. `t` is empty here
-    // when the literal prefix consumed the whole path; a `/`-led `t` is the
-    // children case the `**` arm already handles. A non-`/` continuation
-    // (`a/**` vs `ab`) correctly stays unmatched.
-    if p == b"/**" {
-        return t.is_empty() || t.first() == Some(&b'/');
-    }
-    match p[0] {
-        b'*' if p.get(1) == Some(&b'*') => {
-            // `**` — match any chars including `/`.
-            let rest = &p[2..];
-            // `**/` may match zero leading dirs: allow eliding the slash so
-            // `**/*.rs` also matches a root-level `main.rs`.
-            if rest.first() == Some(&b'/') && glob_inner(&rest[1..], t) {
-                return true;
-            }
-            (0..=t.len()).any(|i| glob_inner(rest, &t[i..]))
-        }
-        b'*' => {
-            // single `*` — match a run of non-`/` chars (including empty).
-            let rest = &p[1..];
-            let mut i = 0;
-            loop {
-                if glob_inner(rest, &t[i..]) {
-                    return true;
-                }
-                if i >= t.len() || t[i] == b'/' {
-                    return false;
-                }
-                i += 1;
-            }
-        }
-        b'?' => !t.is_empty() && t[0] != b'/' && glob_inner(&p[1..], &t[1..]),
-        c => !t.is_empty() && t[0] == c && glob_inner(&p[1..], &t[1..]),
-    }
+    let result = if pi == p.len() {
+        ti == t.len()
+    } else if &p[pi..] == b"/**" {
+        // A trailing `/**` also matches the bare prefix directory itself, not
+        // only its children: a deny rule `dir/**` is meant to cover operating on
+        // `dir` (e.g. `list_dir(dir)`), so `.git/**` must match `.git`. The text
+        // is exhausted when the literal prefix consumed the whole path; a `/`-led
+        // remainder is the children case the `**` arm already handles. A non-`/`
+        // continuation (`a/**` vs `ab`) correctly stays unmatched.
+        ti == t.len() || t.get(ti) == Some(&b'/')
+    } else if p[pi] == b'*' && p.get(pi + 1) == Some(&b'*') {
+        // `**` — match any chars including `/`. Match the rest here, let a `**/`
+        // elide its slash (so `**/*.rs` also matches a root-level `main.rs`), or
+        // let `**` consume one more text char and stay put.
+        let rest = pi + 2;
+        (p.get(rest) == Some(&b'/') && glob_at(p, t, rest + 1, ti, memo))
+            || glob_at(p, t, rest, ti, memo)
+            || (ti < t.len() && glob_at(p, t, pi, ti + 1, memo))
+    } else if p[pi] == b'*' {
+        // single `*` — match a run of non-`/` chars (including empty).
+        glob_at(p, t, pi + 1, ti, memo)
+            || (ti < t.len() && t[ti] != b'/' && glob_at(p, t, pi, ti + 1, memo))
+    } else if p[pi] == b'?' {
+        ti < t.len() && t[ti] != b'/' && glob_at(p, t, pi + 1, ti + 1, memo)
+    } else {
+        ti < t.len() && t[ti] == p[pi] && glob_at(p, t, pi + 1, ti + 1, memo)
+    };
+    memo[pi][ti] = Some(result);
+    result
 }
 
 #[cfg(test)]
@@ -190,6 +192,20 @@ mod tests {
         let many = "*".repeat(64);
         assert!(glob_match(&many, "a/b/c/d/e/f.rs"));
         assert!(!glob_match(&format!("{many}x"), "a/b/c/d/e/f.rs"));
+    }
+
+    #[test]
+    fn adjacent_globstars_stay_polynomial_not_exponential() {
+        // Adjacent `**` groups separated by literals each branched over every
+        // text offset (O(text_len ^ globstars)) — a planted deny rule could hang
+        // the agent. Memoization bounds it; both a matching and a worst-case
+        // non-matching pattern must return promptly rather than spin.
+        let text = "a".repeat(48);
+        // ...ends in `a`, so 16 `**a` groups match (the `**`s absorb the slack).
+        assert!(glob_match(&"**a".repeat(16), &text));
+        // A trailing literal absent from the text cannot match, but must still
+        // return (the exponential blowup happened on exactly this shape).
+        assert!(!glob_match(&format!("{}X", "**a".repeat(16)), &text));
     }
 
     #[test]
