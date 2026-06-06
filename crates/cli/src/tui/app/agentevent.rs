@@ -64,6 +64,7 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 args: String::new(),
                 output: None,
                 error: false,
+                preflight: None,
             });
         }
         AgentEvent::ToolCallArgsDelta { call_id, delta } => {
@@ -127,6 +128,20 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             // last-block fingerprint), so without this the next frame would
             // replay the stale lines where the tool still looked pending.
             app.chat_render_cache = None;
+        }
+        AgentEvent::PreFlight {
+            call_id,
+            scope,
+            leash,
+        } => {
+            // SOUL Pillar 1: attach the glass-box card to its tool block so the
+            // next frame shows WHAT the call will do and HOW FAR it reaches,
+            // before its result lands. Mutates a (usually non-last) block in
+            // place, so invalidate the render cache like the ToolResult arm.
+            if let Some(Block::Tool { preflight, .. }) = find_tool_mut(&mut app.blocks, &call_id) {
+                *preflight = Some(PreFlight { scope, leash });
+                app.chat_render_cache = None;
+            }
         }
         AgentEvent::CwdChanged { cwd } => {
             app.cwd = std::path::PathBuf::from(&cwd);

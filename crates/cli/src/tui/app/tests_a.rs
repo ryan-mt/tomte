@@ -87,6 +87,7 @@ fn markdown_export_preserves_fences_and_details_markers() {
             args: "{\"cmd\":\"```\"}".to_string(),
             output: Some("```\n</details>\n".to_string()),
             error: false,
+            preflight: None,
         },
     ];
 

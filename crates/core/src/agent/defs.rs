@@ -241,6 +241,17 @@ pub enum AgentEvent {
         output: String,
         error: bool,
     },
+    /// SOUL Pillar 1 — the glass-box pre-flight. Emitted for a consequential
+    /// tool call (a write or a shell command) just before it runs, including an
+    /// auto-approved one, so every such action is legible *before* it happens
+    /// rather than only narrated as it streams. Informational only — the
+    /// approval gate is unchanged. `scope` states the blast radius; `leash` is a
+    /// one-line safety note when the call is flagged destructive.
+    PreFlight {
+        call_id: String,
+        scope: String,
+        leash: Option<String>,
+    },
     /// The session working directory changed, typically after entering/exiting a worktree.
     CwdChanged {
         cwd: String,

@@ -7,7 +7,9 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::Path;
 
-use super::app::{todo_completion_key, App, Block, SPINNER_FRAMES, TODO_RECENT_COMPLETED_TTL};
+use super::app::{
+    todo_completion_key, App, Block, PreFlight, SPINNER_FRAMES, TODO_RECENT_COMPLETED_TTL,
+};
 use crate::tui::palette;
 use tomte_core::auth::AuthMode;
 use tomte_core::tools::{TodoItem, TodoStatus};
@@ -212,6 +214,7 @@ pub fn inline_blocks_to_lines(
                 args,
                 output,
                 error,
+                preflight,
                 ..
             } => render_tool(
                 &mut lines,
@@ -219,6 +222,7 @@ pub fn inline_blocks_to_lines(
                 args,
                 output.as_deref(),
                 *error,
+                preflight.as_ref(),
                 inner_width,
                 expanded,
             ),

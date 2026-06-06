@@ -248,6 +248,26 @@ impl Agent {
                 .await;
         }
 
+        // SOUL Pillar 1 — glass-box pre-flight. Before the runnable set executes,
+        // announce each consequential call (a write or a shell command) so an
+        // auto-approved action is legible *before* it happens, not just narrated
+        // as it runs. Reads/searches warrant no card (`preflight_card` -> None).
+        // Visibility only — the approval gate above is untouched.
+        for (call_id, args, tool) in &runnable {
+            let read_only = effective_tool_read_only(tool.name(), args, tool.is_read_only());
+            if let Some(card) =
+                preflight_card(tool.name(), args, read_only, tool.danger_reason(args))
+            {
+                let _ = tx
+                    .send(AgentEvent::PreFlight {
+                        call_id: call_id.clone(),
+                        scope: card.scope,
+                        leash: card.leash,
+                    })
+                    .await;
+            }
+        }
+
         // Execute known-safe read/search tools in parallel, but serialize
         // every side-effecting or session-mutating tool in transcript
         // order. This keeps fast multi-read turns fast without allowing

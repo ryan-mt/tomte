@@ -210,12 +210,16 @@ pub(super) fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block]
     lines.push(Line::raw(""));
 }
 
+// Flat render of a tool block's fields (the Pillar-1 `preflight` pushed this to
+// 8); bundling them into a struct would just add boilerplate at both call sites.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_tool(
     lines: &mut Vec<Line<'static>>,
     name: &str,
     args: &str,
     output: Option<&str>,
     error: bool,
+    preflight: Option<&PreFlight>,
     inner_width: usize,
     expanded: bool,
 ) {
@@ -253,6 +257,22 @@ pub(super) fn render_tool(
         ));
     }
     lines.push(Line::from(header_spans));
+
+    // SOUL Pillar 1 — the glass-box pre-flight: WHAT this call will do and HOW
+    // FAR it can reach, shown between the header and the result. A leashed
+    // (flagged-destructive) call adds a second, warning-toned line.
+    if let Some(pf) = preflight {
+        lines.push(Line::from(vec![
+            Span::styled("  ▸ ", Style::default().fg(palette::ACCENT)),
+            Span::styled(pf.scope.clone(), Style::default().fg(palette::TEXT_FAINT)),
+        ]));
+        if let Some(leash) = &pf.leash {
+            lines.push(Line::from(vec![
+                Span::styled("    ⚠ ", Style::default().fg(palette::WARNING)),
+                Span::styled(leash.clone(), Style::default().fg(palette::WARNING)),
+            ]));
+        }
+    }
 
     // Body
     let body_lines = friendly_body(name, &parsed, output, error, inner_width, expanded);

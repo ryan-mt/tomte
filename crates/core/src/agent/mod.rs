@@ -17,6 +17,7 @@ mod defs;
 mod event;
 mod exec;
 mod lifecycle;
+mod preflight;
 mod stream;
 mod toolphase;
 mod turn;
@@ -27,6 +28,7 @@ use canonical::*;
 use canonical2::*;
 use defs::*;
 use exec::*;
+use preflight::*;
 use usage::*;
 
 pub use defs::{

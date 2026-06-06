@@ -163,6 +163,7 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 args,
                 output,
                 error,
+                preflight,
                 ..
             } => {
                 render_tool(
@@ -171,6 +172,7 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                     args,
                     output.as_deref(),
                     *error,
+                    preflight.as_ref(),
                     inner_width,
                     expanded,
                 );
@@ -329,6 +331,7 @@ pub(super) fn block_fingerprint(block: &Block) -> usize {
             args,
             output,
             error,
+            preflight,
             ..
         } => args
             .len()
@@ -340,7 +343,8 @@ pub(super) fn block_fingerprint(block: &Block) -> usize {
                     .unwrap_or(0)
                     .wrapping_mul(17),
             )
-            .wrapping_add(if *error { 1 } else { 0 }),
+            .wrapping_add(if *error { 1 } else { 0 })
+            .wrapping_add(if preflight.is_some() { 7 } else { 0 }),
     }
 }
 

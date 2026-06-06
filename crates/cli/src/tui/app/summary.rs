@@ -241,6 +241,7 @@ mod tests {
             args: args.into(),
             output: output.map(|s| s.into()),
             error,
+            preflight: None,
         }
     }
 

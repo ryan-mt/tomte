@@ -216,6 +216,9 @@ pub fn rebuild_blocks_from_history(history: &[tomte_core::openai::InputItem]) ->
                     args: arguments.clone(),
                     output,
                     error,
+                    // A resumed session replays only the recorded transcript; the
+                    // pre-flight is a live, in-the-moment card, so it stays None.
+                    preflight: None,
                 });
             }
             InputItem::FunctionCallOutput { .. } => { /* attached above */ }

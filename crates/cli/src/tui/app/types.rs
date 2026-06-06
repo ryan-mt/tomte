@@ -103,6 +103,15 @@ impl RenderMode {
     }
 }
 
+/// SOUL Pillar 1 — the glass-box pre-flight attached to a consequential tool
+/// call: a one-line scope statement (the blast radius) shown before the call
+/// runs, plus an optional leash (a safety note for a flagged-destructive call).
+#[derive(Debug, Clone)]
+pub struct PreFlight {
+    pub scope: String,
+    pub leash: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Block {
     Welcome,
@@ -123,6 +132,10 @@ pub enum Block {
         args: String,
         output: Option<String>,
         error: bool,
+        /// SOUL Pillar 1 — the pre-flight card, attached when the `PreFlight`
+        /// event arrives (just before a write/shell call runs). `None` for a
+        /// read-only call and until that event lands.
+        preflight: Option<PreFlight>,
     },
     System(String),
     /// Pre-styled, fixed-layout content (e.g. the `/context` report). The lines
