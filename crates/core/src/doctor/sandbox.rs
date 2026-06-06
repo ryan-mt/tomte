@@ -16,11 +16,14 @@ pub(super) fn section() -> Section {
         "danger-full-access" | "danger" | "off" => Check::warn(
             "mode danger-full-access — sandbox OFF; run_shell commands run with full privileges",
         ),
-        "read-only" | "readonly" => match mechanism {
-            Some(m) => Check::ok(format!(
+        "read-only" | "readonly" => match &mechanism {
+            Mechanism::Active(m) => Check::ok(format!(
                 "mode read-only — {m}; commands can read but not write or reach the network"
             )),
-            None => Check::warn(
+            Mechanism::Inactive(m) => Check::warn(format!(
+                "mode read-only, but {m} is not active on this kernel — run_shell commands are refused, not run unconfined"
+            )),
+            Mechanism::Unsupported => Check::warn(
                 "mode read-only, but no OS sandbox on this platform — commands run unsandboxed",
             ),
         },
@@ -31,11 +34,14 @@ pub(super) fn section() -> Section {
             } else {
                 "network blocked"
             };
-            match mechanism {
-                Some(m) => Check::ok(format!(
+            match &mechanism {
+                Mechanism::Active(m) => Check::ok(format!(
                     "mode workspace-write — {m}; writes confined to the workspace, {net}"
                 )),
-                None => Check::warn(
+                Mechanism::Inactive(m) => Check::warn(format!(
+                    "mode workspace-write, but {m} is not active on this kernel — run_shell commands are refused, not run unconfined"
+                )),
+                Mechanism::Unsupported => Check::warn(
                     "mode workspace-write, but no OS sandbox on this platform — commands run unsandboxed",
                 ),
             }
@@ -48,19 +54,43 @@ pub(super) fn section() -> Section {
     }
 }
 
-/// The enforcement mechanism compiled in for this platform, or `None` where no
-/// OS sandbox is available (commands then run unsandboxed).
-fn mechanism() -> Option<&'static str> {
+/// Enforcement mechanism for this platform: compiled in and active, compiled in
+/// but inactive at runtime (e.g. Linux without active Landlock — the helper then
+/// fails closed and refuses commands), or no OS sandbox at all. Each variant is
+/// constructed on only some platforms, so suppress the per-target dead-code lint.
+#[allow(dead_code)]
+enum Mechanism {
+    Active(&'static str),
+    Inactive(&'static str),
+    Unsupported,
+}
+
+fn mechanism() -> Mechanism {
     #[cfg(target_os = "linux")]
     {
-        Some("Landlock + seccomp")
+        if landlock_active() {
+            Mechanism::Active("Landlock + seccomp")
+        } else {
+            Mechanism::Inactive("Landlock + seccomp")
+        }
     }
     #[cfg(target_os = "macos")]
     {
-        Some("sandbox-exec")
+        Mechanism::Active("sandbox-exec")
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        None
+        Mechanism::Unsupported
     }
+}
+
+/// Best-effort check that Landlock is actually active on this kernel: the LSM
+/// list at `/sys/kernel/security/lsm` includes `landlock` when it is. When it's
+/// absent, the sandbox helper's `restrict_self()` degrades to "not enforced" and
+/// fails closed, so report that rather than claiming filesystem confinement.
+#[cfg(target_os = "linux")]
+fn landlock_active() -> bool {
+    std::fs::read_to_string("/sys/kernel/security/lsm")
+        .map(|lsm| lsm.split(',').any(|m| m.trim() == "landlock"))
+        .unwrap_or(false)
 }
