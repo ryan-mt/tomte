@@ -447,7 +447,17 @@ pub async fn ensure_fresh(record: &AuthRecord) -> Result<String> {
         st.expires_at = expires_at;
     }
     updated.last_refresh = Some(Utc::now());
-    save_auth(&updated)?;
+    // The network refresh already consumed the single-use refresh_token and
+    // issued a replacement. If persisting it fails, don't bubble the error and
+    // discard the freshly issued access_token — let the in-flight turn proceed on
+    // it. (The rotated refresh_token is lost on a persistent disk failure, so a
+    // later turn may need a re-login; that beats failing this turn outright.)
+    if let Err(e) = save_auth(&updated) {
+        tracing::warn!(
+            "failed to persist refreshed OpenAI tokens: {e:#}; continuing on the \
+             freshly issued access token (re-run `tomte login` if auth later fails)"
+        );
+    }
     Ok(refreshed.access_token)
 }
 
