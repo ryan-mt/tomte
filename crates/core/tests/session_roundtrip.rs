@@ -202,4 +202,43 @@ fn session_save_load_list_and_missing_id() {
         listed.iter().all(|m| m.id != "mismatch"),
         "mismatched session id should be skipped: {listed:#?}"
     );
+
+    // --- Anthropic reasoning blocks survive a save/load roundtrip ------------
+    // thinking/signature/redacted_thinking were #[serde(skip)], so they were
+    // dropped from the persisted history; a resumed Anthropic turn then replayed
+    // a tool_use without its required signed thinking block (provider 400). They
+    // must persist now. Use a separate cwd so the list counts above are intact.
+    let cwd_c = PathBuf::from("/tmp/tomte-test-proj-c");
+    let mut reasoning_rec = record(&cwd_c, "reasoning", 40_000);
+    reasoning_rec.history = vec![
+        InputItem::Reasoning {
+            id: String::new(),
+            summary: Vec::new(),
+            thinking: Some("deep thought".into()),
+            signature: Some("sig-abc".into()),
+            redacted_thinking: None,
+        },
+        InputItem::Reasoning {
+            id: String::new(),
+            summary: Vec::new(),
+            thinking: None,
+            signature: None,
+            redacted_thinking: Some("redacted-xyz".into()),
+        },
+    ];
+    session::save(&reasoning_rec).expect("save reasoning");
+    let loaded_reasoning = session::load(&cwd_c, "reasoning").expect("load reasoning");
+    match &loaded_reasoning.history[0] {
+        InputItem::Reasoning { thinking, signature, .. } => {
+            assert_eq!(thinking.as_deref(), Some("deep thought"));
+            assert_eq!(signature.as_deref(), Some("sig-abc"));
+        }
+        other => panic!("expected reasoning item, got {other:?}"),
+    }
+    match &loaded_reasoning.history[1] {
+        InputItem::Reasoning { redacted_thinking, .. } => {
+            assert_eq!(redacted_thinking.as_deref(), Some("redacted-xyz"));
+        }
+        other => panic!("expected reasoning item, got {other:?}"),
+    }
 }

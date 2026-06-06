@@ -88,18 +88,22 @@ pub enum InputItem {
         summary: Vec<Value>,
         /// Anthropic thinking plaintext, kept to replay the block across the
         /// tool loop. Empty when the model's `display` is `omitted` (4.7/4.8).
-        /// `skip` so the OpenAI Responses wire never serializes it.
-        #[serde(skip)]
+        /// Persisted (so a resumed session keeps it); the OpenAI Responses wire
+        /// drops Anthropic-origin reasoning whole via `strip_unsendable_reasoning`
+        /// and OpenAI-origin items leave it `None`, so it never reaches that wire.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         thinking: Option<String>,
         /// Anthropic thinking-block signature (opaque encrypted reasoning).
-        /// Required ahead of a replayed `tool_use`. `skip` for the OpenAI path.
-        #[serde(skip)]
+        /// Required ahead of a replayed `tool_use`, so it must survive a session
+        /// resume. Anthropic-origin items (signature set) are stripped before the
+        /// OpenAI wire; OpenAI-origin items leave it `None`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
         /// Anthropic `redacted_thinking` data: reasoning the safety system
         /// encrypted, with no plaintext or signature. Replayed verbatim ahead
         /// of a `tool_use` (see `anthropic/translate.rs`); dropping it makes the
-        /// API reject the follow-up turn. `skip` so the OpenAI wire never sees it.
-        #[serde(skip)]
+        /// API reject the follow-up turn — so it must survive a resume too.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         redacted_thinking: Option<String>,
     },
 }
