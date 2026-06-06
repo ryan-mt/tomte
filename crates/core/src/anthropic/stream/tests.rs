@@ -464,6 +464,60 @@ async fn content_block_delta_accepts_tool_args_without_delta_type() {
 }
 
 #[tokio::test]
+async fn out_of_range_block_index_is_dropped_not_truncated_onto_block_zero() {
+    // A `content_block_delta` whose `index` exceeds u32 must be dropped, not
+    // `as u32`-truncated down onto an existing block (2^32 wraps to 0) —
+    // otherwise a malformed stream could merge phantom text into block 0.
+    let app = Router::new().route(
+        "/",
+        get(|| async {
+            let events = vec![
+                Ok::<Event, Infallible>(Event::default().data(
+                    r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}"#,
+                )),
+                Ok(Event::default().data(
+                    r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+                )),
+                // index 2^32: a bare `as u32` cast wraps this to 0.
+                Ok(Event::default().data(
+                    r#"{"type":"content_block_delta","index":4294967296,"delta":{"text":"PHANTOM"}}"#,
+                )),
+                Ok(Event::default().data(
+                    r#"{"type":"content_block_delta","index":0,"delta":{"text":"real"}}"#,
+                )),
+                Ok(Event::default().data(r#"{"type":"content_block_stop","index":0}"#)),
+                Ok(Event::default().data(r#"{"type":"message_stop"}"#)),
+            ];
+            Sse::new(stream::iter(events))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+    let mut handle = handle_from_response(resp);
+    let mut deltas = String::new();
+    let mut done_text = String::new();
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+        .await
+        .unwrap()
+    {
+        match event.unwrap() {
+            ResponseStreamEvent::OutputTextDelta { delta, .. } => deltas.push_str(&delta),
+            ResponseStreamEvent::OutputTextDone { text, .. } => done_text.push_str(&text),
+            _ => {}
+        }
+    }
+    server.abort();
+
+    assert!(!deltas.contains("PHANTOM"), "out-of-range delta must be dropped, got {deltas:?}");
+    assert_eq!(done_text, "real", "block 0 text must not absorb the phantom");
+}
+
+#[tokio::test]
 async fn content_block_delta_ignores_empty_arg_placeholder_before_real_args() {
     let app = Router::new().route(
         "/",

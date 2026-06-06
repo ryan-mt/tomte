@@ -53,6 +53,20 @@ struct PendingBlock {
     redacted_data: Option<String>,
 }
 
+/// Resolve a content-block `index`, returning `None` (skip the event) when a
+/// *present* index doesn't fit in `u32`. A bare `as u32` cast would silently
+/// truncate an out-of-range index and alias it onto another block (e.g. `2^32`
+/// wraps to block 0), letting a malformed stream merge a tool_use block's args
+/// into block 0's text buffer. A *missing* index still defaults to 0 (a real
+/// Anthropic block event always carries one). Mirrors the Chat path's
+/// `chat_tool_call_index` guard so the two parsers don't drift.
+fn block_index(parsed: &Value) -> Option<u32> {
+    match parsed.get("index").and_then(|v| v.as_u64()) {
+        None => Some(0),
+        Some(v) => u32::try_from(v).ok(),
+    }
+}
+
 /// Bridge an Anthropic SSE response onto a `StreamHandle` carrying
 /// `ResponseStreamEvent`. The returned handle is consumed by the agent loop
 /// just like an OpenAI stream.
@@ -109,9 +123,9 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 }
                             }
                             "content_block_start" => {
-                                let index =
-                                    parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0)
-                                        as u32;
+                                let Some(index) = block_index(&parsed) else {
+                                    continue;
+                                };
                                 // A real response opens only a handful of blocks;
                                 // refuse to track unboundedly many distinct
                                 // indices from a malformed stream.
@@ -201,9 +215,9 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 }
                             }
                             "content_block_delta" => {
-                                let index =
-                                    parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0)
-                                        as u32;
+                                let Some(index) = block_index(&parsed) else {
+                                    continue;
+                                };
                                 let delta = parsed.get("delta");
                                 let block_kind = blocks.get(&index).map(|b| b.kind.as_str());
                                 match content_block_delta_type(delta, block_kind) {
@@ -275,9 +289,9 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                 }
                             }
                             "content_block_stop" => {
-                                let index =
-                                    parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0)
-                                        as u32;
+                                let Some(index) = block_index(&parsed) else {
+                                    continue;
+                                };
                                 if let Some(b) = blocks.remove(&index) {
                                     if b.kind == "tool_use" {
                                         let _ = tx
