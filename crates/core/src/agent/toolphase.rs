@@ -258,11 +258,24 @@ impl Agent {
             if let Some(card) =
                 preflight_card(tool.name(), args, read_only, tool.danger_reason(args))
             {
+                // Pillar 5 (A2 Tier 1): surface the target file's recorded
+                // decisions as "house rules" right as an edit is about to land —
+                // recall at the moment of risk, pure surfacing (never a gate).
+                // Only the file-targeting mutating tools carry a path to look up.
+                let house_rules = match tool.name() {
+                    "edit_file" | "write_file" | "multi_edit" => args
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .map(|p| crate::decisions::house_rules(&ctx.cwd, p))
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
                 let _ = tx
                     .send(AgentEvent::PreFlight {
                         call_id: call_id.clone(),
                         scope: card.scope,
                         leash: card.leash,
+                        house_rules,
                     })
                     .await;
             }

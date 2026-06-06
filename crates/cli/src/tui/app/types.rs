@@ -110,6 +110,9 @@ impl RenderMode {
 pub struct PreFlight {
     pub scope: String,
     pub leash: Option<String>,
+    /// Pillar 5 (A2 Tier 1) — the file's recorded decisions, surfaced as
+    /// "house rules" when an edit targets it; empty otherwise.
+    pub house_rules: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

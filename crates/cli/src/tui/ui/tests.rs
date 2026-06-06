@@ -454,6 +454,7 @@ mod preflight_render_tests {
         let pf = PreFlight {
             scope: "writes 1 file · nothing else moves".to_string(),
             leash: None,
+            house_rules: Vec::new(),
         };
         render_tool(
             &mut lines,
@@ -480,6 +481,7 @@ mod preflight_render_tests {
         let pf = PreFlight {
             scope: "runs a shell command · may change your tree".to_string(),
             leash: Some("rm -rf on a critical path".to_string()),
+            house_rules: Vec::new(),
         };
         render_tool(
             &mut lines,
@@ -513,5 +515,41 @@ mod preflight_render_tests {
             false,
         );
         assert!(!text(&lines).contains('▸'), "a read has no pre-flight card");
+    }
+
+    #[test]
+    fn house_rules_for_the_file_render_under_the_card() {
+        let mut lines = Vec::new();
+        let pf = PreFlight {
+            scope: "writes 1 file · nothing else moves".to_string(),
+            leash: None,
+            house_rules: vec![
+                "reject bcrypt, use argon2 — memory-hard (gpt-5.5)".to_string(),
+                "+2 more · tomte why src/auth.rs".to_string(),
+            ],
+        };
+        render_tool(
+            &mut lines,
+            "edit_file",
+            "{\"path\":\"src/auth.rs\"}",
+            None,
+            false,
+            Some(&pf),
+            80,
+            false,
+        );
+        let rendered = text(&lines);
+        assert!(
+            rendered.contains("house rules for this file"),
+            "got: {rendered}"
+        );
+        assert!(
+            rendered.contains("reject bcrypt, use argon2"),
+            "got: {rendered}"
+        );
+        assert!(
+            rendered.contains("+2 more · tomte why src/auth.rs"),
+            "got: {rendered}"
+        );
     }
 }

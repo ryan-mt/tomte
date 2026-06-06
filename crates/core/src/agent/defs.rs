@@ -251,6 +251,10 @@ pub enum AgentEvent {
         call_id: String,
         scope: String,
         leash: Option<String>,
+        /// Pillar 5 (A2 Tier 1) — the file's recorded decisions surfaced as
+        /// "house rules" when an edit targets it; empty otherwise. Pure recall
+        /// at the moment of risk, never a gate.
+        house_rules: Vec<String>,
     },
     /// The session working directory changed, typically after entering/exiting a worktree.
     CwdChanged {

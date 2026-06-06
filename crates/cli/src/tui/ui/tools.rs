@@ -272,6 +272,24 @@ pub(super) fn render_tool(
                 Span::styled(leash.clone(), Style::default().fg(palette::WARNING)),
             ]));
         }
+        // Pillar 5 (A2 Tier 1): the file's recorded decisions, surfaced as house
+        // rules at the instant of an edit — the custodian re-reads its own promises
+        // before it could break one. Pure recall; never a gate.
+        if !pf.house_rules.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  ⌂ ", Style::default().fg(palette::ACCENT)),
+                Span::styled(
+                    "house rules for this file",
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
+            ]));
+            for rule in &pf.house_rules {
+                lines.push(Line::from(Span::styled(
+                    format!("    {rule}"),
+                    Style::default().fg(palette::TEXT_FAINT),
+                )));
+            }
+        }
     }
 
     // Body

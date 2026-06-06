@@ -114,6 +114,47 @@ fn filter_for_file(records: Vec<DecisionRecord>, file: &str) -> Vec<DecisionReco
         .collect()
 }
 
+/// Render the recorded decisions for `file` as short "house rules" lines for the
+/// Pillar-1 pre-flight: up to 3, most-recent-first, each `<decision> — <why>
+/// (<model>)`, plus a `+k more · tomte why <file>` overflow line when there are
+/// more. Empty when the file has no recorded decisions. Pillar 5 (A2 Tier 1):
+/// pure surfacing at the instant of an edit — recall at the moment of risk, not
+/// detection, so it can never be wrong.
+pub fn house_rules(cwd: &Path, file: &str) -> Vec<String> {
+    house_rules_from(for_file(cwd, file), file)
+}
+
+/// The pure renderer behind [`house_rules`], over an already-loaded set so the
+/// cap/overflow logic is testable without touching the real store.
+fn house_rules_from(records: Vec<DecisionRecord>, file: &str) -> Vec<String> {
+    const MAX: usize = 3;
+    if records.is_empty() {
+        return Vec::new();
+    }
+    let total = records.len();
+    let mut out: Vec<String> = records
+        .iter()
+        .rev()
+        .take(MAX)
+        .map(|d| {
+            format!(
+                "{} — {} ({})",
+                gist(&d.decision, 48),
+                gist(&d.why, 48),
+                d.model
+            )
+        })
+        .collect();
+    if total > MAX {
+        out.push(format!(
+            "+{} more · tomte why {}",
+            total - MAX,
+            normalize_file(parse_loc(file).0)
+        ));
+    }
+    out
+}
+
 /// Normalize a file path for trail matching: trim and fold `\` to `/`, so a
 /// query typed with Windows separators lines up with the forward-slash `loc`s.
 fn normalize_file(file: &str) -> String {
@@ -486,6 +527,29 @@ mod tests {
         assert_eq!(filter_for_file(records.clone(), "src\\auth.rs").len(), 2);
         // No match → empty, not an error.
         assert!(filter_for_file(records, "src/missing.rs").is_empty());
+    }
+
+    #[test]
+    fn house_rules_cap_overflow_and_order() {
+        let records = vec![
+            rec("src/auth.rs:10", "m1"),
+            rec("src/auth.rs:20", "m2"),
+            rec("src/auth.rs:30", "m3"),
+            rec("src/auth.rs:40", "m4"),
+        ];
+        // A Windows-style query still resolves; the path is normalized for the hint.
+        let lines = house_rules_from(records, "src\\auth.rs");
+        // Capped at 3 rules + 1 overflow line, most-recent (last-appended) first.
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].contains("m4"), "most-recent first: {lines:?}");
+        assert!(lines[0].contains("return Err on empty input"));
+        assert_eq!(lines[3], "+1 more · tomte why src/auth.rs");
+        // Within the cap → no overflow line.
+        let few = house_rules_from(vec![rec("src/auth.rs:10", "m1")], "src/auth.rs");
+        assert_eq!(few.len(), 1);
+        assert!(!few[0].starts_with('+'));
+        // No decisions → empty (nothing to surface).
+        assert!(house_rules_from(vec![], "src/x.rs").is_empty());
     }
 
     #[test]
