@@ -513,8 +513,14 @@ async fn out_of_range_block_index_is_dropped_not_truncated_onto_block_zero() {
     }
     server.abort();
 
-    assert!(!deltas.contains("PHANTOM"), "out-of-range delta must be dropped, got {deltas:?}");
-    assert_eq!(done_text, "real", "block 0 text must not absorb the phantom");
+    assert!(
+        !deltas.contains("PHANTOM"),
+        "out-of-range delta must be dropped, got {deltas:?}"
+    );
+    assert_eq!(
+        done_text, "real",
+        "block 0 text must not absorb the phantom"
+    );
 }
 
 #[tokio::test]

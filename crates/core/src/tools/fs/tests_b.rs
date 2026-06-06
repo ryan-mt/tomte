@@ -329,8 +329,14 @@ async fn read_large_text_with_a_later_invalid_byte_renders_lossily() {
         )
         .await
         .unwrap();
-    assert!(out.contains("valid text line"), "leading text should render");
-    assert!(out.contains("corrupt"), "the stray-byte line should survive lossily");
+    assert!(
+        out.contains("valid text line"),
+        "leading text should render"
+    );
+    assert!(
+        out.contains("corrupt"),
+        "the stray-byte line should survive lossily"
+    );
 }
 
 #[tokio::test]
