@@ -65,6 +65,18 @@ pub(super) fn path_argument<'a>(tool_name: &str, args: &'a Value) -> Option<&'a 
 /// char; everything else is literal. No brace/char-class support — not needed
 /// for permission paths.
 pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
+    // `glob_inner` fills an O(pattern·text) DP table. The pattern comes from an
+    // untrusted `.tomte/permissions.json` deny rule and the text from a
+    // model-supplied path, so a pathologically long input would pin memory and
+    // stall every file-tool decision (the ReDoS fix bounded `**` backtracking but
+    // not raw length). No real path glob or path approaches this cap, so an
+    // over-long input is a non-match — consistent with this module's "a malformed
+    // rule is ignored, never blocks" stance; only deny is untrusted, and a deny
+    // that fails to match merely fails to tighten.
+    const MAX_GLOB_LEN: usize = 4096;
+    if pattern.len() > MAX_GLOB_LEN || text.len() > MAX_GLOB_LEN {
+        return false;
+    }
     // Case-insensitive filesystems (the default on macOS and Windows) resolve
     // `.GIT/config` and `.git/config` to the same file, so a path rule must fold
     // case there or a deny glob is bypassed by changing case. Linux stays
@@ -204,6 +216,17 @@ mod tests {
         // A trailing literal absent from the text cannot match, but must still
         // return (the exponential blowup happened on exactly this shape).
         assert!(!glob_match(&format!("{}X", "**a".repeat(16)), &text));
+    }
+
+    #[test]
+    fn over_long_glob_is_ignored_not_a_dos() {
+        // The matcher fills an O(pattern·text) DP table; an untrusted deny rule
+        // with a pathologically long pattern (or a model-supplied giant path)
+        // must return promptly as a non-match instead of allocating on every
+        // file-tool decision. No real glob or path approaches the length cap.
+        let huge = "a".repeat(10_000);
+        assert!(!glob_match(&huge, "src/main.rs"));
+        assert!(!glob_match("src/**", &"a/".repeat(10_000)));
     }
 
     #[test]

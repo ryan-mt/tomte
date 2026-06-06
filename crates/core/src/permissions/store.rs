@@ -99,9 +99,14 @@ pub(super) fn user_permissions_path(cwd: &Path) -> PathBuf {
     user_permissions_dir().join(format!("{}.json", project_key(cwd)))
 }
 
-/// Read and parse one permissions file; a missing or malformed file is empty.
+/// Read and parse one permissions file; a missing, oversized, or malformed file
+/// is empty. The read goes through the shared size cap (like every other
+/// untrusted in-repo file: sessions, skills, subagents, project config) so a
+/// hostile `.tomte/permissions.json` can't force a huge read/parse on every
+/// tool call (`load` runs per call); a real permissions file is a few rules.
 pub(super) fn read_permissions_at(path: &Path) -> ProjectPermissions {
-    match std::fs::read_to_string(path) {
+    const MAX_PERMISSIONS_BYTES: u64 = 64 * 1024;
+    match crate::config::read_text_file_capped(path, MAX_PERMISSIONS_BYTES) {
         Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
         Err(_) => ProjectPermissions::default(),
     }
@@ -216,6 +221,30 @@ mod tests {
         assert_eq!(
             decide(&perms, "run_shell", &json!({"command": "rm -rf /"})),
             Decision::Deny
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn oversized_project_permissions_file_is_ignored() {
+        // A hostile in-repo permissions.json that is pathologically large must be
+        // ignored (read through the shared size cap), not read and parsed in full
+        // on every tool call. Otherwise its rules would still load and feed the
+        // O(pattern·text) glob matcher.
+        let tmp = std::env::temp_dir().join(format!(
+            "tomte-perm-huge-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".tomte")).unwrap();
+        let giant = "a".repeat(200 * 1024);
+        let json = format!(r#"{{"deny":["write_file({giant})"]}}"#);
+        std::fs::write(permissions_path(&tmp), json).unwrap();
+        let perms = load(&tmp);
+        assert!(
+            perms.deny.is_empty(),
+            "oversized permissions file must be ignored"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
