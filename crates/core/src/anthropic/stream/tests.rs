@@ -262,6 +262,55 @@ async fn refusal_stop_reason_surfaces_as_error() {
 }
 
 #[tokio::test]
+async fn refusal_explanation_survives_a_later_usage_only_delta() {
+    // Anthropic may emit more than one message_delta. A usage-only delta after
+    // the refusal delta must not wipe the explanation captured earlier.
+    let app = Router::new().route(
+        "/",
+        get(|| async {
+            let events = vec![
+                Ok::<Event, Infallible>(Event::default().data(
+                    r#"{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}"#,
+                )),
+                Ok(Event::default().data(
+                    r#"{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","explanation":"policy"}},"usage":{"output_tokens":3}}"#,
+                )),
+                Ok(Event::default().data(
+                    r#"{"type":"message_delta","usage":{"output_tokens":5}}"#,
+                )),
+                Ok(Event::default().data(r#"{"type":"message_stop"}"#)),
+            ];
+            Sse::new(stream::iter(events))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+    let mut handle = handle_from_response(resp);
+    let mut error = None;
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(1), handle.rx.recv())
+        .await
+        .unwrap()
+    {
+        if let Err(e) = event {
+            error = Some(e.to_string());
+        }
+    }
+    server.abort();
+
+    let error = error.expect("refusal should emit an error");
+    assert!(error.contains("refusal"), "got: {error}");
+    assert!(
+        error.contains("policy"),
+        "explanation must survive the usage-only delta: {error}"
+    );
+}
+
+#[tokio::test]
 async fn content_block_delta_accepts_camel_case_partial_json() {
     let app = Router::new().route(
         "/",

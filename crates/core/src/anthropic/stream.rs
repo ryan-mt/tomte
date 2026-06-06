@@ -333,11 +333,17 @@ pub fn handle_from_response(resp: reqwest::Response) -> StreamHandle {
                                     {
                                         stop_reason = Some(sr.to_string());
                                     }
-                                    stop_explanation = delta
+                                    // Only overwrite when this delta actually
+                                    // carries an explanation; a later usage-only
+                                    // message_delta must not wipe the one from
+                                    // the refusal delta (mirrors stop_reason).
+                                    if let Some(expl) = delta
                                         .get("stop_details")
                                         .and_then(|d| d.get("explanation"))
                                         .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
+                                    {
+                                        stop_explanation = Some(expl.to_string());
+                                    }
                                 }
                                 if let Some(u) = parsed.get("usage") {
                                     if let Some(existing) = last_usage.as_mut() {
