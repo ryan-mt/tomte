@@ -92,15 +92,41 @@ pub fn subagent_roots(cwd: &Path) -> Vec<PathBuf> {
 /// .codex/agents/`). Such a file ships in a cloned repo and is attacker-
 /// controlled, so the dispatcher confines it to read-only tools regardless of
 /// the parent's approval mode; a global/user agent is trusted and unaffected.
+///
+/// This MUST mirror `load_by_name`'s resolution — including its frontmatter-name
+/// fallback — or the two disagree about which file wins and the confinement is
+/// bypassed: a planted `innocuous.md` with `name: deploy`, dispatched as
+/// `deploy`, would load locally yet (without the fallback below) be judged
+/// non-local and run with mutating tools under Auto / --dangerously-skip.
 pub fn is_project_local(cwd: &Path, name: &str) -> bool {
     if name.is_empty() || name.contains(['/', '\\', '.']) {
         return false;
     }
-    for root in subagent_roots(cwd) {
-        if root.join(format!("{name}.md")).is_file() {
-            // First matching root wins (load_by_name precedence); it's
-            // project-local iff that root lives under cwd.
+    let roots = subagent_roots(cwd);
+    // Phase 1, like load_by_name: `<root>/<name>.md`, first readable file wins.
+    for root in &roots {
+        let path = root.join(format!("{name}.md"));
+        if crate::config::read_text_file_capped(&path, MAX_SUBAGENT_BYTES).is_ok() {
             return root.starts_with(cwd);
+        }
+    }
+    // Phase 2, like load_by_name's fallback: the first root (in precedence order)
+    // holding a `*.md` whose frontmatter `name` matches.
+    for root in &roots {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(text) = crate::config::read_text_file_capped(&path, MAX_SUBAGENT_BYTES) else {
+                continue;
+            };
+            if parse(&text, &path).is_ok_and(|def| def.name == name) {
+                return root.starts_with(cwd);
+            }
         }
     }
     false
