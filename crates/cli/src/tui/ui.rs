@@ -8,7 +8,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::app::{
-    todo_completion_key, App, Block, PreFlight, SPINNER_FRAMES, TODO_RECENT_COMPLETED_TTL,
+    spinner_word_index, todo_completion_key, App, Block, PreFlight, SPINNER_FRAMES,
+    TODO_RECENT_COMPLETED_TTL,
 };
 use crate::tui::palette;
 use tomte_core::auth::AuthMode;
@@ -177,8 +178,22 @@ fn render_inline_tail(f: &mut Frame, area: Rect, app: &mut App) {
     let lines = inline_blocks_to_lines(&app.blocks[start..], inner_width, app.expanded_tools, app);
     let total = lines.len();
     let visible = area.height as usize;
-    let scroll = total.saturating_sub(visible) as u16;
-    f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+    if total <= visible {
+        // Bottom-anchor short content so the live tail (and the first-screen
+        // welcome card) hugs the input instead of floating at the top of the
+        // viewport with a big empty gap below it.
+        let used = total as u16;
+        let sub = Rect {
+            x: area.x,
+            y: area.y + (area.height - used),
+            width: area.width,
+            height: used,
+        };
+        f.render_widget(Paragraph::new(lines), sub);
+    } else {
+        let scroll = (total - visible) as u16;
+        f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+    }
 }
 
 /// Render a run of blocks to wrapped lines, reusing the same leaf renderers as

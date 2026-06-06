@@ -84,16 +84,12 @@ pub(super) fn friendly_body<'a>(
                 .get("new_string")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let added = if new_.is_empty() {
-                0
-            } else {
-                new_.lines().count()
-            };
-            let removed = if old.is_empty() {
-                0
-            } else {
-                old.lines().count()
-            };
+            // Collapse the shared anchor lines into context (see `diff_hunk`) so
+            // only the real change shows as -/+, and the counts reflect changed
+            // lines rather than the whole replaced block.
+            let rows = diff_hunk(old, new_);
+            let added = rows.iter().filter(|r| matches!(r, DiffRow::Add(_))).count();
+            let removed = rows.iter().filter(|r| matches!(r, DiffRow::Del(_))).count();
             let summary_text = match (added, removed) {
                 (a, 0) => format!("Added {a} line{}", plural(a)),
                 (0, r) => format!("Removed {r} line{}", plural(r)),
@@ -101,46 +97,19 @@ pub(super) fn friendly_body<'a>(
             };
             out.push(Line::from(Span::styled(summary_text, style_summary)));
 
-            // Determine starting line number by trying to locate old_string in the file.
+            // Locate old_string in the file for an honest starting line number.
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
             let start_line = locate_line_number(path, old).unwrap_or(1);
 
-            let removed_bg = Style::default()
-                .bg(palette::DIFF_DEL_BG)
-                .fg(palette::DIFF_DEL_FG);
-            let added_bg = Style::default()
-                .bg(palette::DIFF_ADD_BG)
-                .fg(palette::DIFF_ADD_FG);
-            let lineno_removed = Style::default()
-                .bg(palette::DIFF_DEL_BG)
-                .fg(palette::DANGER);
-            let lineno_added = Style::default()
-                .bg(palette::DIFF_ADD_BG)
-                .fg(palette::SUCCESS);
-
-            let mut shown = 0usize;
+            let styles = DiffStyles::new();
             let max_diff = limits.edit_diff;
-
-            for (i, line) in old.lines().enumerate() {
-                if shown >= max_diff {
-                    break;
-                }
-                let n = start_line + i;
-                out.push(diff_line(n, "-", line, lineno_removed, removed_bg, avail));
-                shown += 1;
-            }
-            for (i, line) in new_.lines().enumerate() {
-                if shown >= max_diff {
-                    break;
-                }
-                let n = start_line + i;
-                out.push(diff_line(n, "+", line, lineno_added, added_bg, avail));
-                shown += 1;
-            }
-            let total = old.lines().count() + new_.lines().count();
-            if total > max_diff {
+            let mut shown = 0usize;
+            push_diff_rows(
+                &mut out, &rows, start_line, max_diff, &mut shown, &styles, avail,
+            );
+            if rows.len() > max_diff {
                 out.push(Line::from(Span::styled(
-                    format!("… +{} lines", total - max_diff),
+                    format!("… +{} lines", rows.len() - max_diff),
                     style_meta,
                 )));
             }
@@ -150,39 +119,38 @@ pub(super) fn friendly_body<'a>(
             // shows what changed (previously it fell through to the raw "Applied
             // N edits" text — the "sometimes the diff shows, sometimes not"
             // inconsistency between edit_file and multi_edit).
-            let edits = args.get("edits").and_then(|v| v.as_array());
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let removed_bg = Style::default()
-                .bg(palette::DIFF_DEL_BG)
-                .fg(palette::DIFF_DEL_FG);
-            let added_bg = Style::default()
-                .bg(palette::DIFF_ADD_BG)
-                .fg(palette::DIFF_ADD_FG);
-            let lineno_removed = Style::default()
-                .bg(palette::DIFF_DEL_BG)
-                .fg(palette::DANGER);
-            let lineno_added = Style::default()
-                .bg(palette::DIFF_ADD_BG)
-                .fg(palette::SUCCESS);
+            // One hunk per edit, paired with its located start line. Computed once
+            // and reused for both the summary counts and the rendered rows.
+            let hunks: Vec<(usize, Vec<DiffRow>)> = args
+                .get("edits")
+                .and_then(|v| v.as_array())
+                .map(|edits| {
+                    edits
+                        .iter()
+                        .map(|e| {
+                            let old = e.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
+                            let new_ = e.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
+                            (
+                                locate_line_number(path, old).unwrap_or(1),
+                                diff_hunk(old, new_),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
 
-            let (mut total_added, mut total_removed) = (0usize, 0usize);
-            if let Some(edits) = edits {
-                for e in edits {
-                    let old = e.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
-                    let new_ = e.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
-                    total_added += if new_.is_empty() {
-                        0
-                    } else {
-                        new_.lines().count()
-                    };
-                    total_removed += if old.is_empty() {
-                        0
-                    } else {
-                        old.lines().count()
-                    };
-                }
-            }
-            let n_edits = edits.map(|e| e.len()).unwrap_or(0);
+            let total_added = hunks
+                .iter()
+                .flat_map(|(_, r)| r)
+                .filter(|r| matches!(r, DiffRow::Add(_)))
+                .count();
+            let total_removed = hunks
+                .iter()
+                .flat_map(|(_, r)| r)
+                .filter(|r| matches!(r, DiffRow::Del(_)))
+                .count();
+            let n_edits = hunks.len();
             out.push(Line::from(Span::styled(
                 format!(
                     "{n_edits} edit{}: added {total_added} line{}, removed {total_removed} line{}",
@@ -193,44 +161,21 @@ pub(super) fn friendly_body<'a>(
                 style_summary,
             )));
 
+            let styles = DiffStyles::new();
             let max_diff = limits.edit_diff;
             let mut shown = 0usize;
-            if let Some(edits) = edits {
-                'edits: for e in edits {
-                    let old = e.get("old_string").and_then(|v| v.as_str()).unwrap_or("");
-                    let new_ = e.get("new_string").and_then(|v| v.as_str()).unwrap_or("");
-                    let start_line = locate_line_number(path, old).unwrap_or(1);
-                    for (i, line) in old.lines().enumerate() {
-                        if shown >= max_diff {
-                            break 'edits;
-                        }
-                        out.push(diff_line(
-                            start_line + i,
-                            "-",
-                            line,
-                            lineno_removed,
-                            removed_bg,
-                            avail,
-                        ));
-                        shown += 1;
-                    }
-                    for (i, line) in new_.lines().enumerate() {
-                        if shown >= max_diff {
-                            break 'edits;
-                        }
-                        out.push(diff_line(
-                            start_line + i,
-                            "+",
-                            line,
-                            lineno_added,
-                            added_bg,
-                            avail,
-                        ));
-                        shown += 1;
-                    }
-                }
+            for (start_line, rows) in &hunks {
+                push_diff_rows(
+                    &mut out,
+                    rows,
+                    *start_line,
+                    max_diff,
+                    &mut shown,
+                    &styles,
+                    avail,
+                );
             }
-            let total_lines = total_added + total_removed;
+            let total_lines: usize = hunks.iter().map(|(_, r)| r.len()).sum();
             if total_lines > max_diff {
                 out.push(Line::from(Span::styled(
                     format!("… +{} lines", total_lines - max_diff),

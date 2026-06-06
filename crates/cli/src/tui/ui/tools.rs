@@ -3,15 +3,17 @@
 use super::*;
 
 pub(super) fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
-    let dim = Style::default().fg(palette::TEXT_MUTED);
     let muted = Style::default().fg(palette::TEXT_MUTED);
+    let faint = Style::default().fg(palette::TEXT_FAINT);
     let strong = Style::default()
         .fg(palette::TEXT_BRIGHT)
         .add_modifier(Modifier::BOLD);
     let accent = Style::default().fg(palette::ACCENT);
     let border = Style::default().fg(palette::BORDER);
+    let ok = Style::default().fg(palette::SUCCESS);
 
     let cwd = shorten_home_path(&app.cwd);
+    let version = env!("CARGO_PKG_VERSION");
 
     let auth_label = match app.auth_mode {
         tomte_core::auth::AuthMode::OpenaiOauth => "ChatGPT account",
@@ -21,71 +23,113 @@ pub(super) fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
         tomte_core::auth::AuthMode::None => "offline",
     };
 
-    // Each row is `(spans, visible_width)`. Width is precomputed so the
-    // right edge of the rounded border stays pinned even when the terminal
-    // resizes or the cwd changes — mirrors Claude Code's welcome card.
-    let version = env!("CARGO_PKG_VERSION");
-    let sparkle = "✻ ";
-    let title = "Welcome to tomte! ";
-    let version_label = format!("v{version}");
-    let header_w = sparkle.chars().count() + title.chars().count() + version_label.chars().count();
-    let header_row = (
-        vec![
-            Span::styled(sparkle, accent),
-            Span::styled(title, strong),
-            Span::styled(version_label, dim),
-        ],
-        header_w,
-    );
+    // The welcome companion: a glimpse of the account's pet (see `welcome_pet`),
+    // or the adopted one once hatched. The sprite keeps its own bright colors —
+    // a deliberate exception to the calm palette (SOUL.md), like the corner
+    // buddy. Six half-block rows, each a fixed 14 cols wide.
+    let pet_idx = app.buddy_pet.unwrap_or(app.welcome_pet);
+    let pet_lines = crate::tui::buddy::mini_lines(pet_idx);
+    let pet_w = pet_lines.iter().map(Line::width).max().unwrap_or(0);
 
-    let help_text = "/help for commands · /clear to reset · Ctrl+C to exit";
-    let help_row = (
-        vec![Span::styled(help_text, dim)],
-        help_text.chars().count(),
-    );
+    // Live onboarding signal, mirroring how Claude Code checks for a CLAUDE.md:
+    // is there a project house-rules file in cwd? (See `core::memory` for the
+    // discovery order — we test the same candidates here.) Its presence flips the
+    // first getting-started step to a done ✓ instead of a to-do ○.
+    let has_rules = ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"]
+        .iter()
+        .any(|f| app.cwd.join(f).exists());
 
-    let paste_text = "Ctrl+V to paste text or an image from your clipboard";
-    let paste_row = (
-        vec![Span::styled(paste_text, dim)],
-        paste_text.chars().count(),
-    );
-
+    let greeting = "hi, i'm tomte!";
+    let tagline = "your cozy coding companion ⊹";
     let model_summary = format!(
-        "{} · effort {} · verbosity {} · {}",
-        app.config.model, app.config.reasoning_effort, app.config.verbosity, auth_label
-    );
-    let model_row = (
-        vec![Span::styled(model_summary.clone(), muted)],
-        model_summary.chars().count(),
+        "{} · effort {} · {}",
+        app.config.model, app.config.reasoning_effort, auth_label
     );
 
-    let cwd_label = "cwd: ";
-    let cwd_row = (
-        vec![
-            Span::styled(cwd_label, muted),
-            Span::styled(cwd.clone(), strong),
-        ],
-        cwd_label.chars().count() + cwd.chars().count(),
-    );
+    // Setup facts share a label column so their values line up; getting-started
+    // steps carry a ✓/○ bullet. Each row is a short, never-trimmed `prefix`
+    // (heading / label / bullet) plus a `body` trimmed to fit a narrow terminal,
+    // and an optional value pinned to the right border.
+    const LABEL_COL: usize = 9; // "workspace"
+    let setup = |label: &'static str, value: String| Row {
+        prefix: vec![Span::styled(format!("{label:<LABEL_COL$}  "), faint)],
+        prefix_w: LABEL_COL + 2,
+        body: value,
+        body_style: muted,
+        right: String::new(),
+        right_style: muted,
+    };
+    let step = |done: bool, text: &'static str| {
+        let (bullet, bstyle) = if done { ("✓ ", ok) } else { ("○ ", faint) };
+        Row {
+            prefix: vec![Span::styled(bullet, bstyle)],
+            prefix_w: 2,
+            body: text.to_string(),
+            body_style: muted,
+            right: String::new(),
+            right_style: muted,
+        }
+    };
+    let plain = |text: &'static str, style: Style| Row {
+        prefix: vec![],
+        prefix_w: 0,
+        body: text.to_string(),
+        body_style: style,
+        right: String::new(),
+        right_style: style,
+    };
 
-    let rows: Vec<(Vec<Span<'static>>, usize)> = vec![
-        header_row,
-        (vec![], 0),
-        help_row,
-        paste_row,
-        (vec![], 0),
-        model_row,
-        cwd_row,
+    // A complete-but-calm panel sized to the pet's height (so no row of the card
+    // is petless): brand + version, the active setup, where we are, a live
+    // getting-started signal, then a quiet shortcuts footer. The version is
+    // anchored to the right border so the header spans the full width.
+    let rows: Vec<Row> = vec![
+        Row {
+            prefix: vec![Span::styled("✿ ", accent)],
+            prefix_w: 2,
+            body: greeting.to_string(),
+            body_style: strong,
+            right: format!("v{version}"),
+            right_style: muted,
+        },
+        plain(tagline, muted),
+        setup("model", model_summary),
+        setup("workspace", cwd),
+        if has_rules {
+            step(true, "house rules in play — i'll honor your AGENTS.md")
+        } else {
+            step(false, "run /init so i learn this project's house rules")
+        },
+        plain("/help · shift+tab cycles · Ctrl+V paste · ^C exit", faint),
     ];
 
-    const MIN_INNER: usize = 56;
-    let inner_width = rows
-        .iter()
-        .map(|(_, w)| *w)
-        .max()
-        .unwrap_or(0)
-        .max(MIN_INNER);
+    const GAP: usize = 3; // columns between the sprite and the text column
+    const MIN_GAP: usize = 2; // min columns between the body and a right value
+    const MIN_TEXT: usize = 50; // keep the banner comfortably wide
 
+    // Widest row laid out as `prefix body ⟨gap⟩ right`.
+    let natural_text = rows
+        .iter()
+        .map(|r| {
+            let rw = r.right.chars().count();
+            let body = r.body.chars().count();
+            r.prefix_w + body + if rw > 0 { MIN_GAP + rw } else { 0 }
+        })
+        .max()
+        .unwrap_or(0);
+
+    // A roomy text column, but never wider than the terminal can actually hold:
+    // a full line is `inner_width + 6` (2 margin + 2 borders + 2 inner spaces),
+    // and inner_width = pet_w + GAP + text_w. last_width is 0 before the first
+    // real draw — assume 80 then.
+    let term_width = if app.last_width == 0 {
+        80
+    } else {
+        app.last_width as usize
+    };
+    let text_cap = term_width.saturating_sub(6 + pet_w + GAP).max(8);
+    let text_w = natural_text.max(MIN_TEXT).min(text_cap);
+    let inner_width = pet_w + GAP + text_w;
     let horiz: String = "─".repeat(inner_width + 2);
 
     lines.push(Line::raw(""));
@@ -93,21 +137,65 @@ pub(super) fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
         Span::styled("  ", muted),
         Span::styled(format!("╭{horiz}╮"), border),
     ]));
-    for (spans, w) in rows {
-        let pad = inner_width.saturating_sub(w);
-        let mut row: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 3);
+
+    let row_count = pet_lines.len().max(rows.len());
+    for i in 0..row_count {
+        let mut row: Vec<Span<'static>> = Vec::new();
         row.push(Span::styled("  ", muted));
         row.push(Span::styled("│ ", border));
-        row.extend(spans);
-        row.push(Span::styled(format!("{} ", " ".repeat(pad)), border));
-        row.push(Span::styled("│", border));
+        // Sprite column, padded to `pet_w` so the text column always aligns.
+        if let Some(pl) = pet_lines.get(i) {
+            let plw = pl.width();
+            row.extend(pl.spans.clone());
+            if plw < pet_w {
+                row.push(Span::raw(" ".repeat(pet_w - plw)));
+            }
+        } else {
+            row.push(Span::raw(" ".repeat(pet_w)));
+        }
+        row.push(Span::raw(" ".repeat(GAP)));
+
+        // Text column, exactly `text_w` wide: prefix, body (trimmed to fit),
+        // padding, then the right value flush against the inner border.
+        if let Some(r) = rows.get(i) {
+            row.extend(r.prefix.clone());
+            let right_w = r.right.chars().count();
+            let body_cap =
+                text_w.saturating_sub(r.prefix_w + if right_w > 0 { MIN_GAP + right_w } else { 0 });
+            let body = truncate_chars(&r.body, body_cap);
+            let body_w = body.chars().count();
+            if !body.is_empty() {
+                row.push(Span::styled(body, r.body_style));
+            }
+            let pad = text_w.saturating_sub(r.prefix_w + body_w + right_w);
+            row.push(Span::raw(" ".repeat(pad)));
+            if right_w > 0 {
+                row.push(Span::styled(r.right.clone(), r.right_style));
+            }
+        } else {
+            row.push(Span::raw(" ".repeat(text_w)));
+        }
+
+        row.push(Span::styled(" │", border));
         lines.push(Line::from(row));
     }
+
     lines.push(Line::from(vec![
         Span::styled("  ", muted),
         Span::styled(format!("╰{horiz}╯"), border),
     ]));
-    lines.push(Line::raw(""));
+}
+
+/// One text row of the welcome panel: a short, never-trimmed `prefix` (heading,
+/// label, or ✓/○ bullet), a `body` trimmed to fit the panel width, and an
+/// optional value pinned to the right border.
+struct Row {
+    prefix: Vec<Span<'static>>,
+    prefix_w: usize,
+    body: String,
+    body_style: Style,
+    right: String,
+    right_style: Style,
 }
 
 /// Render a run of consecutive `read_file` tool calls as a single block.

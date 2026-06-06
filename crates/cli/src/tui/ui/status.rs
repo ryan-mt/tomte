@@ -38,9 +38,9 @@ pub(super) fn render_input(f: &mut Frame, area: Rect, app: &App) {
 
     if app.input.is_empty() {
         let lines = vec![Line::from(vec![
-            Span::styled("> ", prompt_style),
+            Span::styled("✿ ", prompt_style),
             Span::styled(
-                "Try \"build me a todo list app\"",
+                "what shall we build today?",
                 Style::default().fg(palette::TEXT_MUTED),
             ),
         ])];
@@ -68,7 +68,7 @@ pub(super) fn render_input(f: &mut Frame, area: Rect, app: &App) {
         }
         for (vi, row) in rows.into_iter().enumerate() {
             let gutter = if li == 0 && vi == 0 {
-                Span::styled("> ", prompt_style)
+                Span::styled("✿ ", prompt_style)
             } else {
                 Span::raw("  ")
             };

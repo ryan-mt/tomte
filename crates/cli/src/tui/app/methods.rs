@@ -11,6 +11,19 @@ impl App {
             .unwrap_or_else(|_| auth_mode_from_env().unwrap_or(AuthMode::None));
         let blocks = vec![Block::Welcome];
         let screen = initial_screen(auth_mode, has_supported_env_key());
+        // Roll the welcome companion once here (a disk read + hash), not per
+        // frame in `render_welcome`. Mirrors `/buddy`'s identity source so the
+        // greeting pet is the same one the account hatches.
+        let welcome_pet = {
+            let identity = std::env::var("TOMTE_BUDDY_SEED")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| auth::account_identity(&auth::load_auth().unwrap_or_default()));
+            crate::tui::buddy::roll(&identity)
+        };
+        // Resolve the spinner word pool once (built-in pool ± any config
+        // override), so the per-frame render just indexes into it.
+        let spinner_words = resolve_spinner_words(&config);
         let mut app = Self {
             screen,
             render_mode: RenderMode::from_env(),
@@ -34,7 +47,8 @@ impl App {
             last_height: 0,
             last_width: 0,
             turn_started_at: None,
-            spinner_word: String::new(),
+            spinner_seed: 0,
+            spinner_words,
             tokens_used: 0,
             usage_by_model: Vec::new(),
             turn_count: 0,
@@ -45,6 +59,7 @@ impl App {
             hatch: None,
             buddy_pet: None,
             buddy_hidden: false,
+            welcome_pet,
             overlay: None,
             chain_to_effort: false,
             message_queue: Vec::new(),
@@ -141,6 +156,21 @@ impl App {
     pub fn clear_selection(&mut self) {
         self.selection = None;
         self.copy_notice = None;
+    }
+
+    /// Shift a live selection's rows by `delta` so the highlight follows the
+    /// content when the view scrolls (the selection is stored in screen
+    /// coordinates). This keeps the highlight on the *same* text across a
+    /// scroll instead of dropping it — the user can wheel up to read or extend a
+    /// selection without losing what they were copying. Rows clamp at 0; the
+    /// highlight renderer already ignores any row outside the visible area.
+    pub fn shift_selection_rows(&mut self, delta: i32) {
+        if let Some(sel) = self.selection.as_mut() {
+            let shift =
+                |r: u16| (i64::from(r) + i64::from(delta)).clamp(0, i64::from(u16::MAX)) as u16;
+            sel.anchor.1 = shift(sel.anchor.1);
+            sel.cursor.1 = shift(sel.cursor.1);
+        }
     }
 
     /// Finalize a dragged selection: copy the highlighted text to the clipboard

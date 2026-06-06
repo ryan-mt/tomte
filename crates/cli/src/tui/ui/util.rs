@@ -37,6 +37,156 @@ pub(super) fn diff_line<'a>(
     ])
 }
 
+/// One row of a rendered diff: an unchanged context line, a removed line, or an
+/// added line. Carrying the borrowed text keeps [`diff_hunk`] allocation-free.
+pub(super) enum DiffRow<'a> {
+    Context(&'a str),
+    Del(&'a str),
+    Add(&'a str),
+}
+
+/// tomte's own minimal line-diff. An edit's `old_string`/`new_string` usually
+/// share a few unchanged anchor lines at the top and bottom; trimming those into
+/// context leaves only the divergent middle as removed/added — so an edit that
+/// touches one line in a five-line block reads as a single `-`/`+` pair framed by
+/// context, not five removed lines stacked above five added ones. Deliberately
+/// *not* a full LCS/Myers diff: an `edit_file` call is one contiguous change, so a
+/// shared prefix/suffix trim covers it and stays trivial to reason about.
+pub(super) fn diff_hunk<'a>(old: &'a str, new: &'a str) -> Vec<DiffRow<'a>> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    // Shared leading lines (identical in both sides).
+    let max_lead = old_lines.len().min(new_lines.len());
+    let mut lead = 0;
+    while lead < max_lead && old_lines[lead] == new_lines[lead] {
+        lead += 1;
+    }
+    // Shared trailing lines, never crossing back into the leading region.
+    let mut tail = 0;
+    while tail < old_lines.len() - lead
+        && tail < new_lines.len() - lead
+        && old_lines[old_lines.len() - 1 - tail] == new_lines[new_lines.len() - 1 - tail]
+    {
+        tail += 1;
+    }
+
+    let mut rows = Vec::with_capacity(old_lines.len() + new_lines.len());
+    rows.extend(new_lines[..lead].iter().copied().map(DiffRow::Context));
+    rows.extend(
+        old_lines[lead..old_lines.len() - tail]
+            .iter()
+            .copied()
+            .map(DiffRow::Del),
+    );
+    rows.extend(
+        new_lines[lead..new_lines.len() - tail]
+            .iter()
+            .copied()
+            .map(DiffRow::Add),
+    );
+    rows.extend(
+        new_lines[new_lines.len() - tail..]
+            .iter()
+            .copied()
+            .map(DiffRow::Context),
+    );
+    rows
+}
+
+/// The diff palette: matching coloured beds for removed/added lines plus a quiet,
+/// bed-less style for unchanged context. Bundled so the two edit renderers share
+/// one source of truth (and to keep [`push_diff_rows`] under the arg-count lint).
+pub(super) struct DiffStyles {
+    removed_bg: Style,
+    added_bg: Style,
+    lineno_removed: Style,
+    lineno_added: Style,
+    ctx_lineno: Style,
+    ctx_body: Style,
+}
+
+impl DiffStyles {
+    pub(super) fn new() -> Self {
+        Self {
+            removed_bg: Style::default()
+                .bg(palette::DIFF_DEL_BG)
+                .fg(palette::DIFF_DEL_FG),
+            added_bg: Style::default()
+                .bg(palette::DIFF_ADD_BG)
+                .fg(palette::DIFF_ADD_FG),
+            lineno_removed: Style::default()
+                .bg(palette::DIFF_DEL_BG)
+                .fg(palette::DANGER),
+            lineno_added: Style::default()
+                .bg(palette::DIFF_ADD_BG)
+                .fg(palette::SUCCESS),
+            ctx_lineno: Style::default().fg(palette::TEXT_FAINT),
+            ctx_body: Style::default().fg(palette::TEXT_MUTED),
+        }
+    }
+}
+
+/// Render one hunk's rows, advancing a caller-owned `shown` counter against
+/// `max_diff` so a multi-edit's hunks can share a single budget. Line numbers
+/// follow the unified-diff convention: context and added lines carry the
+/// new-file number, removed lines the old-file number, so the gutter stays
+/// honest as the two sides diverge.
+pub(super) fn push_diff_rows<'a>(
+    out: &mut Vec<Line<'a>>,
+    rows: &[DiffRow<'_>],
+    start_line: usize,
+    max_diff: usize,
+    shown: &mut usize,
+    styles: &DiffStyles,
+    avail: usize,
+) {
+    let mut old_n = start_line;
+    let mut new_n = start_line;
+    for row in rows {
+        if *shown >= max_diff {
+            return;
+        }
+        match *row {
+            DiffRow::Context(l) => {
+                out.push(diff_line(
+                    new_n,
+                    " ",
+                    l,
+                    styles.ctx_lineno,
+                    styles.ctx_body,
+                    avail,
+                ));
+                old_n += 1;
+                new_n += 1;
+            }
+            DiffRow::Del(l) => {
+                out.push(diff_line(
+                    old_n,
+                    "-",
+                    l,
+                    styles.lineno_removed,
+                    styles.removed_bg,
+                    avail,
+                ));
+                old_n += 1;
+            }
+            DiffRow::Add(l) => {
+                out.push(diff_line(
+                    new_n,
+                    "+",
+                    l,
+                    styles.lineno_added,
+                    styles.added_bg,
+                    avail,
+                ));
+                new_n += 1;
+            }
+        }
+        *shown += 1;
+    }
+}
+
 pub(super) fn locate_line_number(path: &str, needle: &str) -> Option<usize> {
     if path.is_empty() || needle.is_empty() {
         return None;

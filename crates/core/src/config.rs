@@ -67,6 +67,27 @@ pub struct Config {
     /// OS-level sandbox for `run_shell` child processes — see [`SandboxConfig`].
     #[serde(default)]
     pub sandbox: SandboxConfig,
+    /// Customize the spinner companion words (the gerunds shown while a turn
+    /// runs). Optional; unset uses tomte's built-in pool. Mirrors Claude Code's
+    /// `spinnerVerbs` setting (`verbs` + `excludeDefault`) — see [`SpinnerVerbs`].
+    #[serde(default)]
+    pub spinner_verbs: Option<SpinnerVerbs>,
+}
+
+/// User overrides for the spinner companion words. Modeled on Claude Code's
+/// `spinnerVerbs` setting: a `verbs` list that either *appends* to the built-in
+/// pool (default) or *replaces* it when `exclude_default` is set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpinnerVerbs {
+    /// Extra (or replacement) words to show, e.g. `["Hacking", "Vibing"]`.
+    #[serde(default)]
+    pub verbs: Vec<String>,
+    /// When true, show ONLY `verbs` (ignore the built-in pool). When false (the
+    /// default), `verbs` are added to the built-in pool. An empty `verbs` with
+    /// `exclude_default` set is ignored — the built-in pool is kept rather than
+    /// leaving nothing to show.
+    #[serde(default)]
+    pub exclude_default: bool,
 }
 
 /// Configuration for one OpenAI-compatible (`/v1/chat/completions`) provider.
@@ -200,6 +221,7 @@ impl Default for Config {
             providers: HashMap::new(),
             fallback_models: Vec::new(),
             sandbox: SandboxConfig::default(),
+            spinner_verbs: None,
         }
     }
 }

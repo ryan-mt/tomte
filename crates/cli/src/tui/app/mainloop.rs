@@ -329,13 +329,17 @@ pub async fn main_loop(
                             MouseEventKind::ScrollUp => {
                                 app.scroll = app.scroll.saturating_sub(3);
                                 app.auto_scroll = false;
-                                // Content moves under a screen-coordinate
-                                // selection, so drop it rather than mislead.
-                                app.clear_selection();
+                                // The view scrolls back by 3 rows, so the content
+                                // shifts DOWN on screen. Move any active selection
+                                // with it (instead of dropping it) so the user can
+                                // wheel up to read or extend what they're copying.
+                                app.shift_selection_rows(3);
                             }
                             MouseEventKind::ScrollDown => {
                                 app.scroll = app.scroll.saturating_add(3);
-                                app.clear_selection();
+                                // Content shifts UP by 3 rows; move the selection
+                                // with it so the highlight keeps tracking the text.
+                                app.shift_selection_rows(-3);
                             }
                             MouseEventKind::Down(MouseButton::Left) => {
                                 // Begin a selection. The click target (jump /
@@ -433,6 +437,13 @@ pub fn commit_finished_blocks<B: ratatui::backend::Backend>(
     // cursor (those sites reset it explicitly; this backstops a missed one).
     if app.committed_blocks > app.blocks.len() {
         app.committed_blocks = 0;
+    }
+    // First screen: keep the lone welcome card live (not yet pushed to
+    // scrollback) so the bottom-anchored tail tucks it right above the input,
+    // instead of stranding it at the top with a big empty gap below. It commits
+    // normally the moment the conversation grows past it.
+    if app.blocks.len() == 1 && matches!(app.blocks.first(), Some(Block::Welcome)) {
+        return;
     }
     let end = committed_end(app.blocks.len(), app.busy);
     if app.committed_blocks >= end {

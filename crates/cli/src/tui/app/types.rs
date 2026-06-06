@@ -67,16 +67,17 @@ pub enum Screen {
     Chat,
 }
 
-/// How the TUI occupies the terminal (SOUL.md Pillar 4 — the calm, tidy
-/// terminal).
+/// How the TUI occupies the terminal.
 ///
-/// - `Inline` (default): an inline viewport that leaves finished turns in the
-///   terminal's own scrollback (via `Terminal::insert_before`) and never enters
-///   the alternate screen or captures the mouse, so native scroll + copy keep
-///   working — the custodian does not hijack the terminal (Pillar 4).
-/// - `AltScreen`: the previous full-screen alternate-buffer renderer with
-///   in-app scroll/selection. Opt-out via `TOMTE_INLINE=0` for terminals where
-///   the inline viewport misbehaves.
+/// - `AltScreen` (default): a full-screen alternate-buffer renderer with the
+///   input pinned to the bottom edge of the terminal and in-app scroll /
+///   selection — the conventional "transcript on top, prompt at the bottom"
+///   layout (matches what most coding TUIs do).
+/// - `Inline`: an inline viewport (SOUL.md Pillar 4 — the calm, tidy terminal)
+///   that leaves finished turns in the terminal's own scrollback (via
+///   `Terminal::insert_before`) and never enters the alternate screen or
+///   captures the mouse, so native scroll + copy keep working. Opt in with
+///   `TOMTE_INLINE=1` (or `true`/`yes`/`on`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
     AltScreen,
@@ -84,21 +85,20 @@ pub enum RenderMode {
 }
 
 impl RenderMode {
-    /// Resolve from the environment. The inline viewport (Pillar 4) is the
-    /// default; `TOMTE_INLINE=0` (or `false`/`no`/`off`) opts back into the
-    /// alternate screen.
+    /// Resolve from the environment. The full-screen alternate screen is the
+    /// default; `TOMTE_INLINE=1` (or `true`/`yes`/`on`) opts into the inline
+    /// viewport (Pillar 4).
     pub fn from_env() -> Self {
         Self::from_env_value(std::env::var("TOMTE_INLINE").ok().as_deref())
     }
 
     /// Pure parse of the `TOMTE_INLINE` value, split out so it can be tested
-    /// without mutating process-global environment state. Inline is the
-    /// default; only an explicit falsy value opts back into the alternate
-    /// screen.
+    /// without mutating process-global environment state. The alternate screen
+    /// is the default; only an explicit truthy value selects the inline viewport.
     pub fn from_env_value(v: Option<&str>) -> Self {
         match v {
-            Some(s) if matches!(s.trim(), "0" | "false" | "no" | "off") => Self::AltScreen,
-            _ => Self::Inline,
+            Some(s) if matches!(s.trim(), "1" | "true" | "yes" | "on") => Self::Inline,
+            _ => Self::AltScreen,
         }
     }
 }
@@ -216,7 +216,14 @@ pub struct App {
     pub last_height: u16,
     pub last_width: u16,
     pub turn_started_at: Option<std::time::Instant>,
-    pub spinner_word: String,
+    /// Per-turn seed for the drifting spinner word (see `spinner_word_index`).
+    /// Chosen once per turn; the displayed word is a pure function of this seed
+    /// and the turn's elapsed time, so it never flickers between draws.
+    pub spinner_seed: u32,
+    /// The effective spinner word pool, resolved once at startup from the
+    /// built-in pool plus any `spinner_verbs` config override (see
+    /// `resolve_spinner_words`). Held as owned strings so user words live here.
+    pub spinner_words: Vec<String>,
     pub tokens_used: u64,
     /// Cumulative per-model billed token tally, mirrored from the agent's
     /// `AgentEvent::CostUpdate` and rendered by `/cost`. The agent owns the
@@ -239,6 +246,11 @@ pub struct App {
     pub hatch: Option<HatchAnim>,
     pub buddy_pet: Option<usize>,
     pub buddy_hidden: bool,
+    /// The companion shown in the welcome card. Rolled once at startup from the
+    /// signed-in account (same deterministic roll as `/buddy`), so the greeting
+    /// pet matches the pet the account will later hatch. A glimpse, not the
+    /// hatch reveal — the welcome shows the sprite but never names it.
+    pub welcome_pet: usize,
     pub overlay: Option<(OverlayKind, Picker)>,
     /// When set, after choosing a model the next overlay shown is the effort picker.
     pub chain_to_effort: bool,

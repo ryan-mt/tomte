@@ -88,7 +88,12 @@ pub fn setup_terminal(mode: RenderMode) -> Result<Terminal<CrosstermBackend<io::
 /// terminal's own scrollback rather than dominating the screen.
 fn inline_viewport_height() -> u16 {
     let rows = crossterm::terminal::size().map(|(_, r)| r).unwrap_or(24);
-    (rows / 2).clamp(10, 20)
+    // Compact on purpose: just tall enough for the welcome card + input on the
+    // first screen plus a few lines of the streaming tail. A taller window only
+    // strands the input under a big empty band (the gap users see at startup);
+    // finished turns flow into native scrollback regardless, so the live window
+    // stays small. The floor (13) keeps the 9-line welcome card from clipping.
+    (rows / 3).clamp(13, 16)
 }
 
 pub fn restore_terminal(

@@ -306,14 +306,16 @@ fn streaming_assistant(text: &str, done: bool) -> Block {
 #[test]
 fn render_mode_parses_env_value() {
     use RenderMode::{AltScreen, Inline};
-    // Inline is the default now (Pillar 4); only an explicit falsy value
-    // (TOMTE_INLINE=0 / false / no / off) opts back into the alternate screen.
+    // The full-screen alternate screen is the default now (input pinned at the
+    // bottom); only an explicit truthy value (TOMTE_INLINE=1 / true / yes / on)
+    // opts into the inline viewport (Pillar 4).
     let cases = [
-        (None, Inline),
+        (None, AltScreen),
         (Some("1"), Inline),
         (Some(" on "), Inline),
         (Some("true"), Inline),
-        (Some("nope"), Inline),
+        (Some("yes"), Inline),
+        (Some("nope"), AltScreen),
         (Some("0"), AltScreen),
         (Some(" off "), AltScreen),
         (Some("false"), AltScreen),
@@ -416,4 +418,280 @@ fn commit_resets_after_transcript_shrinks() {
         app.committed_blocks, 1,
         "a stale cursor past the end resets to 0, then commits the surviving block"
     );
+}
+
+#[test]
+fn commit_keeps_lone_welcome_live_until_conversation_starts() {
+    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, TerminalOptions, Viewport};
+    let mut app = App::new();
+    app.render_mode = RenderMode::Inline;
+    // Fresh app: the transcript is just the welcome card, nothing committed.
+    assert!(matches!(app.blocks.as_slice(), [Block::Welcome]));
+    app.committed_blocks = 0;
+    let mut terminal = Terminal::with_options(
+        TestBackend::new(80, 16),
+        TerminalOptions {
+            viewport: Viewport::Inline(13),
+        },
+    )
+    .unwrap();
+    commit_finished_blocks(&mut app, &mut terminal);
+    assert_eq!(
+        app.committed_blocks, 0,
+        "the lone welcome stays live on the first screen (no scrollback gap above the input)"
+    );
+
+    // Once a turn begins, the welcome commits to scrollback like any finished block.
+    app.blocks.push(Block::User("hi".into()));
+    app.busy = true;
+    commit_finished_blocks(&mut app, &mut terminal);
+    assert_eq!(
+        app.committed_blocks, 1,
+        "the welcome commits the moment the conversation grows past it"
+    );
+}
+
+#[test]
+fn first_screen_renders_welcome_and_cute_placeholder() {
+    use ratatui::backend::TestBackend;
+    use ratatui::{Terminal, TerminalOptions, Viewport};
+    let mut app = App::new();
+    app.render_mode = RenderMode::Inline;
+    let mut terminal = Terminal::with_options(
+        TestBackend::new(80, 16),
+        TerminalOptions {
+            viewport: Viewport::Inline(13),
+        },
+    )
+    .unwrap();
+    terminal
+        .draw(|f| crate::tui::ui::render_inline(f, &mut app))
+        .unwrap();
+    let dump: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    // The lone welcome must render live in the viewport (it is bottom-anchored
+    // right above the input), and the input shows the new playful placeholder.
+    assert!(
+        dump.contains("hi, i'm tomte!"),
+        "the welcome greeting renders in the live viewport, not just scrollback"
+    );
+    assert!(
+        dump.contains("what shall we build today?"),
+        "the cute input placeholder renders"
+    );
+}
+
+#[test]
+fn welcome_panel_is_complete_with_setup_and_getting_started() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = App::new();
+    app.last_width = 100;
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    terminal
+        .draw(|f| crate::tui::ui::render(f, &mut app))
+        .unwrap();
+    let dump: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    // The welcome is a complete panel, not just a greeting: it carries the
+    // tagline, the active setup (model/workspace), and a live getting-started
+    // signal — all welcome-only strings, so they can't match the status line.
+    for needle in ["your cozy coding companion", "workspace", "house rules"] {
+        assert!(dump.contains(needle), "welcome panel missing {needle:?}");
+    }
+}
+
+#[test]
+fn altscreen_pins_input_to_the_bottom() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut app = App::new();
+    app.render_mode = RenderMode::AltScreen;
+    let h = 24u16;
+    let mut terminal = Terminal::new(TestBackend::new(80, h)).unwrap();
+    terminal
+        .draw(|f| crate::tui::ui::render(f, &mut app))
+        .unwrap();
+    let buf = terminal.backend().buffer();
+    let w = buf.area().width as usize;
+    let rows: Vec<String> = buf
+        .content()
+        .chunks(w)
+        .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
+        .collect();
+    // The default full-screen layout: welcome at the top, input pinned to the
+    // bottom edge of the terminal (the "like Claude" layout the user asked for).
+    let greet = rows
+        .iter()
+        .position(|r| r.contains("hi, i'm tomte!"))
+        .expect("welcome greeting renders");
+    let input = rows
+        .iter()
+        .position(|r| r.contains("what shall we build today?"))
+        .expect("input placeholder renders");
+    assert!(greet < 8, "welcome sits at the top (row {greet})");
+    assert!(
+        input >= h as usize - 4,
+        "input is pinned to the bottom (row {input} of {h})"
+    );
+}
+
+#[test]
+fn spinner_words_are_a_distinct_hundreds_strong_pool() {
+    use std::collections::HashSet;
+    // "Hundreds of words, like Claude" — and every entry unique, so the drift
+    // never stalls and never shows the same word twice in a row.
+    assert!(
+        SPINNER_WORDS.len() >= 150,
+        "expected a large pool, got {}",
+        SPINNER_WORDS.len()
+    );
+    let unique: HashSet<&&str> = SPINNER_WORDS.iter().collect();
+    assert_eq!(
+        unique.len(),
+        SPINNER_WORDS.len(),
+        "spinner words must all be distinct"
+    );
+}
+
+#[test]
+fn spinner_word_holds_in_window_then_drifts() {
+    use std::time::Duration;
+    let len = SPINNER_WORDS.len();
+    let seed = 7u32;
+    let i0 = spinner_word_index(seed, Duration::from_secs(0), len);
+    // Holds steady for the whole drift window — no flicker between draws.
+    assert_eq!(
+        i0,
+        spinner_word_index(seed, Duration::from_secs(SPINNER_WORD_SECS - 1), len)
+    );
+    // Then steps to a different word in the next window.
+    assert_ne!(
+        i0,
+        spinner_word_index(seed, Duration::from_secs(SPINNER_WORD_SECS), len)
+    );
+    // Any seed / elapsed / pool length yields a valid in-range index (no panic),
+    // and a zero-length pool clamps to 0 instead of dividing by zero.
+    for seed in [0u32, 1, 42, u32::MAX] {
+        for secs in [0u64, SPINNER_WORD_SECS, 999, 1_000_000] {
+            for n in [1usize, len, 200] {
+                assert!(spinner_word_index(seed, Duration::from_secs(secs), n) < n);
+            }
+        }
+    }
+    assert_eq!(spinner_word_index(0, Duration::from_secs(5), 0), 0);
+}
+
+#[test]
+fn resolve_spinner_words_appends_or_replaces_like_claude() {
+    use tomte_core::config::SpinnerVerbs;
+    // Empty JSON applies every serde default → a real default Config.
+    let mut cfg: tomte_core::config::Config = serde_json::from_str("{}").unwrap();
+    let base = SPINNER_WORDS.len();
+
+    // No override → the built-in pool verbatim.
+    assert_eq!(resolve_spinner_words(&cfg).len(), base);
+
+    // Append (default): built-in pool + the user's words.
+    cfg.spinner_verbs = Some(SpinnerVerbs {
+        verbs: vec!["Hacking".into(), "Vibing".into()],
+        exclude_default: false,
+    });
+    let appended = resolve_spinner_words(&cfg);
+    assert_eq!(appended.len(), base + 2);
+    assert!(appended.iter().any(|w| w == "Hacking"));
+    assert!(appended.iter().any(|w| w == "Pottering"), "built-in kept");
+
+    // Replace: only the user's words.
+    cfg.spinner_verbs = Some(SpinnerVerbs {
+        verbs: vec!["Solo".into()],
+        exclude_default: true,
+    });
+    assert_eq!(resolve_spinner_words(&cfg), vec!["Solo".to_string()]);
+
+    // Replace with no words → keep the built-in pool (never leave nothing).
+    cfg.spinner_verbs = Some(SpinnerVerbs {
+        verbs: vec![],
+        exclude_default: true,
+    });
+    assert_eq!(resolve_spinner_words(&cfg).len(), base);
+}
+
+#[test]
+fn spinner_prefers_the_active_task_then_a_pool_word() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let render_to_string = |app: &mut App| -> String {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| crate::tui::ui::render(f, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    };
+
+    let mut app = App::new();
+    app.render_mode = RenderMode::AltScreen;
+    app.busy = true;
+    app.turn_started_at = Some(std::time::Instant::now());
+
+    // Claude-parity: an in-progress task shows ITS active form on the spinner.
+    app.session_todos = vec![tomte_core::tools::TodoItem {
+        content: "refactor the parser".into(),
+        status: tomte_core::tools::TodoStatus::InProgress,
+        active_form: "Refactoring the parser".into(),
+        id: None,
+        blocked_by: vec![],
+    }];
+    assert!(
+        render_to_string(&mut app).contains("Refactoring the parser"),
+        "spinner shows the active task's form"
+    );
+
+    // No task in progress → it falls back to a word from the pool. Seed 0 at ~0s
+    // maps to index 0, so the first pool word must appear.
+    app.session_todos.clear();
+    app.spinner_seed = 0;
+    let first = app.spinner_words[0].clone();
+    assert!(
+        render_to_string(&mut app).contains(first.as_str()),
+        "spinner falls back to a pool word ({first})"
+    );
+}
+
+#[test]
+fn shift_selection_rows_tracks_content_across_scroll() {
+    let mut app = App::new();
+    app.selection = Some(crate::tui::selection::Selection {
+        anchor: (4, 10),
+        cursor: (8, 12),
+    });
+    // Wheel up scrolls the view back, so content (and the highlight) shifts DOWN.
+    app.shift_selection_rows(3);
+    let sel = app
+        .selection
+        .expect("selection survives a scroll instead of vanishing");
+    assert_eq!((sel.anchor, sel.cursor), ((4, 13), (8, 15)));
+    // A large downward shift clamps rows at 0 rather than underflowing.
+    app.shift_selection_rows(-100);
+    let sel = app.selection.unwrap();
+    assert_eq!((sel.anchor.1, sel.cursor.1), (0, 0));
+    // No active selection → a no-op (must not panic).
+    app.selection = None;
+    app.shift_selection_rows(3);
+    assert!(app.selection.is_none());
 }

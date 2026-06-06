@@ -105,7 +105,7 @@ pub async fn launch_turn(
     }
     app.busy = true;
     app.turn_started_at = Some(std::time::Instant::now());
-    app.spinner_word = pick_spinner_word();
+    app.spinner_seed = pick_spinner_seed();
     app.turn_count = app.turn_count.saturating_add(1);
     app.status_line.clear();
     app.blocks.push(Block::Assistant {

@@ -361,10 +361,30 @@ pub(super) fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
     if app.is_thinking {
         extras.push_str(" · thinking");
     }
+    // Claude-parity (its `a = d?.activeForm ?? r`): when a concrete task is in
+    // progress, show *its* active form as the live word so the line says what
+    // tomte is actually doing; otherwise the drifting companion word from the
+    // (possibly user-customized) pool. The drift index is pure, so it never
+    // flickers between draws.
+    let word: String = app
+        .session_todos
+        .iter()
+        .find(|t| matches!(t.status, TodoStatus::InProgress))
+        .map(|t| t.active_form.trim())
+        .filter(|f| !f.is_empty())
+        .map(|f| f.chars().take(48).collect::<String>())
+        .unwrap_or_else(|| {
+            let words = &app.spinner_words;
+            let idx = spinner_word_index(app.spinner_seed, elapsed, words.len());
+            words
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| "Working".to_string())
+        });
     let line = Line::from(vec![
         Span::styled(format!(" {frame} "), Style::default().fg(palette::INFO)),
         Span::styled(
-            format!("{}…", app.spinner_word),
+            format!("{word}…"),
             Style::default()
                 .fg(palette::INFO)
                 .add_modifier(Modifier::BOLD),

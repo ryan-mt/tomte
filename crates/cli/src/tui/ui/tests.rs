@@ -553,3 +553,114 @@ mod preflight_render_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod diff_hunk_tests {
+    use super::super::{diff_hunk, DiffRow};
+
+    fn tag(r: &DiffRow<'_>) -> (char, String) {
+        match *r {
+            DiffRow::Context(l) => (' ', l.to_string()),
+            DiffRow::Del(l) => ('-', l.to_string()),
+            DiffRow::Add(l) => ('+', l.to_string()),
+        }
+    }
+
+    #[test]
+    fn shared_anchor_lines_collapse_to_context() {
+        // One changed line inside a 3-line block: the unchanged first and last
+        // lines become context, not a removed+added echo of the whole block.
+        let old = "fn f() {\n    let x = 1;\n}";
+        let new = "fn f() {\n    let x = 2;\n}";
+        let rows: Vec<_> = diff_hunk(old, new).iter().map(tag).collect();
+        assert_eq!(
+            rows,
+            vec![
+                (' ', "fn f() {".to_string()),
+                ('-', "    let x = 1;".to_string()),
+                ('+', "    let x = 2;".to_string()),
+                (' ', "}".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn pure_insertion_and_deletion_have_no_phantom_context() {
+        let add: Vec<_> = diff_hunk("", "new line").iter().map(tag).collect();
+        assert_eq!(add, vec![('+', "new line".to_string())]);
+        let del: Vec<_> = diff_hunk("gone", "").iter().map(tag).collect();
+        assert_eq!(del, vec![('-', "gone".to_string())]);
+    }
+
+    #[test]
+    fn fully_distinct_blocks_keep_every_line() {
+        // No shared anchors: all old lines removed, all new lines added, in order.
+        let rows: Vec<_> = diff_hunk("alpha\nbeta", "gamma\ndelta")
+            .iter()
+            .map(tag)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ('-', "alpha".to_string()),
+                ('-', "beta".to_string()),
+                ('+', "gamma".to_string()),
+                ('+', "delta".to_string()),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod edit_diff_render_tests {
+    use super::super::friendly_body;
+    use serde_json::json;
+
+    fn text(lines: &[ratatui::text::Line<'_>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn edit_diff_keeps_unchanged_lines_as_context_and_counts_only_changes() {
+        let lines = friendly_body(
+            "edit_file",
+            &json!({
+                // A path that does not exist, so locate_line_number falls back to
+                // line 1 deterministically and the test never touches the disk.
+                "path": "this_file_does_not_exist_in_tests.rs",
+                "old_string": "fn f() {\n    let x = 1;\n}",
+                "new_string": "fn f() {\n    let x = 2;\n}",
+            }),
+            Some("ok"),
+            false,
+            80,
+            true, // expanded: nothing is truncated
+        );
+        let rendered = text(&lines);
+
+        // Summary counts only the single changed line, not the whole 3-line block.
+        assert!(
+            rendered.contains("Added 1 line, removed 1 line"),
+            "got: {rendered}"
+        );
+        // The unchanged anchor lines appear exactly once — as context, not echoed
+        // as both removed and added (the old block-diff showed them twice).
+        assert_eq!(
+            rendered.matches("fn f() {").count(),
+            1,
+            "context line must not be duplicated: {rendered}"
+        );
+        // The real change is the only -/+ pair.
+        assert_eq!(rendered.matches("let x = 1;").count(), 1, "got: {rendered}");
+        assert_eq!(rendered.matches("let x = 2;").count(), 1, "got: {rendered}");
+    }
+}
