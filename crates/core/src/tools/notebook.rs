@@ -225,6 +225,9 @@ Parameters:\n\
                 .read_file_meta
                 .insert(path.clone(), (post_edit_mtime, post_edit_size));
             session.read_files.insert(path.clone());
+            // The whole notebook file was just rewritten, so write_file may
+            // overwrite it without a separate full read.
+            session.fully_read_files.insert(path.clone());
             session.push_undo_entry(UndoEntry {
                 path: path.clone(),
                 original_content: Some(original.into_bytes()),

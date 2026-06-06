@@ -128,6 +128,12 @@ pub struct SessionState {
     /// to touch, a file that was never read — so the model can't clobber
     /// content it has not seen. A successful write/edit also records the path.
     pub read_files: std::collections::HashSet<std::path::PathBuf>,
+    /// Subset of [`read_files`](Self::read_files) whose ENTIRE current content
+    /// the model has seen this session — a full (offset 0, untruncated) read, or
+    /// a file it just wrote/authored in full. `write_file` overwrites only files
+    /// in this set, so a partial (`offset`/`limit`) read can't let it discard
+    /// unseen content. A partial read of a file drops it back out.
+    pub fully_read_files: std::collections::HashSet<std::path::PathBuf>,
     /// `(mtime, size)` captured for each file when it was last read or written
     /// this session. Lets `edit_file`/`multi_edit`/`write_file` force a re-read
     /// when the file changed on disk since the model last saw it (the user's

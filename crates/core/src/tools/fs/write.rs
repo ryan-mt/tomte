@@ -90,10 +90,10 @@ Parameters:\n\
         // it never saw. Creating a new file (no existing_meta) needs no read.
         if existing_meta.is_some() {
             let session = ctx.session.lock().await;
-            if !session.read_files.contains(&path) {
+            if !session.fully_read_files.contains(&path) {
                 return Err(anyhow!(
-                    "write_file refuses to overwrite {} because it was not read this session. \
-                     Call read_file on it first so you don't discard unseen content (or use edit_file for a targeted change).",
+                    "write_file refuses to overwrite {} because you have not read all of it this session. \
+                     Read the whole file first (no offset/limit) so you don't discard unseen content (or use edit_file for a targeted change).",
                     path.display()
                 ));
             }
@@ -134,6 +134,8 @@ Parameters:\n\
             // write. Same lock also records undo.
             let mut session = ctx.session.lock().await;
             session.read_files.insert(path.clone());
+            // The model authored the full content, so a later overwrite is safe.
+            session.fully_read_files.insert(path.clone());
             session
                 .read_file_meta
                 .insert(path.clone(), (post_edit_mtime, post_edit_size));
