@@ -84,8 +84,9 @@ pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
 /// single `**`. A run of length 1 stays `*` (within-segment wildcard); any run
 /// of length >= 2 becomes a single `**` (cross-`/` wildcard), which is exactly
 /// what a user writing `***` intends, so no valid pattern changes meaning.
-/// (`glob_inner` is memoized, so adjacent `**` groups no longer backtrack
-/// exponentially; the source pattern is untrusted — `.tomte/permissions.json`.)
+/// (`glob_inner` fills a bounded DP table, so adjacent `**` groups no longer
+/// backtrack exponentially; the source pattern is untrusted —
+/// `.tomte/permissions.json`.)
 fn collapse_globstars(pattern: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(pattern.len());
     let mut stars = 0usize;
@@ -111,49 +112,46 @@ fn collapse_globstars(pattern: &str) -> Vec<u8> {
 }
 
 fn glob_inner(p: &[u8], t: &[u8]) -> bool {
-    // Memoize on (pattern offset, text offset). Without a cache, adjacent `**`
-    // groups separated by literals each branch over every text offset, so an
-    // untrusted pattern like `**a**a**a…` (from `.tomte/permissions.json`)
-    // against a long non-matching path explodes to O(text_len ^ globstars).
-    // Caching each (pi, ti) state collapses that to O(pattern * text). The arms
-    // below are the same matcher, rewritten as recurrences over offsets.
-    let mut memo = vec![vec![None; t.len() + 1]; p.len() + 1];
-    glob_at(p, t, 0, 0, &mut memo)
-}
-
-fn glob_at(p: &[u8], t: &[u8], pi: usize, ti: usize, memo: &mut [Vec<Option<bool>>]) -> bool {
-    if let Some(cached) = memo[pi][ti] {
-        return cached;
+    let (pn, tn) = (p.len(), t.len());
+    // Bottom-up DP: dp[pi][ti] = does `p[pi..]` match `t[ti..]`. Filling it from
+    // the high offsets down means each cell reads only already-filled cells (a
+    // larger pattern offset, or the same offset with a larger text offset), so
+    // the matcher never recurses. That bounds the work to O(pattern * text) —
+    // immune both to the exponential backtracking adjacent `**` groups used to
+    // cause and to a deep-recursion blowup on a long path, either reachable from
+    // an untrusted `.tomte/permissions.json` pattern. The arms are the original
+    // matcher, rewritten as table lookups.
+    let mut dp = vec![vec![false; tn + 1]; pn + 1];
+    for pi in (0..=pn).rev() {
+        for ti in (0..=tn).rev() {
+            dp[pi][ti] = if pi == pn {
+                ti == tn
+            } else if &p[pi..] == b"/**" {
+                // A trailing `/**` also matches the bare prefix directory itself,
+                // not only its children: a deny rule `dir/**` covers operating on
+                // `dir` (e.g. `list_dir(dir)`), so `.git/**` matches `.git`. The
+                // text is exhausted when the literal prefix consumed the whole
+                // path; a `/`-led remainder is the children case `**` handles.
+                ti == tn || t.get(ti) == Some(&b'/')
+            } else if p[pi] == b'*' && p.get(pi + 1) == Some(&b'*') {
+                // `**` — match any chars including `/`. Match the rest here, let a
+                // `**/` elide its slash (so `**/*.rs` matches a root-level
+                // `main.rs`), or let `**` consume one more text char and stay put.
+                let rest = pi + 2;
+                (p.get(rest) == Some(&b'/') && dp[rest + 1][ti])
+                    || dp[rest][ti]
+                    || (ti < tn && dp[pi][ti + 1])
+            } else if p[pi] == b'*' {
+                // single `*` — match a run of non-`/` chars (including empty).
+                dp[pi + 1][ti] || (ti < tn && t[ti] != b'/' && dp[pi][ti + 1])
+            } else if p[pi] == b'?' {
+                ti < tn && t[ti] != b'/' && dp[pi + 1][ti + 1]
+            } else {
+                ti < tn && t[ti] == p[pi] && dp[pi + 1][ti + 1]
+            };
+        }
     }
-    let result = if pi == p.len() {
-        ti == t.len()
-    } else if &p[pi..] == b"/**" {
-        // A trailing `/**` also matches the bare prefix directory itself, not
-        // only its children: a deny rule `dir/**` is meant to cover operating on
-        // `dir` (e.g. `list_dir(dir)`), so `.git/**` must match `.git`. The text
-        // is exhausted when the literal prefix consumed the whole path; a `/`-led
-        // remainder is the children case the `**` arm already handles. A non-`/`
-        // continuation (`a/**` vs `ab`) correctly stays unmatched.
-        ti == t.len() || t.get(ti) == Some(&b'/')
-    } else if p[pi] == b'*' && p.get(pi + 1) == Some(&b'*') {
-        // `**` — match any chars including `/`. Match the rest here, let a `**/`
-        // elide its slash (so `**/*.rs` also matches a root-level `main.rs`), or
-        // let `**` consume one more text char and stay put.
-        let rest = pi + 2;
-        (p.get(rest) == Some(&b'/') && glob_at(p, t, rest + 1, ti, memo))
-            || glob_at(p, t, rest, ti, memo)
-            || (ti < t.len() && glob_at(p, t, pi, ti + 1, memo))
-    } else if p[pi] == b'*' {
-        // single `*` — match a run of non-`/` chars (including empty).
-        glob_at(p, t, pi + 1, ti, memo)
-            || (ti < t.len() && t[ti] != b'/' && glob_at(p, t, pi, ti + 1, memo))
-    } else if p[pi] == b'?' {
-        ti < t.len() && t[ti] != b'/' && glob_at(p, t, pi + 1, ti + 1, memo)
-    } else {
-        ti < t.len() && t[ti] == p[pi] && glob_at(p, t, pi + 1, ti + 1, memo)
-    };
-    memo[pi][ti] = Some(result);
-    result
+    dp[0][0]
 }
 
 #[cfg(test)]
