@@ -240,7 +240,7 @@ async fn failed_read_file_does_not_authorize_overwrite() {
         .unwrap_err();
 
     assert!(
-        err.to_string().contains("was not read this session"),
+        err.to_string().contains("read all of it this session"),
         "got: {err}"
     );
     assert_eq!(
