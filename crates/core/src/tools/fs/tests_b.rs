@@ -308,6 +308,32 @@ async fn read_large_binary_describes_instead_of_erroring() {
 }
 
 #[tokio::test]
+async fn read_large_text_with_a_later_invalid_byte_renders_lossily() {
+    let dir = tempfile::tempdir().unwrap();
+    // The binary sniff only sees the leading ~8KB. A >5MB file that is valid
+    // UTF-8 up front but carries a stray invalid byte well past that window must
+    // render that line lossily, not fail the whole read with a UTF-8 error.
+    let mut data = Vec::new();
+    for _ in 0..1000 {
+        data.extend_from_slice(b"valid text line\n");
+    }
+    data.extend_from_slice(b"corrupt\xFFline\n");
+    while data.len() < 5_000_001 {
+        data.extend_from_slice(b"padding\n");
+    }
+    std::fs::write(dir.path().join("big.log"), &data).unwrap();
+    let out = ReadFile
+        .execute(
+            json!({"path": "big.log", "limit": 1100}),
+            &ctx(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+    assert!(out.contains("valid text line"), "leading text should render");
+    assert!(out.contains("corrupt"), "the stray-byte line should survive lossily");
+}
+
+#[tokio::test]
 async fn read_binary_then_write_overwrites() {
     let dir = tempfile::tempdir().unwrap();
     let png = [

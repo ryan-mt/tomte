@@ -298,7 +298,16 @@ fn read_large_text_slice(
                 ));
                 break;
             }
-            let text = bytes_to_line(&bytes, was_byte_truncated)?;
+            // A >5MB file whose leading sniff looked like text can still carry an
+            // invalid UTF-8 byte deeper in (e.g. a binary blob appended to a
+            // log). Render that line lossily instead of `?`-failing the entire
+            // read — the small-file path degrades to a binary description, so a
+            // single stray byte shouldn't wedge an otherwise-readable file.
+            let text = bytes_to_line(&bytes, was_byte_truncated).unwrap_or_else(|_| {
+                String::from_utf8_lossy(&bytes)
+                    .trim_end_matches(['\r', '\n'])
+                    .to_string()
+            });
             out.push_str(&numbered_line(
                 line_no + 1,
                 &text,
