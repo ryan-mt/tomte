@@ -229,14 +229,20 @@ fn session_save_load_list_and_missing_id() {
     session::save(&reasoning_rec).expect("save reasoning");
     let loaded_reasoning = session::load(&cwd_c, "reasoning").expect("load reasoning");
     match &loaded_reasoning.history[0] {
-        InputItem::Reasoning { thinking, signature, .. } => {
+        InputItem::Reasoning {
+            thinking,
+            signature,
+            ..
+        } => {
             assert_eq!(thinking.as_deref(), Some("deep thought"));
             assert_eq!(signature.as_deref(), Some("sig-abc"));
         }
         other => panic!("expected reasoning item, got {other:?}"),
     }
     match &loaded_reasoning.history[1] {
-        InputItem::Reasoning { redacted_thinking, .. } => {
+        InputItem::Reasoning {
+            redacted_thinking, ..
+        } => {
             assert_eq!(redacted_thinking.as_deref(), Some("redacted-xyz"));
         }
         other => panic!("expected reasoning item, got {other:?}"),
