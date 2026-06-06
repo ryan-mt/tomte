@@ -337,7 +337,7 @@ async fn validate_ssrf_safe(url_str: &str) -> Result<Vec<std::net::SocketAddr>> 
 
 /// Returns true for any IP we should refuse to fetch from a model-issued
 /// `web_fetch`. Covers v4 loopback / RFC1918 / link-local / CGNAT /
-/// unspecified / broadcast / documentation, and v6 loopback /
+/// this-network (0.0.0.0/8) / unspecified / broadcast / documentation, and v6 loopback /
 /// unique-local (fc00::/7) / link-local (fe80::/10) / unspecified /
 /// multicast / IPv4-mapped / IPv4-compatible / NAT64-embedded equivalents.
 fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
@@ -351,6 +351,10 @@ fn is_blocked_ip(ip: &std::net::IpAddr) -> bool {
                 || v4.is_unspecified()
                 || v4.is_broadcast()
                 || v4.is_documentation()
+                // "This host on this network" 0.0.0.0/8 (RFC 6890); subsumes the
+                // lone 0.0.0.0 that is_unspecified covers — some stacks route the
+                // rest of the block to the local host.
+                || oct[0] == 0
                 // CGNAT 100.64.0.0/10
                 || (oct[0] == 100 && (oct[1] & 0xc0) == 64)
                 // Benchmarking 198.18.0.0/15
