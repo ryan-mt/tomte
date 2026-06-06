@@ -31,7 +31,10 @@ fn ctx(cwd: std::path::PathBuf) -> ToolContext {
 /// binary files too, which `read_file` can't load as UTF-8.
 async fn mark_read(ctx: &ToolContext, rel: &str) {
     let p = std::fs::canonicalize(ctx.cwd.join(rel)).expect("file exists to mark read");
-    ctx.session.lock().await.read_files.insert(p);
+    let mut session = ctx.session.lock().await;
+    // Simulate a full read: write_file gates overwrites on fully_read_files.
+    session.read_files.insert(p.clone());
+    session.fully_read_files.insert(p);
 }
 
 async fn force_mtime_change(path: &std::path::Path, expected: Option<SystemTime>) {

@@ -60,7 +60,7 @@ async fn write_file_refuses_unread_existing_file() {
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("not read this session"),
+        err.to_string().contains("read all of it this session"),
         "got: {err}"
     );
     // The original survives — the write was refused, not partially applied.
