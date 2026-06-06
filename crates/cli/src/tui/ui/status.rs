@@ -157,7 +157,7 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
         AuthMode::AnthropicApiKey => Span::styled("● ", Style::default().fg(palette::VIOLET)),
         AuthMode::AnthropicOauth => Span::styled("● ", Style::default().fg(palette::WARNING)),
     };
-    let right_spans = vec![
+    let mut right_spans = vec![
         auth_dot,
         Span::styled(
             app.config.model.clone(),
@@ -167,11 +167,22 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
             format!(" · {}", app.config.reasoning_effort),
             Style::default().fg(palette::TEXT_MUTED),
         ),
-        Span::styled(
-            format!("  {cwd} "),
-            Style::default().fg(palette::TEXT_MUTED),
-        ),
     ];
+    // Live context occupancy — how full the window is, so a coming compaction is
+    // visible at a glance (the indicator Claude Code keeps in its status line,
+    // here in tomte's calm palette). Shown only once a turn has reported usage.
+    if let Some((label, color)) =
+        context_gauge(app.tokens_used, app.config.effective_context_limit())
+    {
+        right_spans.push(Span::styled(
+            format!(" · {label}"),
+            Style::default().fg(color),
+        ));
+    }
+    right_spans.push(Span::styled(
+        format!("  {cwd} "),
+        Style::default().fg(palette::TEXT_MUTED),
+    ));
     let right_text: String = right_spans.iter().map(|s| s.content.as_ref()).collect();
     let right_width = unicode_width::UnicodeWidthStr::width(right_text.as_str()) as u16;
     let total = area.width;
@@ -234,6 +245,25 @@ pub(super) fn status_left_text_for_parts(
     } else {
         format!("{mode_label}  ·  {activity}")
     }
+}
+
+/// The status-line context gauge: how full the model's window is, as a short
+/// colour-coded `N% ctx` segment. Returns `None` before any turn has reported
+/// usage (so the first screen stays clean). The colour ramps calm → warning →
+/// danger as occupancy climbs toward the ~85% auto-compact threshold.
+pub(super) fn context_gauge(tokens_used: u64, limit: u64) -> Option<(String, Color)> {
+    if tokens_used == 0 {
+        return None;
+    }
+    let pct = (tokens_used.saturating_mul(100) / limit.max(1)).min(100);
+    let color = if pct >= 85 {
+        palette::DANGER
+    } else if pct >= 70 {
+        palette::WARNING
+    } else {
+        palette::TEXT_MUTED
+    };
+    Some((format!("{pct}% ctx"), color))
 }
 
 pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App) {
