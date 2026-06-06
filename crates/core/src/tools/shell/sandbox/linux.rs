@@ -193,6 +193,18 @@ fn apply_landlock(policy: &SandboxPolicy) -> Result<()> {
     let status = created
         .restrict_self()
         .map_err(|e| anyhow!("landlock restrict_self: {e}"))?;
+    // Fail CLOSED. Under CompatLevel::BestEffort, a kernel without active
+    // Landlock (compiled out, omitted from the boot `lsm=` list, or a hardened/
+    // container host) makes restrict_self() return Ok(NotEnforced) rather than
+    // Err. Without this check the helper would go on to exec the shell with NO
+    // filesystem confinement, silently voiding the read-only/workspace-write
+    // guarantee a `prompt-injected rm -rf ~` relies on. Refuse to run instead.
+    if matches!(status.ruleset, landlock::RulesetStatus::NotEnforced) {
+        return Err(anyhow!(
+            "Landlock is not active on this kernel, so filesystem confinement \
+             cannot be enforced; refusing to run the command unconfined"
+        ));
+    }
     tracing::debug!(ruleset = ?status.ruleset, "landlock applied");
     Ok(())
 }
