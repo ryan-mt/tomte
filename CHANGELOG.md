@@ -2,6 +2,7 @@
 
 ## 0.0.2
 
+- Added a glass-box pre-flight (SOUL Pillar 1) — before a write or shell command runs (including an auto-approved one), tomte states in one calm line what the call will change and how far it can reach, plus a leash note for a flagged-destructive command, shown under the tool header before its result; reads and searches stay cardless so the default loop stays calm, and the approval gate is unchanged (visibility, not friction)
 - Added `tomte blame <file>` — the decision trail scoped to one file, one decision per line and greppable (`tomte blame src/auth.rs | grep argon2`); the pipeable, file-scoped view of Pillar 2's trail alongside `tomte why <file:line>` (which zooms into one location) and `tomte why --all`
 - Added a "left in order" end-of-turn receipt (SOUL Pillar 4) — a turn that changes something now closes with one tidy line: files touched, tests run (pass/fail read from the shell exit code), and the *why* it recorded; a pure question-and-answer turn shows nothing
 - Made the inline viewport the default renderer (SOUL Pillar 4) — rather than seize the alternate screen, finished turns flow into the terminal's own native scrollback (so scroll and copy keep working) and only the live turn stays on screen; the previous alt-screen renderer stays available as an opt-out via `TOMTE_INLINE=0`
