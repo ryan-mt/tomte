@@ -42,16 +42,17 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
             return Some("dd writing to a raw block device");
         }
     }
-    // A redirect to a raw block device, whether the `>`/`>>` is glued to the
-    // target (`>/dev/sda`, `x>>/dev/nvme0`) or a separate token (`> /dev/sda`).
-    // Only segments that follow a `>` count, so a plain `/dev/sda` argument
-    // (e.g. `cat /dev/sda`, a read) is not flagged.
+    // A redirect to a raw block device, whether the operator is glued to the
+    // target (`>/dev/sda`, `x>>/dev/nvme0`, `>|/dev/sda`) or a separate token
+    // (`> /dev/sda`, `&> /dev/sda`, `2> /dev/sda`). Only segments that follow a
+    // redirect operator count, so a plain `/dev/sda` argument (e.g. `cat
+    // /dev/sda`, a read) is not flagged.
     let redirect_to_block_device = tokens
         .iter()
-        .any(|t| t.split('>').skip(1).any(is_raw_block_device))
+        .any(|t| t.split(['>', '|']).skip(1).any(is_raw_block_device))
         || tokens
             .windows(2)
-            .any(|w| (w[0] == ">" || w[0] == ">>") && is_raw_block_device(w[1]));
+            .any(|w| is_redirect_op(w[0]) && is_raw_block_device(w[1]));
     if redirect_to_block_device {
         return Some("redirecting output to a raw block device");
     }
@@ -149,7 +150,7 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
 /// Known command-wrappers that re-launch a following command word, so the real
 /// interpreter hides behind them (`curl … | sudo sh`, `… | xargs sh`).
 const PIPE_WRAPPERS: &[&str] = &[
-    "sudo", "doas", "xargs", "env", "command", "nice", "nohup", "time", "stdbuf", "setsid",
+    "sudo", "doas", "xargs", "env", "command", "exec", "nice", "nohup", "time", "stdbuf", "setsid",
     "ionice",
 ];
 
@@ -169,12 +170,18 @@ fn pipe_stage_runs_interpreter(stage: &str, interpreters: &[&str]) -> bool {
     // Only the first command of the stage reads the pipe.
     let segment = stage.split([';', '&']).next().unwrap_or(stage);
     let words: Vec<&str> = segment.split_whitespace().collect();
-    // The effective command is the first word that isn't a flag or a `VAR=val`
-    // env assignment.
+    // Shell grouping/`exec` can hide the interpreter that actually reads the
+    // pipe (`| { sh; }`, `| ( sh )`, `| (sh)`): strip surrounding grouping
+    // punctuation and skip pure-grouping tokens so the real command word is the
+    // one classified.
+    let degroup = |w: &str| w.trim_matches(['(', ')', '{', '}']);
+    // The effective command is the first word that isn't grouping, a flag, or a
+    // `VAR=val` env assignment.
     let Some(first) = words
         .iter()
         .copied()
-        .find(|w| !w.starts_with('-') && !is_env_assignment(w))
+        .map(degroup)
+        .find(|w| !w.is_empty() && !w.starts_with('-') && !is_env_assignment(w))
     else {
         return false;
     };
@@ -189,7 +196,7 @@ fn pipe_stage_runs_interpreter(stage: &str, interpreters: &[&str]) -> bool {
         // Wrapper-led: we can't reliably parse each wrapper's own flags/args, so
         // scan the segment for an interpreter — erring toward flagging, as this
         // whole defense-in-depth gate does.
-        return words.iter().copied().any(is_interp);
+        return words.iter().copied().map(degroup).any(is_interp);
     }
     false
 }
@@ -219,6 +226,17 @@ fn is_raw_block_device(target: &str) -> bool {
         || target.starts_with("/dev/vd")
         || target.starts_with("/dev/mmcblk")
         || target.starts_with("/dev/disk")
+}
+
+/// A redirect operator token whose write target is the *next* whitespace-
+/// separated word (`> /dev/sda`, `>> …`, `>| …`, `&> …`, `2> …`). Accepts an
+/// optional leading fd number, then an optional `&`, then `>`, `>>`, or the
+/// POSIX clobber `>|`. The glued forms (`>/dev/sda`, `2>>/dev/sda`,
+/// `>|/dev/sda`) are caught separately by splitting the token on `>`/`|`.
+fn is_redirect_op(tok: &str) -> bool {
+    let rest = tok.trim_start_matches(|c: char| c.is_ascii_digit());
+    let rest = rest.strip_prefix('&').unwrap_or(rest);
+    matches!(rest, ">" | ">>" | ">|")
 }
 
 /// True when `name` is `base` or `base` followed only by a version suffix
