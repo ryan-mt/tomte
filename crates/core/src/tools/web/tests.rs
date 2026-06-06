@@ -53,6 +53,19 @@ fn ssrf_blocks_v6_embedded_internal_ipv4() {
     assert!(!blocked("2606:2800:220:1:248:1893:25c8:1946"));
 }
 
+#[test]
+fn ssrf_blocks_this_network_0_0_0_0_8() {
+    use std::net::IpAddr;
+    let blocked = |s: &str| is_blocked_ip(&s.parse::<IpAddr>().unwrap());
+    // 0.0.0.0/8 ("this host on this network") is reserved; some stacks route it
+    // to the local host. The whole block is refused, not just 0.0.0.0 itself.
+    assert!(blocked("0.0.0.0"));
+    assert!(blocked("0.0.0.1"));
+    assert!(blocked("0.1.2.3"));
+    // A normal public address stays allowed.
+    assert!(!blocked("93.184.216.34"));
+}
+
 #[tokio::test]
 async fn ssrf_vets_ip_literals_without_dns() {
     // v6 literals used to fail with a misleading DNS error because host_str()
