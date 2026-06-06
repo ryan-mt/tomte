@@ -304,15 +304,23 @@ fn streaming_assistant(text: &str, done: bool) -> Block {
 
 #[test]
 fn render_mode_parses_env_value() {
-    assert_eq!(RenderMode::from_env_value(Some("1")), RenderMode::Inline);
-    assert_eq!(RenderMode::from_env_value(Some(" on ")), RenderMode::Inline);
-    assert_eq!(RenderMode::from_env_value(Some("true")), RenderMode::Inline);
-    assert_eq!(RenderMode::from_env_value(Some("0")), RenderMode::AltScreen);
-    assert_eq!(RenderMode::from_env_value(None), RenderMode::AltScreen);
-    assert_eq!(
-        RenderMode::from_env_value(Some("nope")),
-        RenderMode::AltScreen
-    );
+    use RenderMode::{AltScreen, Inline};
+    // Inline is the default now (Pillar 4); only an explicit falsy value
+    // (TOMTE_INLINE=0 / false / no / off) opts back into the alternate screen.
+    let cases = [
+        (None, Inline),
+        (Some("1"), Inline),
+        (Some(" on "), Inline),
+        (Some("true"), Inline),
+        (Some("nope"), Inline),
+        (Some("0"), AltScreen),
+        (Some(" off "), AltScreen),
+        (Some("false"), AltScreen),
+        (Some("no"), AltScreen),
+    ];
+    for (value, want) in cases {
+        assert_eq!(RenderMode::from_env_value(value), want, "value={value:?}");
+    }
 }
 
 #[test]

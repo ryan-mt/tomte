@@ -70,12 +70,13 @@ pub enum Screen {
 /// How the TUI occupies the terminal (SOUL.md Pillar 4 — the calm, tidy
 /// terminal).
 ///
-/// - `AltScreen` (default): the proven 0.0.2 renderer — full-screen alternate
-///   buffer, in-app scroll/selection. Unchanged behavior.
-/// - `Inline`: an inline viewport that leaves finished turns in the terminal's
-///   own scrollback (via `Terminal::insert_before`) and never enters the
-///   alternate screen or captures the mouse, so native scroll + copy keep
-///   working. Opt-in so existing behavior is untouched for everyone else.
+/// - `Inline` (default): an inline viewport that leaves finished turns in the
+///   terminal's own scrollback (via `Terminal::insert_before`) and never enters
+///   the alternate screen or captures the mouse, so native scroll + copy keep
+///   working — the custodian does not hijack the terminal (Pillar 4).
+/// - `AltScreen`: the previous full-screen alternate-buffer renderer with
+///   in-app scroll/selection. Opt-out via `TOMTE_INLINE=0` for terminals where
+///   the inline viewport misbehaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
     AltScreen,
@@ -83,18 +84,21 @@ pub enum RenderMode {
 }
 
 impl RenderMode {
-    /// Resolve from the environment. `TOMTE_INLINE=1` (or `true`/`yes`/`on`)
-    /// opts into the inline viewport; anything else keeps the alternate screen.
+    /// Resolve from the environment. The inline viewport (Pillar 4) is the
+    /// default; `TOMTE_INLINE=0` (or `false`/`no`/`off`) opts back into the
+    /// alternate screen.
     pub fn from_env() -> Self {
         Self::from_env_value(std::env::var("TOMTE_INLINE").ok().as_deref())
     }
 
     /// Pure parse of the `TOMTE_INLINE` value, split out so it can be tested
-    /// without mutating process-global environment state.
+    /// without mutating process-global environment state. Inline is the
+    /// default; only an explicit falsy value opts back into the alternate
+    /// screen.
     pub fn from_env_value(v: Option<&str>) -> Self {
         match v {
-            Some(s) if matches!(s.trim(), "1" | "true" | "yes" | "on") => Self::Inline,
-            _ => Self::AltScreen,
+            Some(s) if matches!(s.trim(), "0" | "false" | "no" | "off") => Self::AltScreen,
+            _ => Self::Inline,
         }
     }
 }
