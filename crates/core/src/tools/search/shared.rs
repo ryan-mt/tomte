@@ -140,11 +140,24 @@ fn normalize_search_output_line(line: &str, mode: &str) -> String {
         return normalize_path_separators(line);
     }
 
-    let Some(idx) = line.find([':', '-']) else {
+    let Some(idx) = first_payload_boundary(line) else {
         return normalize_path_separators(line);
     };
     let (path, rest) = line.split_at(idx);
     format!("{}{}", normalize_path_separators(path), rest)
+}
+
+/// Byte index where the file path ends in a ripgrep `content`/`count` line: the
+/// first `:` or `-` immediately followed by a digit (the line number, or the
+/// count). Splitting on the first `:`/`-` unconditionally would cut inside a
+/// hyphenated path segment (e.g. `tomte-website\src\…`), leaving backslashes in
+/// the un-normalized remainder.
+fn first_payload_boundary(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    (0..bytes.len()).find(|&i| {
+        (bytes[i] == b':' || bytes[i] == b'-')
+            && bytes.get(i + 1).is_some_and(|b| b.is_ascii_digit())
+    })
 }
 
 /// Cap an output string by offset, lines (`head_limit`), and bytes (`byte_cap`).
@@ -218,6 +231,17 @@ mod tests {
         assert_eq!(
             normalize_search_output_line(r"src\lib.rs", "files_with_matches"),
             "src/lib.rs"
+        );
+        // A hyphenated path segment must not trigger an early split that leaves
+        // backslashes in the remainder: split only at the path/line-number
+        // boundary (a `:`/`-` followed by a digit).
+        assert_eq!(
+            normalize_search_output_line(r"tomte-website\src\app.ts:12:hit", "content"),
+            "tomte-website/src/app.ts:12:hit"
+        );
+        assert_eq!(
+            normalize_search_output_line(r"my-crate\src\lib.rs:7", "count"),
+            "my-crate/src/lib.rs:7"
         );
     }
 
