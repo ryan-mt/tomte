@@ -831,7 +831,10 @@ fn decision_overturned_event_logs_the_audit_line() {
         panic!("expected an audit system block");
     };
     assert!(text.contains("superseded"), "{text}");
-    assert!(text.contains("src/auth.rs") && text.contains("argon2"), "{text}");
+    assert!(
+        text.contains("src/auth.rs") && text.contains("argon2"),
+        "{text}"
+    );
 
     let mut app2 = App::new();
     apply_agent_event(
