@@ -128,6 +128,17 @@ enum Command {
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
     },
+    /// Print the cost receipt for a saved session — a per-model breakdown plus
+    /// normalized OpenAI/Anthropic subtotals. Defaults to the newest session for
+    /// this project; pass `--session <id>` to pick one. The headless `/cost`.
+    Cost {
+        /// Session id to report on (defaults to the newest for this project).
+        #[arg(long)]
+        session: Option<String>,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
 }
 
 fn init_tracing(stderr_logs: bool) {
@@ -256,6 +267,7 @@ async fn async_main() -> Result<()> {
             cwd,
         }) => commands::why::run(loc, all, reconcile, cwd).await,
         Some(Command::Blame { file, cwd }) => commands::blame::run(file, cwd).await,
+        Some(Command::Cost { session, cwd }) => commands::cost::run(session, cwd).await,
     }
 }
 
@@ -365,5 +377,27 @@ mod tests {
             }
             other => panic!("expected blame command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cost_parses_session_and_cwd() {
+        let cli =
+            Cli::try_parse_from(["tomte", "cost", "--session", "abc-123", "--cwd", "/p"]).unwrap();
+        match cli.command {
+            Some(Command::Cost { session, cwd }) => {
+                assert_eq!(session, Some("abc-123".to_string()));
+                assert_eq!(cwd, Some(std::path::PathBuf::from("/p")));
+            }
+            other => panic!("expected cost command, got {other:?}"),
+        }
+        // Both flags are optional — `tomte cost` alone defaults to the newest session.
+        let bare = Cli::try_parse_from(["tomte", "cost"]).unwrap();
+        assert!(matches!(
+            bare.command,
+            Some(Command::Cost {
+                session: None,
+                cwd: None
+            })
+        ));
     }
 }

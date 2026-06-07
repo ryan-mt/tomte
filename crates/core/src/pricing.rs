@@ -9,6 +9,7 @@
 //! Note: subscription auth (Claude Pro/Max, ChatGPT) is billed as a flat plan,
 //! so the USD figure is "what these tokens would cost at API rates", not a bill.
 
+use crate::provider::Provider;
 use crate::session::ModelUsage;
 
 /// Per-model rates in USD per million tokens, by billing class.
@@ -84,15 +85,32 @@ pub fn render_cost_report(usage: &[ModelUsage], current_model: &str, turns: u64)
     let mut out = format!("Session usage — active model: {current_model}\n  Turns: {turns}\n");
     let mut total_tokens: u64 = 0;
     let mut total_cost = 0.0;
+    // Per-provider subtotals — the cross-provider receipt. Only surfaced when the
+    // session spanned more than one provider (otherwise it just repeats the total).
+    let mut openai_cost = 0.0;
+    let mut anthropic_cost = 0.0;
+    let mut openai_seen = false;
+    let mut anthropic_seen = false;
     for u in usage {
         let p = pricing_for(&u.model);
-        total_cost += p.cost_of(u);
+        let cost = p.cost_of(u);
+        total_cost += cost;
+        match Provider::from_model(&u.model) {
+            Provider::OpenAi => {
+                openai_cost += cost;
+                openai_seen = true;
+            }
+            Provider::Anthropic => {
+                anthropic_cost += cost;
+                anthropic_seen = true;
+            }
+        }
         total_tokens = total_tokens
             .saturating_add(u.input_tokens)
             .saturating_add(u.output_tokens)
             .saturating_add(u.cache_read_tokens)
             .saturating_add(u.cache_write_tokens);
-        out.push_str(&format!("\n  {} — ${:.4}\n", u.model, p.cost_of(u)));
+        out.push_str(&format!("\n  {} — ${:.4}\n", u.model, cost));
         out.push_str(&format!(
             "    input (fresh): {:>12}  ·  ${:.4}\n",
             u.input_tokens,
@@ -114,6 +132,11 @@ pub fn render_cost_report(usage: &[ModelUsage], current_model: &str, turns: u64)
             "    output:        {:>12}  ·  ${:.4}\n",
             u.output_tokens,
             u.output_tokens as f64 * p.output / 1_000_000.0
+        ));
+    }
+    if openai_seen && anthropic_seen {
+        out.push_str(&format!(
+            "\n  By provider:\n    OpenAI:    ${openai_cost:.4}\n    Anthropic: ${anthropic_cost:.4}\n"
         ));
     }
     out.push_str(&format!(
@@ -207,5 +230,25 @@ mod tests {
         assert!(report.contains("gpt-5"));
         assert!(report.contains("cache read"));
         assert!(report.contains("Estimated cost"));
+    }
+
+    #[test]
+    fn report_adds_provider_subtotals_only_when_cross_provider() {
+        let one = |model: &str| ModelUsage {
+            model: model.into(),
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        };
+        // Cross-provider session → the normalized OpenAI/Anthropic receipt shows.
+        let cross = vec![one("claude-opus-4-8"), one("gpt-5")];
+        let report = render_cost_report(&cross, "gpt-5", 1);
+        assert!(report.contains("By provider:"));
+        assert!(report.contains("OpenAI:"));
+        assert!(report.contains("Anthropic:"));
+        // Single-provider session → no provider block (it would just repeat the total).
+        let report = render_cost_report(&[one("gpt-5")], "gpt-5", 1);
+        assert!(!report.contains("By provider:"));
     }
 }
