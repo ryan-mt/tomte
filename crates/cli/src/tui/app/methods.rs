@@ -86,6 +86,8 @@ impl App {
             chat_render_cache: None,
             pending_approval: None,
             approval_handle: None,
+            pending_conscience: None,
+            conscience_handle: None,
             input_history: Vec::new(),
             history_pos: None,
             history_draft: String::new(),

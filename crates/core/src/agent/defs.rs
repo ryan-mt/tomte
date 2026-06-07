@@ -256,6 +256,23 @@ pub enum AgentEvent {
         /// at the moment of risk, never a gate.
         house_rules: Vec<String>,
     },
+    /// Pillar 5 (A2 Tier 2) — the conscience self-check judged that a pending
+    /// edit contradicts a recorded decision. The TUI raises a three-way card
+    /// (abort / supersede / edit-anyway) and returns the choice on the matching
+    /// `pending_conscience` channel. Interactive only — a headless run proceeds
+    /// and logs the override instead (see [`AgentEvent::DecisionOverturned`]).
+    ConscienceConflict {
+        call_id: String,
+        tool_name: String,
+        file: String,
+        /// The overturned decision's trail id (`ts`), its text, and the model
+        /// that recorded it.
+        ts: u64,
+        prev_decision: String,
+        prev_model: String,
+        /// The editing model's one-line reason the edit conflicts.
+        reason: String,
+    },
     /// The session working directory changed, typically after entering/exiting a worktree.
     CwdChanged {
         cwd: String,
@@ -279,6 +296,17 @@ pub enum AgentEvent {
     },
     /// Plan-mode control tool requested entering read-only planning mode.
     PlanModeRequested,
+    /// Pillar 5 (A3 — On the Record) — a recorded decision was overturned by an
+    /// approved edit. The audit line surfaced to the user; `recorded` is true
+    /// when a superseding decision was written to the trail (supersede), false
+    /// when the edit proceeded without one (edit-anyway, or a headless run).
+    DecisionOverturned {
+        file: String,
+        prev_decision: String,
+        prev_model: String,
+        reason: String,
+        recorded: bool,
+    },
     Usage {
         input_tokens: u64,
         output_tokens: u64,
@@ -494,6 +522,28 @@ pub(super) fn should_auto_capture(
     !(non_interactive && require_approval)
 }
 
+/// The human's resolution of an [`AgentEvent::ConscienceConflict`] card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConscienceChoice {
+    /// Don't run the edit.
+    Abort,
+    /// Run the edit and record a superseding decision linked to the overturned one.
+    Supersede,
+    /// Run the edit without recording a superseding decision (the override is
+    /// still surfaced/logged).
+    EditAnyway,
+}
+
+/// A conscience conflict found for one pending edit (Pillar 5 A2 Tier 2),
+/// carried from the pre-check to the approval gate.
+pub(super) struct ConscienceConflictInfo {
+    pub file: String,
+    pub ts: u64,
+    pub prev_decision: String,
+    pub prev_model: String,
+    pub reason: String,
+}
+
 pub struct Agent {
     pub client: LlmClient,
     pub registry: Registry,
@@ -517,6 +567,12 @@ pub struct Agent {
     pub hooks: Arc<crate::hooks::HookSet>,
     pub pending_approvals:
         Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+    /// Pending conscience-conflict cards, keyed by call_id — the three-valued
+    /// sibling of `pending_approvals` (which is bool-only), so the abort /
+    /// supersede / edit-anyway choice can be returned distinctly. Pillar 5 (A2).
+    pub pending_conscience: Arc<
+        Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<ConscienceChoice>>>,
+    >,
     pub require_approval: bool,
     /// When true, file-edit tools auto-approve even though `require_approval`
     /// is on. Powers "accept edits" mode in the TUI; shell still prompts.

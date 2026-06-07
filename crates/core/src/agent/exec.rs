@@ -329,6 +329,55 @@ pub(super) async fn request_tool_approval(
     granted
 }
 
+/// Raise a conscience-conflict card (Pillar 5 A2 Tier 2) and await the human's
+/// three-way choice. The sibling of [`request_tool_approval`] for a decision
+/// that can't be expressed as a bool. On a timeout, a dropped channel, or a UI
+/// that can't receive, it defaults to [`ConscienceChoice::Abort`] — a conflict
+/// the human never resolved must not silently overwrite a recorded decision.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn request_conscience_decision(
+    pending_conscience: &Arc<
+        Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<ConscienceChoice>>>,
+    >,
+    tx: &mpsc::Sender<AgentEvent>,
+    call_id: &str,
+    tool_name: &str,
+    file: &str,
+    ts: u64,
+    prev_decision: &str,
+    prev_model: &str,
+    reason: &str,
+    timeout: Duration,
+) -> ConscienceChoice {
+    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel::<ConscienceChoice>();
+    pending_conscience
+        .lock()
+        .await
+        .insert(call_id.to_string(), resp_tx);
+    if tx
+        .send(AgentEvent::ConscienceConflict {
+            call_id: call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            file: file.to_string(),
+            ts,
+            prev_decision: prev_decision.to_string(),
+            prev_model: prev_model.to_string(),
+            reason: reason.to_string(),
+        })
+        .await
+        .is_err()
+    {
+        pending_conscience.lock().await.remove(call_id);
+        return ConscienceChoice::Abort;
+    }
+    let choice = match tokio::time::timeout(timeout, resp_rx).await {
+        Ok(Ok(c)) => c,
+        _ => ConscienceChoice::Abort,
+    };
+    pending_conscience.lock().await.remove(call_id);
+    choice
+}
+
 pub(super) enum ToolPreflight {
     Block(String),
     Proceed {

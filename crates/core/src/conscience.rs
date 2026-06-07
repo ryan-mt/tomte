@@ -11,7 +11,13 @@
 //! garbage answer parses to [`ConscienceVerdict::Clear`] — the conscience must
 //! never fail *shut* on a model quirk and wedge an edit.
 
+use serde_json::Value;
+
 use crate::decisions::DecisionRecord;
+
+/// Minimal system instruction for the self-check call — a focused classifier,
+/// not the full editing persona, so the extra call stays cheap and on-task.
+pub const CHECK_INSTRUCTIONS: &str = "You are reviewing whether a proposed code edit contradicts a previously recorded engineering decision for the file. Judge only contradiction, not style. Reply on exactly ONE line, no prose, in the format you are told.";
 
 /// The model's verdict on whether a pending edit contradicts a recorded decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +43,10 @@ pub fn build_check_prompt(file: &str, decisions: &[DecisionRecord], change: &str
          Recorded decisions:\n"
     );
     for d in decisions.iter().rev().take(MAX_DECISIONS_IN_CHECK) {
-        s.push_str(&format!("  #{} — {} (because {})\n", d.ts, d.decision, d.why));
+        s.push_str(&format!(
+            "  #{} — {} (because {})\n",
+            d.ts, d.decision, d.why
+        ));
         for r in &d.rejected {
             s.push_str(&format!("      rejected: {r}\n"));
         }
@@ -50,6 +59,51 @@ pub fn build_check_prompt(file: &str, decisions: &[DecisionRecord], change: &str
          - `CONFLICT <ts> — <one sentence>` if it contradicts one, citing that decision's #ts.\n",
     );
     s
+}
+
+/// Largest change blob fed into the check prompt — a huge write can't be allowed
+/// to balloon the self-check request.
+const MAX_CHANGE_CHARS: usize = 4000;
+
+/// Summarize a mutating tool's args into `(file, change-text)` for the
+/// self-check, or `None` when the tool isn't a file edit or carries no `path`.
+/// The change is truncated so a large write can't blow up the check prompt.
+pub fn change_summary(tool_name: &str, args: &Value) -> Option<(String, String)> {
+    let file = args.get("path").and_then(Value::as_str)?.to_string();
+    let s = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let change = match tool_name {
+        "edit_file" => format!("replace:\n{}\nwith:\n{}", s("old_string"), s("new_string")),
+        "write_file" => format!("write file contents:\n{}", s("content")),
+        "multi_edit" => {
+            let mut out = String::from("apply edits:");
+            for e in args
+                .get("edits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let old = e.get("old_string").and_then(Value::as_str).unwrap_or("");
+                let new = e.get("new_string").and_then(Value::as_str).unwrap_or("");
+                out.push_str(&format!("\n- replace:\n{old}\n  with:\n{new}"));
+            }
+            out
+        }
+        _ => return None,
+    };
+    let change = if change.chars().count() > MAX_CHANGE_CHARS {
+        format!(
+            "{}…(truncated)",
+            change.chars().take(MAX_CHANGE_CHARS).collect::<String>()
+        )
+    } else {
+        change
+    };
+    Some((file, change))
 }
 
 /// Parse the model's one-line verdict. Lenient and fail-open: scans for the
@@ -162,5 +216,18 @@ mod tests {
         assert!(prompt.contains("swap argon2 for bcrypt"));
         assert!(prompt.contains("CLEAR"));
         assert!(prompt.contains("CONFLICT"));
+    }
+
+    #[test]
+    fn change_summary_extracts_file_and_edit() {
+        let args = serde_json::json!({
+            "path": "src/auth.rs", "old_string": "argon2", "new_string": "bcrypt"
+        });
+        let (file, change) = change_summary("edit_file", &args).unwrap();
+        assert_eq!(file, "src/auth.rs");
+        assert!(change.contains("argon2") && change.contains("bcrypt"));
+        // A non-edit tool, or an edit with no path, yields None.
+        assert!(change_summary("run_shell", &serde_json::json!({"command": "ls"})).is_none());
+        assert!(change_summary("edit_file", &serde_json::json!({"old_string": "x"})).is_none());
     }
 }

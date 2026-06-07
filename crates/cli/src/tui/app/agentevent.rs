@@ -410,6 +410,38 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 app.pending_approval = None;
             }
         }
+        AgentEvent::ConscienceConflict {
+            call_id,
+            tool_name: _,
+            file,
+            ts,
+            prev_decision,
+            prev_model,
+            reason,
+        } => {
+            app.pending_conscience = Some(PendingConscience {
+                call_id,
+                file,
+                ts,
+                prev_decision,
+                prev_model,
+                reason,
+                selected: 0,
+            });
+        }
+        AgentEvent::DecisionOverturned {
+            file,
+            prev_decision,
+            prev_model,
+            reason,
+            recorded,
+        } => {
+            // Pillar 5 (A3 — On the Record): surface the override as an audit line.
+            let tag = if recorded { "superseded" } else { "overridden" };
+            app.blocks.push(Block::System(format!(
+                "↩ {tag} decision in {file} — {prev_model}'s \"{prev_decision}\" — {reason}"
+            )));
+        }
         AgentEvent::SubagentStarted {
             id,
             subagent_type,

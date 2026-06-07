@@ -47,6 +47,14 @@ pub struct Config {
     /// runs. Pillar 2 — auto-capture.
     #[serde(default = "default_auto_capture")]
     pub auto_capture: bool,
+    /// Pillar 5 — the conscience around an edit to a file that has recorded
+    /// decisions. `"off"` disables it; `"surface"` (default) shows the file's
+    /// decisions as "house rules" in the pre-flight card (Tier 1, no model cost);
+    /// `"check"` additionally asks the editing model whether the edit contradicts
+    /// a decision (Tier 2) and, on a conflict, escalates to an
+    /// abort/supersede/edit-anyway card.
+    #[serde(default = "default_conscience")]
+    pub conscience: String,
     #[serde(default)]
     pub auto_approve_read: bool,
     #[serde(default)]
@@ -219,6 +227,31 @@ pub fn normalize_model_name(name: &str) -> String {
     migrate_legacy_model_name(&bare)
 }
 
+pub const VALID_CONSCIENCE: &[&str] = &["off", "surface", "check"];
+
+fn default_conscience() -> String {
+    "surface".to_string()
+}
+
+/// Normalize a conscience mode, returning `None` for an unrecognized value so a
+/// bad project-config string falls back to the existing setting instead of
+/// silently disabling the conscience.
+pub fn normalize_conscience(value: &str) -> Option<String> {
+    let v = value.trim().to_ascii_lowercase();
+    VALID_CONSCIENCE.contains(&v.as_str()).then_some(v)
+}
+
+impl Config {
+    /// Tier 1 (house rules in the pre-flight) is on unless the conscience is off.
+    pub fn conscience_surfaces(&self) -> bool {
+        self.conscience != "off"
+    }
+    /// Tier 2 (the editing-model self-check) fires only in `"check"` mode.
+    pub fn conscience_checks(&self) -> bool {
+        self.conscience == "check"
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -227,6 +260,7 @@ impl Default for Config {
             verbosity: default_verbosity(),
             auto_compact: true,
             auto_capture: true,
+            conscience: default_conscience(),
             auto_approve_read: true,
             auto_approve_write: false,
             default_permission_mode: default_permission_mode(),
@@ -352,6 +386,8 @@ struct ProjectOverlay {
     #[serde(default)]
     auto_capture: Option<bool>,
     #[serde(default)]
+    conscience: Option<String>,
+    #[serde(default)]
     fallback_models: Option<Vec<String>>,
 }
 
@@ -458,6 +494,11 @@ fn apply_project_overlay(cfg: &mut Config, overlay: ProjectOverlay) {
     }
     if let Some(auto_capture) = overlay.auto_capture {
         cfg.auto_capture = auto_capture;
+    }
+    if let Some(conscience) = overlay.conscience {
+        if let Some(v) = normalize_conscience(&conscience) {
+            cfg.conscience = v;
+        }
     }
     if let Some(fallbacks) = overlay.fallback_models {
         cfg.fallback_models = fallbacks;

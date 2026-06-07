@@ -104,6 +104,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.pending_approval.is_some() {
         render_approval(f, layout[5], app);
     }
+    if app.pending_conscience.is_some() {
+        render_conscience(f, layout[5], app);
+    }
 }
 
 /// Inline-viewport render (SOUL Pillar 4 — the calm, tidy terminal). Unlike
@@ -164,6 +167,9 @@ pub fn render_inline(f: &mut Frame, app: &mut App) {
     }
     if app.pending_approval.is_some() {
         render_approval(f, layout[5], app);
+    }
+    if app.pending_conscience.is_some() {
+        render_conscience(f, layout[5], app);
     }
 }
 

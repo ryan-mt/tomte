@@ -338,6 +338,12 @@ pub struct App {
     /// blocking on the outer agent mutex (run_turn holds it for the whole
     /// turn and is itself waiting on this approval).
     pub approval_handle: Option<ApprovalHandle>,
+    /// Pillar 5 (A2) — the active conscience-conflict card, if any. Sibling of
+    /// `pending_approval`; resolved via `conscience_handle`.
+    pub pending_conscience: Option<PendingConscience>,
+    /// Clone of the Agent's `pending_conscience` Arc, captured at turn start so
+    /// the card's choice is delivered without blocking on the agent mutex.
+    pub conscience_handle: Option<ConscienceHandle>,
     /// Previously submitted prompts, oldest first. Up/Down in the composer
     /// recall these (shell / Claude Code style). In-memory for this session.
     pub input_history: Vec<String>,
@@ -398,6 +404,22 @@ pub struct PendingApproval {
     /// Highlighted menu option: 0 = allow once, 1 = allow this tool/command in
     /// this project (persisted to .tomte/permissions.json), 2 = deny. Driven
     /// by Up/Down; Enter commits it.
+    pub selected: usize,
+}
+
+/// Pillar 5 (A2 Tier 2) — a conscience-conflict card: a pending edit the
+/// self-check judged to contradict a recorded decision. The human chooses
+/// abort / supersede / edit-anyway.
+#[derive(Debug, Clone)]
+pub struct PendingConscience {
+    pub call_id: String,
+    pub file: String,
+    pub ts: u64,
+    pub prev_decision: String,
+    pub prev_model: String,
+    pub reason: String,
+    /// Highlighted option: 0 = abort, 1 = supersede, 2 = edit anyway. Up/Down
+    /// moves it; Enter commits.
     pub selected: usize,
 }
 

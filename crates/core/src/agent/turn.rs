@@ -291,4 +291,30 @@ impl Agent {
             Err(e) => tracing::warn!(error = %e, "auto-capture: failed to append decision"),
         }
     }
+
+    /// Pillar 5 (A2 Tier 2) — ask the editing model whether a pending edit to a
+    /// file with recorded `decisions` contradicts one. Provider-agnostic (routes
+    /// through the active model/client) and fail-open: any self-check error
+    /// yields `Clear`, so the conscience never blocks an edit on a model or
+    /// transport quirk. A focused, low-effort, tool-free classification call.
+    pub(super) async fn conscience_verdict(
+        &self,
+        file: &str,
+        decisions: &[crate::decisions::DecisionRecord],
+        change: &str,
+    ) -> crate::conscience::ConscienceVerdict {
+        let prompt = crate::conscience::build_check_prompt(file, decisions, change);
+        let input = vec![InputItem::Message {
+            role: "user".to_string(),
+            content: vec![MessageContent::text(prompt)],
+        }];
+        let request = ResponsesRequest::new(self.config.model.clone(), input)
+            .with_instructions(crate::conscience::CHECK_INSTRUCTIONS.to_string())
+            .with_reasoning("low")
+            .with_verbosity("low");
+        match self.collect_text(request).await {
+            Ok(answer) => crate::conscience::parse_check_answer(&answer),
+            Err(_) => crate::conscience::ConscienceVerdict::Clear,
+        }
+    }
 }

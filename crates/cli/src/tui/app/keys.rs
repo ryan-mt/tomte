@@ -22,6 +22,67 @@ pub async fn handle_key(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
 
+    if app.pending_conscience.is_some() {
+        // Pillar 5 (A2 Tier 2) conscience card: 0 = abort, 1 = supersede,
+        // 2 = edit anyway. Up/Down + Enter, with a/s/e and Esc (= abort) as
+        // shortcuts.
+        const N_OPTS: usize = 3;
+        match key.code {
+            KeyCode::Up => {
+                if let Some(p) = app.pending_conscience.as_mut() {
+                    p.selected = (p.selected + N_OPTS - 1) % N_OPTS;
+                }
+                return Ok(false);
+            }
+            KeyCode::Down => {
+                if let Some(p) = app.pending_conscience.as_mut() {
+                    p.selected = (p.selected + 1) % N_OPTS;
+                }
+                return Ok(false);
+            }
+            _ => {}
+        }
+        let sel = app.pending_conscience.as_ref().map_or(0, |p| p.selected);
+        let choice = match key.code {
+            KeyCode::Enter => Some(sel),
+            KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Esc => Some(0),
+            KeyCode::Char('s') | KeyCode::Char('S') => Some(1),
+            KeyCode::Char('e') | KeyCode::Char('E') => Some(2),
+            _ => None,
+        };
+        if let Some(choice) = choice {
+            let p = app
+                .pending_conscience
+                .take()
+                .expect("pending_conscience present");
+            let decision = match choice {
+                0 => tomte_core::agent::ConscienceChoice::Abort,
+                1 => tomte_core::agent::ConscienceChoice::Supersede,
+                _ => tomte_core::agent::ConscienceChoice::EditAnyway,
+            };
+            let label = match decision {
+                tomte_core::agent::ConscienceChoice::Abort => "aborted (kept the decision)",
+                tomte_core::agent::ConscienceChoice::Supersede => "superseded the decision",
+                tomte_core::agent::ConscienceChoice::EditAnyway => "edited anyway",
+            };
+            app.blocks
+                .push(Block::System(format!("conscience: {label} — {}", p.file)));
+            if let Some(handle) = app.conscience_handle.clone() {
+                let call_id = p.call_id.clone();
+                tokio::spawn(async move {
+                    let sender = {
+                        let mut map = handle.lock().await;
+                        map.remove(&call_id)
+                    };
+                    if let Some(s) = sender {
+                        let _ = s.send(decision);
+                    }
+                });
+            }
+        }
+        return Ok(false);
+    }
+
     if app.pending_approval.is_some() {
         // Three-option menu, navigable with Up/Down + Enter, with y/n/Esc kept
         // as shortcuts. 0 = allow once, 1 = allow in this project (persisted to

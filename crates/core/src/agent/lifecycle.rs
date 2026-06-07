@@ -17,6 +17,7 @@ impl Agent {
             session_id: crate::session::new_session_id(),
             session_created_ms: crate::session::now_ms(),
             pending_approvals: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            pending_conscience: Arc::new(Mutex::new(std::collections::HashMap::new())),
             require_approval: false,
             auto_approve_edits: false,
             non_interactive: false,
@@ -51,6 +52,18 @@ impl Agent {
         };
         if let Some(s) = sender {
             let _ = s.send(granted);
+        }
+    }
+
+    /// Resolve a pending conscience-conflict card with the human's choice. The
+    /// three-valued sibling of [`respond_approval`](Self::respond_approval).
+    pub async fn respond_conscience(&self, call_id: &str, choice: ConscienceChoice) {
+        let sender = {
+            let mut map = self.pending_conscience.lock().await;
+            map.remove(call_id)
+        };
+        if let Some(s) = sender {
+            let _ = s.send(choice);
         }
     }
 

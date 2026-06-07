@@ -315,7 +315,9 @@ pub async fn main_loop(
                     // so multi-line text lands in the composer for editing
                     // instead of submitting on the first newline.
                     Ok(Event::Paste(text))
-                        if app.screen == Screen::Chat && app.pending_approval.is_none() =>
+                        if app.screen == Screen::Chat
+                            && app.pending_approval.is_none()
+                            && app.pending_conscience.is_none() =>
                     {
                         // Insert in one shift (not char-by-char) so a large paste
                         // isn't O(n²); strip CR so CRLF clipboards don't double up.

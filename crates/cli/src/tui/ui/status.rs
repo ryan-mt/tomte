@@ -373,6 +373,98 @@ pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect,
     );
 }
 
+/// Pillar 5 (A2 Tier 2) — the conscience-conflict card: a pending edit the
+/// self-check judged to contradict a recorded decision, with the three-way
+/// abort / supersede / edit-anyway choice. Mirrors [`render_approval`].
+pub(super) fn render_conscience(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App) {
+    use ratatui::widgets::{Block as RBlock, BorderType, Borders, Clear};
+    let Some(p) = app.pending_conscience.as_ref() else {
+        return;
+    };
+
+    let dim = Style::default().fg(palette::TEXT_MUTED);
+    let bg = Style::default().bg(palette::SURFACE);
+    let warn = Style::default()
+        .fg(palette::WARNING)
+        .add_modifier(Modifier::BOLD);
+    let accent = Style::default()
+        .fg(palette::ACCENT)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("  Edit conflicts with a decision in ", dim),
+        Span::styled(p.file.clone(), accent),
+    ]));
+    lines.push(Line::from(Span::styled(
+        format!("  #{} by {}", p.ts, p.prev_model),
+        dim,
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  \"{}\"", p.prev_decision),
+        Style::default().fg(palette::TEXT),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled("  conflict: ", dim),
+        Span::styled(p.reason.clone(), Style::default().fg(palette::TEXT)),
+    ]));
+    lines.push(Line::from(""));
+    let opts = [
+        "Abort (keep the decision)",
+        "Supersede (edit + record the override)",
+        "Edit anyway (proceed, logged)",
+    ];
+    let sel_style = Style::default()
+        .fg(palette::TEXT_BRIGHT)
+        .bg(palette::ACCENT_DEEP)
+        .add_modifier(Modifier::BOLD);
+    let opt_style = Style::default().fg(palette::TEXT);
+    for (i, label) in opts.iter().enumerate() {
+        let is_sel = i == p.selected;
+        let marker = if is_sel { "  ❯ " } else { "    " };
+        let style = if is_sel { sel_style } else { opt_style };
+        lines.push(Line::from(vec![
+            Span::styled(marker, style),
+            Span::styled((*label).to_string(), style),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        "  ↑/↓ select · enter confirm · a/s/e · esc abort",
+        dim,
+    )));
+
+    let height = (lines.len() as u16).min(14) + 2;
+    let width = 72u16.min(anchor_area.width.saturating_sub(4));
+    let x = anchor_area.x + 1;
+    let bottom = anchor_area.y;
+    let y = bottom.saturating_sub(height);
+    let popup = ratatui::layout::Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let clear_area = ratatui::layout::Rect {
+        x: anchor_area.x,
+        y,
+        width: anchor_area.width,
+        height,
+    };
+    f.render_widget(Clear, clear_area);
+    let block = RBlock::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette::WARNING))
+        .title(Span::styled(" Conscience — overturn a decision? ", warn))
+        .style(bg);
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    f.render_widget(
+        Paragraph::new(lines).style(bg).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
 pub(super) fn condense_args(json: &str) -> String {
     let trimmed = json.trim();
     if trimmed.is_empty() || trimmed == "{}" {

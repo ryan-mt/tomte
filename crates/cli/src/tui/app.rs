@@ -38,6 +38,18 @@ pub type ApprovalHandle = std::sync::Arc<
     tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
 >;
 
+/// Sibling of [`ApprovalHandle`] for the three-valued conscience-conflict card
+/// (Pillar 5 A2). Cloned from `Agent.pending_conscience` at turn start so the
+/// abort/supersede/edit-anyway choice can be delivered without the agent lock.
+pub type ConscienceHandle = std::sync::Arc<
+    tokio::sync::Mutex<
+        std::collections::HashMap<
+            String,
+            tokio::sync::oneshot::Sender<tomte_core::agent::ConscienceChoice>,
+        >,
+    >,
+>;
+
 mod agentevent;
 mod blocks;
 mod consts;

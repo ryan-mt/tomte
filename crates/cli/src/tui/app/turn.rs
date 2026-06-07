@@ -94,6 +94,7 @@ pub async fn launch_turn(
         let guard = agent.lock().await;
         if let Some(a) = guard.as_ref() {
             app.approval_handle = Some(a.pending_approvals.clone());
+            app.conscience_handle = Some(a.pending_conscience.clone());
         }
     }
     if should_defer_session_save_to_host {
@@ -181,6 +182,21 @@ pub async fn cancel_current_turn(app: &mut App) {
         }
     }
     app.approval_handle = None;
+    // Same for an in-flight conscience-conflict card: resolve it as Abort so a
+    // cancelled turn never silently overwrites a recorded decision, and the
+    // keystroke interceptor is released.
+    if let Some(pending) = app.pending_conscience.take() {
+        if let Some(handle) = app.conscience_handle.clone() {
+            let sender = {
+                let mut map = handle.lock().await;
+                map.remove(&pending.call_id)
+            };
+            if let Some(sender) = sender {
+                let _ = sender.send(tomte_core::agent::ConscienceChoice::Abort);
+            }
+        }
+    }
+    app.conscience_handle = None;
     // Close the open assistant block, then surface a small note so the user
     // can see the cancel happened.
     if let Some(Block::Assistant { done, .. }) = last_assistant_mut_open(&mut app.blocks) {

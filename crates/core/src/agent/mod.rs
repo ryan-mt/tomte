@@ -35,7 +35,7 @@ use usage::*;
 
 pub use defs::{
     context_window_label, is_context_overflow_message, model_context_limit, model_supports_1m,
-    Agent, AgentEvent,
+    Agent, AgentEvent, ConscienceChoice,
 };
 pub use usage::default_system_prompt;
 

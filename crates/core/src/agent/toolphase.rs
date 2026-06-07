@@ -3,6 +3,73 @@
 use super::*;
 
 impl Agent {
+    /// Pillar 5 (A2 Tier 2) — run the conscience self-check over the batch's edit
+    /// calls *before* any runs, returning the conflicts keyed by call_id. Only
+    /// fires in `conscience = "check"` mode; an edit to a file with no recorded
+    /// decisions, the trail store itself, or a CLEAR verdict yields no entry.
+    /// Done as a pre-pass so the model call doesn't fight the `self.registry`
+    /// borrow the main tool loop holds.
+    async fn conscience_precheck(
+        &self,
+        pending_calls: &[PendingCall],
+    ) -> std::collections::HashMap<String, ConscienceConflictInfo> {
+        let mut conflicts = std::collections::HashMap::new();
+        if !self.config.conscience_checks() {
+            return conflicts;
+        }
+        for pc in pending_calls {
+            let name = pc.name.trim();
+            if !matches!(name, "edit_file" | "write_file" | "multi_edit") {
+                continue;
+            }
+            let raw = if pc.args.text.trim().is_empty() {
+                "{}"
+            } else {
+                &pc.args.text
+            };
+            let Ok(args) = serde_json::from_str::<Value>(raw) else {
+                continue;
+            };
+            let Some((file, change)) = crate::conscience::change_summary(name, &args) else {
+                continue;
+            };
+            // Never run the conscience on the trail store itself (no recursion).
+            if file.ends_with("decisions.jsonl") {
+                continue;
+            }
+            let decisions = crate::decisions::for_file(&self.cwd, &file);
+            if decisions.is_empty() {
+                continue;
+            }
+            let crate::conscience::ConscienceVerdict::Conflict { ts, reason } =
+                self.conscience_verdict(&file, &decisions, &change).await
+            else {
+                continue;
+            };
+            // Resolve the cited decision; on an unknown ts fall back to the most
+            // recent one so the card still names something real.
+            let prev = decisions
+                .iter()
+                .find(|d| d.ts == ts)
+                .or_else(|| decisions.last());
+            let (ts, prev_decision, prev_model) = match prev {
+                Some(d) => (d.ts, d.decision.clone(), d.model.clone()),
+                None => (ts, String::new(), String::new()),
+            };
+            conflicts.insert(
+                pc.call_id.clone(),
+                ConscienceConflictInfo {
+                    file,
+                    ts,
+                    prev_decision,
+                    prev_model,
+                    reason,
+                },
+            );
+        }
+        conflicts
+    }
+
     pub(super) async fn run_tool_phase(
         &mut self,
         pending_calls: Vec<PendingCall>,
@@ -40,6 +107,11 @@ impl Agent {
             // forward fleet-view lifecycle events to the TUI.
             events: Some(tx.clone()),
         };
+
+        // Pillar 5 (A2 Tier 2) — run the conscience self-check over this batch's
+        // edits before any runs, so a conflict can interrupt the edit at the gate
+        // (keyed by call_id; empty unless conscience = "check").
+        let conscience_conflicts = self.conscience_precheck(&pending_calls).await;
 
         // History pushes deferred until after outputs computed (cancel-safety).
 
@@ -147,6 +219,112 @@ impl Agent {
                                 precomputed.push((pc.call_id.clone(), reason, true));
                             }
                             ToolPreflight::Proceed { decision } => {
+                                // Pillar 5 (A2 Tier 2) — a conscience conflict for
+                                // this edit takes over the gate: the human chooses
+                                // abort / supersede / edit-anyway (a headless run
+                                // proceeds and logs). It replaces the normal
+                                // approval for this one call.
+                                if let Some(conflict) = conscience_conflicts.get(&pc.call_id) {
+                                    let choice = if self.non_interactive {
+                                        ConscienceChoice::EditAnyway
+                                    } else {
+                                        request_conscience_decision(
+                                            &self.pending_conscience,
+                                            tx,
+                                            &pc.call_id,
+                                            &tool_name,
+                                            &conflict.file,
+                                            conflict.ts,
+                                            &conflict.prev_decision,
+                                            &conflict.prev_model,
+                                            &conflict.reason,
+                                            APPROVAL_TIMEOUT,
+                                        )
+                                        .await
+                                    };
+                                    match choice {
+                                        ConscienceChoice::Abort => {
+                                            precomputed.push((
+                                                pc.call_id.clone(),
+                                                format!(
+                                                    "Error: aborted — this edit conflicts with recorded decision #{} ({}). Not applied; reconcile with the decision or supersede it.",
+                                                    conflict.ts, conflict.reason
+                                                ),
+                                                true,
+                                            ));
+                                            continue;
+                                        }
+                                        ConscienceChoice::Supersede => {
+                                            let rec = crate::decisions::DecisionRecord {
+                                                loc: conflict.file.clone(),
+                                                decision: format!(
+                                                    "override approved for the edit to {}",
+                                                    conflict.file
+                                                ),
+                                                why: format!(
+                                                    "human supersede of #{} (\"{}\") — {}",
+                                                    conflict.ts,
+                                                    conflict.prev_decision,
+                                                    conflict.reason
+                                                ),
+                                                rejected: Vec::new(),
+                                                model: self.config.model.clone(),
+                                                ts: crate::session::now_ms(),
+                                                anchor: None,
+                                                supersedes: Some(conflict.ts),
+                                            };
+                                            if let Err(e) =
+                                                crate::decisions::append(&self.cwd, &rec)
+                                            {
+                                                tracing::warn!(error = %e, "conscience: failed to append supersede record");
+                                            }
+                                            let _ = tx
+                                                .send(AgentEvent::DecisionOverturned {
+                                                    file: conflict.file.clone(),
+                                                    prev_decision: conflict.prev_decision.clone(),
+                                                    prev_model: conflict.prev_model.clone(),
+                                                    reason: conflict.reason.clone(),
+                                                    recorded: true,
+                                                })
+                                                .await;
+                                        }
+                                        ConscienceChoice::EditAnyway => {
+                                            if self.non_interactive {
+                                                tracing::warn!(
+                                                    file = %conflict.file,
+                                                    ts = conflict.ts,
+                                                    "conscience: edited over a decision without an override (headless run)"
+                                                );
+                                            }
+                                            let _ = tx
+                                                .send(AgentEvent::DecisionOverturned {
+                                                    file: conflict.file.clone(),
+                                                    prev_decision: conflict.prev_decision.clone(),
+                                                    prev_model: conflict.prev_model.clone(),
+                                                    reason: conflict.reason.clone(),
+                                                    recorded: false,
+                                                })
+                                                .await;
+                                        }
+                                    }
+                                    // The human consented through the conscience
+                                    // card, so bypass the normal approval gate;
+                                    // still honor any PreToolUse hook before running.
+                                    match post_approval_tool_gate(
+                                        &self.hooks,
+                                        &tool_name,
+                                        &args,
+                                        true,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => runnable.push((pc.call_id.clone(), args, t)),
+                                        Err(reason) => {
+                                            precomputed.push((pc.call_id.clone(), reason, true))
+                                        }
+                                    }
+                                    continue;
+                                }
                                 let auto_via_accept_edits = self.auto_approve_edits
                                     && EDIT_TOOLS.contains(&tool_name.as_str());
                                 let base_gate = self.require_approval
@@ -267,13 +445,17 @@ impl Agent {
                 // decisions as "house rules" right as an edit is about to land —
                 // recall at the moment of risk, pure surfacing (never a gate).
                 // Only the file-targeting mutating tools carry a path to look up.
-                let house_rules = match tool.name() {
-                    "edit_file" | "write_file" | "multi_edit" => args
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .map(|p| crate::decisions::house_rules(&ctx.cwd, p))
-                        .unwrap_or_default(),
-                    _ => Vec::new(),
+                let house_rules = if self.config.conscience_surfaces() {
+                    match tool.name() {
+                        "edit_file" | "write_file" | "multi_edit" => args
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .map(|p| crate::decisions::house_rules(&ctx.cwd, p))
+                            .unwrap_or_default(),
+                        _ => Vec::new(),
+                    }
+                } else {
+                    Vec::new()
                 };
                 let _ = tx
                     .send(AgentEvent::PreFlight {
