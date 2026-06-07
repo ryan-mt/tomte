@@ -4,11 +4,6 @@ CLAUDE.md
 **/*.rs.bk
 Cargo.lock.bak
 
-# UI
-/ui/node_modules
-/ui/dist
-/ui/.vite
-
 # Editor
 .idea/
 .vscode/
@@ -19,6 +14,3 @@ Cargo.lock.bak
 
 # codegraph index
 .codegraph/
-
-# strategy / design docs — kept local, not pushed
-/docs/
