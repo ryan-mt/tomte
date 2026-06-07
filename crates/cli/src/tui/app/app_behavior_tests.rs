@@ -784,3 +784,68 @@ async fn model_switch_announces_the_trail_follows_only_when_non_empty() {
         let _ = std::fs::remove_dir_all(parent);
     }
 }
+
+#[test]
+fn conscience_conflict_event_raises_the_card() {
+    // Pillar 5 (A2 Tier 2): the event puts the three-way card into pending state
+    // with the overturned decision's details, selection defaulting to abort.
+    let mut app = App::new();
+    apply_agent_event(
+        &mut app,
+        AgentEvent::ConscienceConflict {
+            call_id: "c1".into(),
+            tool_name: "edit_file".into(),
+            file: "src/auth.rs".into(),
+            ts: 42,
+            prev_decision: "use argon2".into(),
+            prev_model: "gpt-5.5".into(),
+            reason: "switches to bcrypt".into(),
+        },
+    );
+    let p = app
+        .pending_conscience
+        .as_ref()
+        .expect("the conflict event should raise the card");
+    assert_eq!(p.file, "src/auth.rs");
+    assert_eq!(p.ts, 42);
+    assert_eq!(p.prev_decision, "use argon2");
+    assert_eq!(p.selected, 0);
+}
+
+#[test]
+fn decision_overturned_event_logs_the_audit_line() {
+    // Pillar 5 (A3): a supersede surfaces an on-the-record "superseded" line;
+    // an edit-anyway (recorded=false) reads as "overridden".
+    let mut app = App::new();
+    apply_agent_event(
+        &mut app,
+        AgentEvent::DecisionOverturned {
+            file: "src/auth.rs".into(),
+            prev_decision: "use argon2".into(),
+            prev_model: "gpt-5.5".into(),
+            reason: "switched to bcrypt".into(),
+            recorded: true,
+        },
+    );
+    let Some(Block::System(text)) = app.blocks.last() else {
+        panic!("expected an audit system block");
+    };
+    assert!(text.contains("superseded"), "{text}");
+    assert!(text.contains("src/auth.rs") && text.contains("argon2"), "{text}");
+
+    let mut app2 = App::new();
+    apply_agent_event(
+        &mut app2,
+        AgentEvent::DecisionOverturned {
+            file: "x.rs".into(),
+            prev_decision: "d".into(),
+            prev_model: "m".into(),
+            reason: "r".into(),
+            recorded: false,
+        },
+    );
+    let Some(Block::System(t2)) = app2.blocks.last() else {
+        panic!("expected an audit system block");
+    };
+    assert!(t2.contains("overridden"), "{t2}");
+}
