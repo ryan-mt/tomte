@@ -14,3 +14,11 @@ Cargo.lock.bak
 
 # codegraph index
 .codegraph/
+
+# internal strategy / design docs — kept local, not published
+# (docs/previews/ stays tracked: standalone demos of tomte's own features)
+/docs/SOUL.md
+/docs/clone-audit.md
+/docs/pillar-4-calm-terminal.md
+/docs/pillar-5-conscience.md
+/docs/pillars-1-3-build-plan.md

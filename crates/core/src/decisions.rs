@@ -1,6 +1,6 @@
 //! The decision trail: a project-scoped, append-only log of *why* the agent
 //! made a change — the decision, the reasoning, and the alternatives it
-//! rejected — each stamped with the model that decided. Pillar 2 of docs/SOUL.md.
+//! rejected — each stamped with the model that decided.
 //!
 //! It lives beside the memory store (`<config>/projects/<key>/decisions.jsonl`)
 //! and reuses memory's project keying. It is a *separate*, structured store

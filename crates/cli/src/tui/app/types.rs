@@ -322,7 +322,7 @@ pub struct App {
     /// Completion timestamps keyed by stable todo text. Used only for display
     /// priority so newly completed items remain visible briefly in long lists.
     pub todo_completed_at: HashMap<String, std::time::Instant>,
-    /// Whether the Claude-style live todo panel is expanded above the input.
+    /// Whether the live todo panel is expanded above the input.
     /// Defaults on so users see progress as soon as the model writes todos;
     /// Ctrl+T toggles it without touching the canonical todo state.
     pub show_todos: bool,

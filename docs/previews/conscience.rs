@@ -1,8 +1,8 @@
-//! Standalone preview of Pillar 5 — "the custodian's conscience (the active decision trail)".
+//! Standalone preview of the custodian's conscience — the active decision trail.
 //! Not part of tomte's build: std-only, under docs/, compiled by hand:
 //!   rustc -D warnings docs/previews/conscience.rs -o /tmp/conscience && /tmp/conscience
 //!
-//! Pillar 2 (see why_trail.rs) makes the trail REMEMBER. Pillar 5 makes it ACTIVE.
+//! The decision trail (see why_trail.rs) makes tomte REMEMBER; the conscience makes it ACTIVE.
 //! This is not a mockup: it writes real source files AND a real `decisions.jsonl`
 //! to disk, then RECONCILES the trail against the code by CONTENT (not a frozen
 //! file:line), confronts an edit about to reverse a recorded decision, and logs the
@@ -17,8 +17,6 @@
 //!   conscience reconcile       audit the on-disk trail against the code (A1)
 //!   conscience why <loc>       query a location, following the supersede chain
 //!   conscience why --all       the whole trail — git-blame for conscience
-//!
-//! See docs/pillar-5-conscience.md and docs/SOUL.md (Pillar 5).
 
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};

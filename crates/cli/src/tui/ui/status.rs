@@ -14,7 +14,7 @@ pub(super) fn render_input(f: &mut Frame, area: Rect, app: &App) {
         .fg(prompt_color)
         .add_modifier(Modifier::BOLD);
 
-    // Rounded border around the prompt, matching Claude Code's input box. The
+    // Rounded border around the prompt. The
     // border dims while a turn is running so the box reads as "not your turn".
     let border_color = if app.busy {
         palette::BORDER

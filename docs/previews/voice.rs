@@ -1,7 +1,7 @@
-//! Standalone preview of Pillar 3 — "a voice with a spine".
+//! Standalone preview of tomte's voice with a spine.
 //! Not part of tomte's build: std-only, under docs/, compiled by hand:
 //!   rustc docs/previews/voice.rs -o /tmp/voice && /tmp/voice
-//! See docs/SOUL.md (Pillar 3). The soul is the harness's, not the model's.
+//! The soul is the harness's, not the model's.
 
 fn fg(r: u8, g: u8, b: u8) -> String {
     format!("\x1b[38;2;{r};{g};{b}m")

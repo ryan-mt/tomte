@@ -1,10 +1,10 @@
-//! Unified guided tour of the tomte "quiet custodian" direction — all five
-//! pillars in ONE coherent runnable flow, so the whole vision can be seen and
+//! Unified guided tour of the tomte "quiet custodian" direction — its core
+//! ideas in ONE coherent runnable flow, so the whole vision can be seen and
 //! judged in a single command.
 //!
 //! Not part of tomte's build: std-only, under docs/, compiled by hand:
 //!   rustc docs/previews/tour.rs -o /tmp/tomte_tour && /tmp/tomte_tour
-//! A preview of the direction (see docs/SOUL.md), not the final integrated build.
+//! A preview of the direction, not the final integrated build.
 
 fn fg(r: u8, g: u8, b: u8) -> String {
     format!("\x1b[38;2;{r};{g};{b}m")

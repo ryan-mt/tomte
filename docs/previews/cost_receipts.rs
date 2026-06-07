@@ -1,7 +1,5 @@
-//! Standalone preview of the cross-cutting enabler — "normalized cost receipts
-//! across providers" (docs/SOUL.md §5; Stage 3 "normalized cross-provider cost
-//! display"). It supports Pillar 1 (cost is legible before/after acting) and
-//! Pillar 4 (a calm, quantitative receipt).
+//! Standalone preview of normalized cost receipts across providers — cost kept
+//! legible before and after acting, as a calm, quantitative receipt.
 //!
 //! Not part of tomte's build: std-only, under docs/, compiled by hand:
 //!   rustc -D warnings docs/previews/cost_receipts.rs -o /tmp/cost && /tmp/cost
@@ -12,8 +10,6 @@
 //! are illustrative (these model names are near-future), but the mechanism — a
 //! single normalized bill spanning vendors that price differently — is the point,
 //! and is exactly what a single-vendor tool structurally cannot show.
-//!
-//! See docs/SOUL.md (§4 multi-model as plumbing; §5 cross-cutting enabler).
 
 // ---- calm palette (matches docs/previews/why_trail.rs) ----------------------
 fn fg(r: u8, g: u8, b: u8) -> String {

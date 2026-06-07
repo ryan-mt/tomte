@@ -1,10 +1,10 @@
-//! The `/buddy` companion — a deterministic, rarity-weighted pixel pet, in the
-//! spirit of Claude Code's buddy system.
+//! The `/buddy` companion — tomte's own deterministic, rarity-weighted pixel
+//! pet: a small bit of character that hatches alongside the custodian.
 //!
 //! The pet is **deterministic from the signed-in AI account**: a hash of the
-//! account identity seeds a Mulberry32 PRNG (the same generator Claude Code
-//! uses), so an account always hatches the same companion ("stable") and it
-//! only re-rolls when the user switches accounts. Because it is derived purely
+//! account identity seeds a Mulberry32 PRNG, so an account always hatches the
+//! same companion ("stable") and it only re-rolls when the user switches
+//! accounts. Because it is derived purely
 //! from the account — nothing is persisted — deleting local state can't re-roll
 //! it. Rarity is rolled with weighted odds: one legendary at the lowest rate.
 //!
@@ -279,7 +279,7 @@ const PETS: &[Pet] = &[
     },
 ];
 
-// ---- PRNG (Mulberry32, matching Claude Code) ------------------------------
+// ---- PRNG (Mulberry32) ----------------------------------------------------
 
 struct Rng {
     state: u32,
@@ -333,8 +333,7 @@ fn roll_rarity(rng: &mut Rng) -> Rarity {
 
 /// Account identities that always hatch the legendary companion — the
 /// dev/founder. Also forced by the `TOMTE_BUDDY_DEV` env var, so the dev
-/// gets the legendary on any account. (Mirrors how Claude Code hands its
-/// internal builds special treatment.)
+/// gets the legendary on any account.
 const FOUNDER_IDS: &[&str] = &[];
 
 /// Roll the companion for an account identity, returning an index into

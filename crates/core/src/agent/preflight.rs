@@ -1,11 +1,11 @@
-//! SOUL Pillar 1 — the glass-box pre-flight.
+//! The glass-box pre-flight.
 //!
 //! Before the harness runs a *consequential* tool call — a write or a shell
 //! command — it states in one calm line what the call will change and how far
 //! it can reach, so an auto-approved action is **legible, not silent**. This is
 //! the custodian being followable: you see WHAT it will do and HOW FAR it can
 //! reach, first. Purely informational — the approval gate is unchanged (we add
-//! visibility, not friction). See docs/SOUL.md (Pillar 1).
+//! visibility, not friction).
 //!
 //! Read-only tools (read/grep/glob/list/lsp) get no card: they are inherently
 //! bounded and already shown calmly, so a "0 writes" card for each would be

@@ -90,7 +90,7 @@ pub(crate) fn ensure_not_stale(
 }
 
 /// Resolve a model-supplied path against the sandbox `cwd`. Accepts either a
-/// relative path or a Claude-style absolute path that is lexically inside
+/// relative path or an absolute path that is lexically inside
 /// `cwd`. Rejects absolute paths outside `cwd`, lexical `..` escapes, and
 /// symlinks whose resolved target leaves `cwd`. Without this guard the LLM
 /// could read `/etc/shadow`, write to `~/.ssh/authorized_keys`, or otherwise

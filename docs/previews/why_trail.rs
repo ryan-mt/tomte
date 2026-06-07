@@ -1,12 +1,12 @@
-//! Standalone preview of Pillar 2 — "memory of why (the decision trail)".
+//! Standalone preview of tomte's memory of why — the decision trail.
 //! Not part of tomte's build: std-only, under docs/, compiled by hand:
 //!   rustc -D warnings docs/previews/why_trail.rs -o /tmp/why_trail && /tmp/why_trail
 //!
 //! Unlike a static mockup, this WRITES real JSONL decision records to disk and
 //! READS them back to answer queries — proving the "why" survives a session and,
-//! crucially, a MODEL SWITCH (the multi-model moat in docs/SOUL.md, Pillar 2).
-//! The on-disk shape is exactly the `decisions.jsonl` record the build plan
-//! specifies: { loc, decision, why, rejected[], model, turn, ts }.
+//! crucially, a MODEL SWITCH (the multi-model moat).
+//! The on-disk shape is exactly the `decisions.jsonl` record tomte writes:
+//! { loc, decision, why, rejected[], model, turn, ts }.
 //!
 //! Behaves like a tiny `tomte why` CLI:
 //!   why_trail                  guided walkthrough: model A records, model B inherits

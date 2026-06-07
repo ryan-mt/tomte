@@ -1,7 +1,6 @@
-//! Standalone preview of Pillar 1 — "glass-box: legible & bounded".
+//! Standalone preview of the glass-box idea — legible & bounded.
 //! Not part of tomte's build: std-only, under docs/, compiled by hand:
 //!   rustc docs/previews/glass_box.rs -o /tmp/glass_box && /tmp/glass_box
-//! See docs/SOUL.md (Pillar 1).
 
 fn fg(r: u8, g: u8, b: u8) -> String {
     format!("\x1b[38;2;{r};{g};{b}m")

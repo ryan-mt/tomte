@@ -150,7 +150,7 @@ export default function FieldGuide() {
           <div className="mt-12 border-t-2 border-ink pt-8">
             <h3 className="font-display text-[1.3rem] font-bold text-ink">Composer prefixes</h3>
             <p className="mt-2 max-w-2xl text-[14.5px] leading-relaxed text-ink-2">
-              Three characters you type at the start of a line, matching Claude Code and Codex muscle memory.
+              Three characters you type at the start of a line — quick inline actions without leaving the composer.
             </p>
             <dl className="mt-5 border-t border-line">
               {composerPrefixes.map((p) => (

@@ -185,8 +185,8 @@ pub async fn handle_key(
         // /effort save on change). Errors are surfaced, not swallowed.
         set_permission_mode_and_save(app, next);
         // No chat notification: the status-bar footer already shows the active
-        // mode (see render_status), matching Claude Code, which only updates the
-        // indicator on Shift+Tab rather than printing a line.
+        // mode (see render_status); the indicator updates on Shift+Tab rather
+        // than printing a line.
         return Ok(false);
     }
     match key.code {

@@ -1,4 +1,4 @@
-//! Standalone, dependency-free preview of Pillar 4 — "the calm, tidy terminal".
+//! Standalone, dependency-free preview of the calm, tidy terminal.
 //!
 //! This is NOT part of tomte's build: it lives under docs/, uses only std, and is
 //! compiled by hand with `rustc`, so it cannot affect the 0.0.2 binary or CI.
@@ -11,12 +11,10 @@
 //!
 //! Shipped state: this inline viewport is real but **opt-in via `TOMTE_INLINE=1`**; the
 //! 0.0.2 default is the alternate screen (it keeps in-app mouse selection / scroll /
-//! clickable targets). This preview demos what `TOMTE_INLINE=1` delivers — see
-//! docs/pillar-4-calm-terminal.md § Status. Record this for the relaunch (asciinema / vhs):
+//! clickable targets). This preview demos what `TOMTE_INLINE=1` delivers.
+//! Record this for the relaunch (asciinema / vhs):
 //!
 //!   rustc -D warnings docs/previews/calm_preview.rs -o /tmp/calm_preview && /tmp/calm_preview
-//!
-//! See docs/pillar-4-calm-terminal.md and docs/SOUL.md (Pillar 4).
 
 use std::io::{self, Write};
 use std::thread::sleep;

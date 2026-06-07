@@ -43,7 +43,7 @@ pub(super) fn render_compact_progress(f: &mut Frame, area: Rect, app: &App) {
 
 /// Draw the "Jump to bottom" bar on the last row of the chat area and return
 /// its screen rect so the mouse handler can hit-test a click. The label is
-/// centered and flanked by a horizontal rule, matching Claude Code's affordance.
+/// centered and flanked by a horizontal rule.
 pub(super) fn render_jump_to_bottom(f: &mut Frame, chat_area: Rect) -> Rect {
     let row = Rect {
         x: chat_area.x,

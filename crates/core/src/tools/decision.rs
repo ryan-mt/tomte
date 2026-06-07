@@ -1,8 +1,7 @@
 //! The `record_decision` tool: lets the agent log *why* it made a non-obvious
 //! change — the decision, the reasoning, and the rejected alternatives — into
 //! the project's decision trail ([`crate::decisions`]). The harness stamps the
-//! model in play, so the reasoning survives a mid-task model switch (Pillar 2 of
-//! docs/SOUL.md).
+//! model in play, so the reasoning survives a mid-task model switch.
 //!
 //! Like `memory`, writes are refused in unattended headless runs: the trail is
 //! replayed into later sessions, so an unattended prompt-injected write would be

@@ -13,16 +13,16 @@
 - Added per-run sandbox overrides — `--sandbox <mode>` / `--sandbox-allow-net` and `TOMTE_SANDBOX_*` env vars (never persisted); Linux adds conservative rlimits, Windows tears the tree down via a kill-on-close Job Object.
 - Added `tomte doctor` and `/doctor` — a read-only setup health check (auth, config, model routing, MCP, external tools) that runs headless and exits non-zero on failure.
 - Added a `TOMTE_CONFIG_DIR` override to relocate the whole config tree (config, auth, sessions, logs) on every platform — also the portable way to isolate tests.
-- Added Claude Code / Codex-style composer prefixes — `@<path>` attaches a file via gitignore-aware typeahead, `!<command>` runs a shell command inline (`!!` past the guard), `#<note>` appends to `CLAUDE.md`.
+- Added composer prefixes — `@<path>` attaches a file via gitignore-aware typeahead, `!<command>` runs a shell command inline (`!!` past the guard), `#<note>` appends to `CLAUDE.md`.
 - Added automatic, provider-agnostic model failover — a rate-limited or overloaded model switches to the next in `fallback_models`; off by default, only before any answer has streamed.
 - Added project-scoped config — a `.tomte/config.json` overrides safe fields only (`model`, `reasoning_effort`, `verbosity`, `auto_compact`, `fallback_models`); security keys are ignored.
 - Added left-drag text selection in the TUI — drag to highlight and copy on release (no Shift), handling wide CJK/emoji; `/help` documents it plus history recall (↑/↓).
 - Added a live context gauge to the status line — `N% ctx` next to the model, colored calm → warning → danger toward the ~85% auto-compact threshold.
 - Added `tomte-website/` — the static Next.js marketing & docs site, deployed at https://tomte-website.vercel.app.
-- Added runnable, std-only previews of all five SOUL pillars under `docs/previews/` (hand-compiled, invisible to cargo/CI), including a `cost_receipts.rs` cross-provider cost demo.
+- Added runnable, std-only previews of the planned pillar concepts (hand-compiled, invisible to cargo/CI), including a cross-provider cost demo.
 - Rebuilt the welcome card into a full first-screen panel — pixel-pet, brand/version, live setup (`model · effort · account`), workspace, a `/init`-style house-rules check, and a shortcuts footer; spans the full terminal width.
 - Reworked the turn spinner — a flickering-hearthfire glyph (`▁▂▄▆█▆▄▂`) instead of braille and a ~245-word tomte-voiced pool that holds a word ~8s then drifts on a pure `seed × elapsed` schedule, so it never flickers; a running todo's `active_form` takes the line instead.
-- Made the spinner words configurable on Claude Code's schema — `spinner_verbs { verbs, exclude_default }` in `config.json` appends to or replaces the built-in pool.
+- Made the spinner words configurable — `spinner_verbs { verbs, exclude_default }` in `config.json` appends to or replaces the built-in pool.
 - Gave a finished sub-agent in the fleet view a settled past-tense verb (e.g. `Forged · 4 steps · 1m 12s`) instead of a stale in-flight phrase.
 - Rewrote the `edit_file` / `multi_edit` diff into a real hunk — shared lines collapse into uncolored context, the `-`/`+` counts reflect only real changes, and line numbers follow the unified-diff convention.
 - Unified todo glyphs across the inline `todo_write` checklist and the pinned panel (`✓` / `▪` / `□`, in-progress now a filled `▪`), and added the `(Ctrl+O for more)` hint to truncated diff/error bodies.
@@ -31,7 +31,7 @@
 - Gave the composer a cozy face — a `✿ ` prompt gutter and a `what shall we build today?` placeholder.
 - Made `grep` work with no external tools — a native, dependency-free fallback covers `content` / `files_with_matches` / `count` with context and `path` scoping when neither ripgrep nor `grep` can be spawned; the recursive walk is shared with `glob`.
 - Made `tomte doctor` warn (not hard-error) when neither ripgrep nor grep is installed, now that `grep` / `glob` have a native fallback.
-- Made `read_file` render a Jupyter `.ipynb` as cells (ids + text outputs; image/rich outputs omitted) instead of dumping raw JSON, matching Claude Code's Read and pairing with `notebook_edit`; a sliced read (`offset`/`limit`) still returns the raw JSON.
+- Made `read_file` render a Jupyter `.ipynb` as cells (ids + text outputs; image/rich outputs omitted) instead of dumping raw JSON, pairing with `notebook_edit`; a sliced read (`offset`/`limit`) still returns the raw JSON.
 - Gave `read_file` vision — a whole-file read of an image (PNG/JPEG/GIF/WebP) or PDF now attaches the bytes as media so a vision model can SEE it (the Anthropic translator emits `image`/`document` blocks in the `tool_result`), instead of the old text-only "binary file" note. Tool results carry optional media end-to-end via a new `execute_rich` (the 26 text tools are untouched; only `read_file` overrides it); the OpenAI wire degrades to the text note since its `function_call_output` doesn't accept media.
 - Surfaced project-local skills and custom commands in the `/` slash menu — skills under `.tomte/skills` (and `.claude`/`.codex`) plus `commands/*.md` now appear as `/<name>` entries (tagged by scope, e.g. `skill (.tomte)`) so you can trigger them manually, and typing `/<skill-name>` loads that skill's instructions into the composer. Global skills stay out of the quick menu (the model still loads any of them on demand via the `skill` tool).
 - Made `read_file` and `list_dir` give a clear, self-correcting error when handed the wrong kind of path — `read_file` on a directory points to `list_dir`/`glob`, and `list_dir` on a file points to `read_file`, instead of surfacing a raw OS error.
@@ -102,7 +102,7 @@
 
 ## 0.0.1-beta.4
 
-Beta 4 focuses on making long agent sessions easier to run, inspect, and recover: better context/quota visibility, safer file and shell behavior, more Claude Code-compatible tools, and release-ready TUI polish.
+Beta 4 focuses on making long agent sessions easier to run, inspect, and recover: better context/quota visibility, safer file and shell behavior, broader tool coverage, and release-ready TUI polish.
 
 ### Highlights
 
@@ -144,15 +144,15 @@ Beta 4 focuses on making long agent sessions easier to run, inspect, and recover
 
 ### TUI polish and fixes
 
-- Improved `run_shell` rendering to match Claude Code more closely: red stderr, no separator box, compact `Error (exit N)` footer, and more failed-command output kept inline.
+- Refined `run_shell` rendering: red stderr, no separator box, compact `Error (exit N)` footer, and more failed-command output kept inline.
 - Fixed long-session TUI garbling by sanitizing ANSI codes, tabs, and carriage returns before rendering tool output.
 - Fixed a plan-approval lockout where typing a follow-up while the agent was planning could make `Y` stop approving the plan.
 - Updated README and in-app slash command discovery for the beta4 release line and `/usage`.
 
-### Claude Code and Codex interoperability
+### Ecosystem interoperability
 
 - Expanded inherited memory loading to include global instruction files from `$CODEX_HOME` / `~/.codex`, `~/.claude`, and `~/.config/tomte`, then the git repository root through the session `cwd` (ancestor-first, closest directory last in the prompt).
-- Fixed inherited memory to match Codex-style discovery: at most one file per directory (`AGENTS.override.md` > `AGENTS.md` > `CLAUDE.md`), stop at the git root instead of the filesystem root, cap combined bodies at 32 KiB, and replace the previous memory block on re-apply instead of duplicating it. Fixed candidate-file iteration so a missing `AGENTS.override.md` no longer prevented falling through to `AGENTS.md` / `CLAUDE.md`.
+- Fixed inherited memory discovery: at most one file per directory (`AGENTS.override.md` > `AGENTS.md` > `CLAUDE.md`), stop at the git root instead of the filesystem root, cap combined bodies at 32 KiB, and replace the previous memory block on re-apply instead of duplicating it. Fixed candidate-file iteration so a missing `AGENTS.override.md` no longer prevented falling through to `AGENTS.md` / `CLAUDE.md`.
 - Extended skill discovery to project `.codex/skills/`, `$CODEX_HOME/skills` / `~/.codex/skills`, and recursive search under Claude/Codex `plugins/` trees (deduplicated roots).
 - Extended sub-agent discovery to project `.codex/agents/`, `~/.codex/agents`, and `$CODEX_HOME/agents` (deduplicated roots).
 - Updated `dispatch_agent` tool copy, the default system prompt, and TUI `/agents` / `/skills` empty-state messages to document the expanded discovery paths.
@@ -192,9 +192,9 @@ Initial beta release candidate.
 
 - Added the interactive TUI, headless chat, login/status/config/resume flows, and session persistence.
 - Added `/goal` with active-goal continuation, replacement confirmation, footer elapsed timer, and `goal_update`.
-- Added Claude-style todo UI and `todo_write` compatibility.
+- Added a todo UI and `todo_write` compatibility.
 - Added plan-mode controls (`enter_plan_mode`, `exit_plan_mode`) with approval gating.
-- Added sub-agent dispatch compatible with Claude Code agent definitions and common Task/Agent argument aliases.
+- Added sub-agent dispatch compatible with existing agent-definition files and common Task/Agent argument aliases.
 - Hardened tool calling across provider shapes, streamed argument recovery, output caps, parallel read-only calls, and common schema aliases.
 - Added filesystem/search/shell/web/notebook tools with undo, permission checks, hook matching, and safer destructive command handling.
 - Added OpenAI and Anthropic provider adapters, model catalog handling, retry behavior, and reasoning/thinking translation support.

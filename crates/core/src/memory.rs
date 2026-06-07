@@ -1,6 +1,6 @@
 //! Inherited instruction files (`AGENTS.md`, `CLAUDE.md`, …) for the system prompt.
 //!
-//! Discovery follows Codex-style rules where practical:
+//! Discovery follows the AGENTS.md / CLAUDE.md conventions where practical:
 //! - At most one instruction file per directory (`AGENTS.override.md` > `AGENTS.md` > `CLAUDE.md`).
 //! - Project scope is limited to the git repository root through `cwd` (not the whole filesystem).
 //! - Combined body text is capped at 32 KiB by default.
