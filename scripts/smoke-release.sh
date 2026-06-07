@@ -69,21 +69,24 @@ trap 'rm -rf "$tmp_root"' EXIT
 # A retired id (gpt-5-pro no longer resolves at the API) is normalized to its
 # current equivalent; the `openai/` prefix is stripped. (gpt-5 and gpt-5.2 are
 # real current models and are intentionally NOT remapped.)
-openai_cfg="$(XDG_CONFIG_HOME="$tmp_root/openai-config" "$bin" config --set-model openai/gpt-5-pro --set-reasoning max --show)"
+# Isolate config onto scratch dirs via TOMTE_CONFIG_DIR (the whole-tree root,
+# honored on every platform) — XDG_CONFIG_HOME is ignored by `dirs` on Windows,
+# so it would silently read/write the real %APPDATA%\tomte there.
+openai_cfg="$(TOMTE_CONFIG_DIR="$tmp_root/openai-config" "$bin" config --set-model openai/gpt-5-pro --set-reasoning max --show)"
 contains "$openai_cfg" '"model": "gpt-5.5-pro"' || fail "OpenAI model normalization missing"
 contains "$openai_cfg" '"reasoning_effort": "max"' || fail "OpenAI max reasoning should persist"
 printf 'ok config: OpenAI legacy model normalized\n'
 
-anthropic_cfg="$(XDG_CONFIG_HOME="$tmp_root/anthropic-config" "$bin" config --set-model anthropic/claude-opus-4-7 --set-reasoning max --show)"
+anthropic_cfg="$(TOMTE_CONFIG_DIR="$tmp_root/anthropic-config" "$bin" config --set-model anthropic/claude-opus-4-7 --set-reasoning max --show)"
 contains "$anthropic_cfg" '"model": "claude-opus-4-7"' || fail "Anthropic model normalization missing"
 contains "$anthropic_cfg" '"reasoning_effort": "xhigh"' || fail "Anthropic max should persist as xhigh"
 printf 'ok config: Anthropic max persistence downgraded\n'
 
 auth_home="$tmp_root/auth-preservation"
-mkdir -p "$auth_home/tomte"
-printf '%s\n' '{"mode":"openai_oauth","tokens":{"access_token":"oauth-token","refresh_token":"refresh-token"}}' > "$auth_home/tomte/auth.json"
-printf 'sk-test\n' | XDG_CONFIG_HOME="$auth_home" "$bin" login --api-key --provider openai >/dev/null 2>/dev/null
-auth_status="$(XDG_CONFIG_HOME="$auth_home" "$bin" status)"
+mkdir -p "$auth_home"
+printf '%s\n' '{"mode":"openai_oauth","tokens":{"access_token":"oauth-token","refresh_token":"refresh-token"}}' > "$auth_home/auth.json"
+printf 'sk-test\n' | TOMTE_CONFIG_DIR="$auth_home" "$bin" login --api-key --provider openai >/dev/null 2>/dev/null
+auth_status="$(TOMTE_CONFIG_DIR="$auth_home" "$bin" status)"
 contains "$auth_status" 'OpenAI OAuth token is also stored' || fail "OpenAI OAuth was not preserved after API key login"
 contains "$auth_status" 'OpenAI API key:     stored' || fail "OpenAI API key status missing after login"
 printf 'ok auth: API key login preserves OAuth credential\n'
