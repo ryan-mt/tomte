@@ -42,16 +42,35 @@ async fn background_run_returns_id_and_captures_output() {
         .await
         .unwrap();
     let id = parse_bash_id(&out);
-    let final_out = wait_until_status(&ctx, &id, "exited", 5000).await;
-    let v: serde_json::Value = serde_json::from_str(&final_out).unwrap();
-    let stdout = v.get("stdout").unwrap().as_str().unwrap();
-    assert!(stdout.contains("hello-bg"), "got: {final_out}");
-    assert!(v
-        .get("status")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .contains("exited(0)"));
+
+    // `bash_output` returns only the bytes since the last read, and the waiter
+    // flips status to `exited` WITHOUT joining the stdout reader first (see
+    // `spawn_background`) — so the poll that first observes `exited` may not yet
+    // carry the tail of stdout. Accumulate across polls and wait for BOTH the
+    // output and the exit, instead of trusting the single read that happens to
+    // see `exited`. That single-read assumption was a Windows-CI flake: on a
+    // loaded runner the output landed in one poll and `exited` in the next, so
+    // the "exited" read came back with empty new bytes. Mirrors the accumulating
+    // pattern the `alias`/two-line bash_output tests already use.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut stdout = String::new();
+    let last_status = loop {
+        let raw = super::super::BashOutput
+            .execute(json!({"bash_id": &id}), &ctx)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        stdout.push_str(v.get("stdout").unwrap().as_str().unwrap());
+        let status = v.get("status").unwrap().as_str().unwrap().to_string();
+        if stdout.contains("hello-bg") && status.contains("exited") {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("never saw output+exit; status={status}, stdout={stdout:?}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    };
+    assert!(last_status.contains("exited(0)"), "status={last_status}");
 }
 
 #[cfg(unix)]

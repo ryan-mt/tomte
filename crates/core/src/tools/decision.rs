@@ -177,7 +177,12 @@ mod tests {
         assert_eq!(trail.len(), 1);
         assert_eq!(trail[0].model, "gpt-5.5");
         assert_eq!(trail[0].rejected.len(), 1);
-        let _ = std::fs::remove_file(&store);
+        // Remove the whole per-project store dir under the config dir, not just
+        // the `decisions.jsonl` file — leaving the keyed `projects/<key>/` dir
+        // behind littered the config dir across runs.
+        if let Some(project_dir) = store.parent() {
+            let _ = std::fs::remove_dir_all(project_dir);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
