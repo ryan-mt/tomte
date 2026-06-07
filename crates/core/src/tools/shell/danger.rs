@@ -225,16 +225,72 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
     if (has("del") || has("erase") || has("rd") || has("rmdir")) && tokens.contains(&"/s") {
         return Some("del/rd /s recursively deletes a directory tree");
     }
+    // `del`/`erase` at a drive root (`del c:\* /q`, `del \*.*`) wipes the root's
+    // files even without `/s` — the cmd.exe analog of `rm -rf /*`. Use the
+    // pre-normalize `raw_tokens`: `normalize_shell_scan` eats the `\` (a Unix
+    // escape), turning `c:\*` into `c:*` and hiding the root anchor.
+    if (has("del") || has("erase"))
+        && raw_tokens
+            .iter()
+            .any(|t| !t.starts_with('-') && is_windows_drive_root_glob(t))
+    {
+        return Some("del at a drive root deletes everything there");
+    }
     if has("format") && tokens.iter().any(|t| t.len() == 2 && t.ends_with(':')) {
         return Some("format wipes a drive");
     }
-    if (has("remove-item") || has("ri") || has("rm"))
-        && tokens.iter().any(|t| t.starts_with("-rec"))
-        && tokens.iter().any(|t| t.starts_with("-for") || *t == "-f")
+    // PowerShell volume/disk wipes — the cmdlet analog of `format`/`mkfs`.
+    if has("format-volume") || has("clear-disk") {
+        return Some("Format-Volume/Clear-Disk erases a volume or disk");
+    }
+    // PowerShell tree delete: `Remove-Item -Recurse -Force` and any unambiguous
+    // prefix abbreviation. The old `-rec`/`-for` substring test missed `-r`,
+    // `-fo`, and the spelled-out `-recurse`/`-force`. `remove-item`/`ri` are
+    // PowerShell-only, so any `-r…` + `-f…` flags it. The `rm` alias is shared
+    // with Unix, where `rm -r -f node_modules` is a routine cleanup — so for `rm`
+    // require a distinctive `-fo…` force flag (never the bare Unix `-f`) to avoid
+    // an override prompt on every Unix recursive delete.
+    let ps_recurse = tokens.iter().any(|t| is_ps_param(t, "-recurse"));
+    if ps_recurse
+        && (has("remove-item") || has("ri"))
+        && tokens.iter().any(|t| is_ps_param(t, "-force"))
+    {
+        return Some("Remove-Item -Recurse -Force deletes a directory tree");
+    }
+    if ps_recurse
+        && has("rm")
+        && tokens
+            .iter()
+            .any(|t| t.len() >= 3 && is_ps_param(t, "-force"))
     {
         return Some("Remove-Item -Recurse -Force deletes a directory tree");
     }
     None
+}
+
+/// A PowerShell parameter written as `-Name` or any prefix abbreviation down to
+/// `-` + one letter (PowerShell resolves `-Recurse` from `-r`/`-rec`/`-recurse`
+/// when unambiguous). `tok` and `full` are lowercase; `full` includes the dash.
+fn is_ps_param(tok: &str, full: &str) -> bool {
+    tok.len() >= 2 && full.starts_with(tok)
+}
+
+/// A Windows drive-root wildcard (`c:\*`, `c:\*.*`, `c:/*`, or a bare `\*` on the
+/// current drive) — `del`/`erase` against it wipes the root's files, the cmd.exe
+/// analog of `rm -rf /*`. A plain `del *` (current dir) is deliberately excluded,
+/// matching the Unix side leaving `rm *` (no recurse) unflagged. `target` is
+/// lowercase and comes from `raw_tokens` so the `\` root anchor survives.
+fn is_windows_drive_root_glob(target: &str) -> bool {
+    let rest = match target.split_once(':') {
+        Some((drive, rest))
+            if drive.len() == 1 && drive.chars().all(|c| c.is_ascii_alphabetic()) =>
+        {
+            rest
+        }
+        Some(_) => return false,
+        None => target,
+    };
+    matches!(rest, "\\*" | "\\*.*" | "/*" | "/*.*")
 }
 
 /// Known command-wrappers that re-launch a following command word, so the real

@@ -232,6 +232,18 @@ fn classify_danger_flags_destructive_patterns() {
         "rd /s /q C:\\data",
         "format c:",
         "Remove-Item -Recurse -Force C:\\data",
+        // PowerShell volume/disk wipes.
+        "Format-Volume -DriveLetter C",
+        "Clear-Disk -Number 0 -RemoveData -Confirm:$false",
+        // Remove-Item abbreviations the old -rec/-for substring test missed.
+        "ri -r -fo C:\\data",
+        "rm -r -fo C:\\data",
+        "Remove-Item -r -force C:\\data",
+        "remove-item -recurse -fo C:\\data",
+        // del/erase at a drive root, no /s.
+        "del c:\\* /q",
+        "del /q C:\\*.*",
+        "erase \\*",
     ] {
         assert!(classify_danger(cmd).is_some(), "expected `{cmd}` flagged");
     }
@@ -314,6 +326,15 @@ fn classify_danger_does_not_flag_common_commands() {
         // del/rmdir/Remove-Item of a single entry (no /s, no -Recurse) is benign.
         "del temp.txt",
         "Remove-Item temp.txt",
+        // -Recurse without -Force, and a current-dir glob, are not tree wipes.
+        "Remove-Item -Recurse build",
+        "del *.tmp",
+        "del report.txt",
+        "Format-List",
+        // The Unix `rm -r -f <safe-target>` cleanup must NOT trip the PowerShell
+        // abbreviation rule (bare -f is not a distinctive PowerShell force flag).
+        "rm -r -f node_modules",
+        "rm -r -f build/cache",
     ] {
         assert!(classify_danger(cmd).is_none(), "expected `{cmd}` safe");
     }
