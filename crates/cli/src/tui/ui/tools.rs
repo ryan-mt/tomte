@@ -105,30 +105,19 @@ pub(super) fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
 
     const GAP: usize = 3; // columns between the sprite and the text column
     const MIN_GAP: usize = 2; // min columns between the body and a right value
-    const MIN_TEXT: usize = 50; // keep the banner comfortably wide
 
-    // Widest row laid out as `prefix body ⟨gap⟩ right`.
-    let natural_text = rows
-        .iter()
-        .map(|r| {
-            let rw = r.right.chars().count();
-            let body = r.body.chars().count();
-            r.prefix_w + body + if rw > 0 { MIN_GAP + rw } else { 0 }
-        })
-        .max()
-        .unwrap_or(0);
-
-    // A roomy text column, but never wider than the terminal can actually hold:
-    // a full line is `inner_width + 6` (2 margin + 2 borders + 2 inner spaces),
-    // and inner_width = pet_w + GAP + text_w. last_width is 0 before the first
-    // real draw — assume 80 then.
+    // Span the full terminal width so a wide terminal doesn't leave a large
+    // empty gutter beside the card: the text column simply takes all the width
+    // left after the sprite. A full line is `inner_width + 6` (2 margin + 2
+    // borders + 2 inner spaces), and inner_width = pet_w + GAP + text_w.
+    // last_width is 0 before the first real draw — assume 80 then; over-long
+    // rows are trimmed per row below.
     let term_width = if app.last_width == 0 {
         80
     } else {
         app.last_width as usize
     };
-    let text_cap = term_width.saturating_sub(6 + pet_w + GAP).max(8);
-    let text_w = natural_text.max(MIN_TEXT).min(text_cap);
+    let text_w = term_width.saturating_sub(6 + pet_w + GAP).max(8);
     let inner_width = pet_w + GAP + text_w;
     let horiz: String = "─".repeat(inner_width + 2);
 
