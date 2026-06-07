@@ -4,7 +4,11 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-bin_input="${TOMTE_BIN:-target/release/tomte}"
+case "$(rustc -vV | awk '/^host: / { print $2; exit }')" in
+  *windows*) exe_suffix=".exe" ;;
+  *) exe_suffix="" ;;
+esac
+bin_input="${TOMTE_BIN:-target/release/tomte${exe_suffix}}"
 timeout_cmd="${TOMTE_SMOKE_TIMEOUT:-180s}"
 
 fail() {
@@ -100,7 +104,7 @@ fi
 extract_dir="$tmp_root/package"
 mkdir -p "$extract_dir"
 tar -xzf "$archive" -C "$extract_dir"
-packaged_bin="$(find "$extract_dir" -type f -name tomte -perm -111 -print -quit)"
+packaged_bin="$(find "$extract_dir" -type f \( -name tomte -o -name tomte.exe \) -print -quit)"
 [[ -n "$packaged_bin" ]] || fail "packaged tomte binary missing"
 packaged_version="$("$packaged_bin" --version)"
 contains "$packaged_version" "tomte $version" || fail "packaged binary version mismatch: $packaged_version"
