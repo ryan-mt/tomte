@@ -1,4 +1,4 @@
-//! Function-call-id tests (fcid_b), split out of `agent`.
+//! Tool-call wrapper / function-call-id extraction tests.
 
 use super::*;
 use std::collections::HashMap;

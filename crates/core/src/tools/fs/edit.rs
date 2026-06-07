@@ -121,7 +121,8 @@ Parameters:\n\
         let original = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("read {}", path.display()))?;
-        let count = original.matches(&a.old_string).count();
+        let (old_string, new_string) = match_line_endings(&original, &a.old_string, &a.new_string);
+        let count = original.matches(&old_string).count();
         if count == 0 {
             return Err(anyhow!("old_string not found in {}", path.display()));
         }
@@ -131,9 +132,9 @@ Parameters:\n\
             ));
         }
         let new_content = if a.replace_all {
-            original.replace(&a.old_string, &a.new_string)
+            original.replace(&old_string, &new_string)
         } else {
-            original.replacen(&a.old_string, &a.new_string, 1)
+            original.replacen(&old_string, &new_string, 1)
         };
         // Atomic write: stage in a sibling tempfile, then rename. Prevents the
         // "killed mid-write -> file is now empty or half-written" failure mode.
@@ -285,7 +286,9 @@ Parameters:\n\
                     i + 1
                 ));
             }
-            let count = content.matches(&edit.old_string).count();
+            let (old_string, new_string) =
+                match_line_endings(&content, &edit.old_string, &edit.new_string);
+            let count = content.matches(&old_string).count();
             if count == 0 {
                 return Err(anyhow!(
                     "edit #{}: old_string not found in {}",
@@ -301,10 +304,10 @@ Parameters:\n\
             }
             content = if edit.replace_all {
                 total_replacements += count;
-                content.replace(&edit.old_string, &edit.new_string)
+                content.replace(&old_string, &new_string)
             } else {
                 total_replacements += 1;
-                content.replacen(&edit.old_string, &edit.new_string, 1)
+                content.replacen(&old_string, &new_string, 1)
             };
         }
         let tmp = path.with_extension(format!("medit-{}.tmp", rand_suffix()));
@@ -329,4 +332,28 @@ Parameters:\n\
             path.display()
         ))
     }
+}
+
+/// Reconcile an edit's line endings with the file's. `read_file` renders content
+/// through `str::lines`, which strips `\r`, so on a CRLF file the model can only
+/// build an `\n`-joined `old_string` that won't match the `\r\n` bytes on disk.
+/// When the haystack uses CRLF and the `\n`-joined `old_string` doesn't match
+/// verbatim, translate both strings to CRLF so the match succeeds and the file's
+/// endings are preserved. A file that is already LF — or an `old_string` that
+/// matches verbatim — is returned unchanged, so this never alters a working edit.
+fn match_line_endings(haystack: &str, old: &str, new: &str) -> (String, String) {
+    if haystack.contains("\r\n")
+        && old.contains('\n')
+        && !old.contains("\r\n")
+        && !haystack.contains(old)
+    {
+        (lf_to_crlf(old), lf_to_crlf(new))
+    } else {
+        (old.to_string(), new.to_string())
+    }
+}
+
+/// Convert every line ending in `s` to CRLF without doubling an existing CRLF.
+fn lf_to_crlf(s: &str) -> String {
+    s.replace("\r\n", "\n").replace('\n', "\r\n")
 }

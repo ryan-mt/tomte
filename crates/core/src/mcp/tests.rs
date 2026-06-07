@@ -1,5 +1,30 @@
 use super::*;
 
+#[cfg(windows)]
+#[test]
+fn resolve_windows_program_finds_cmd_shim_via_pathext() {
+    // The canonical MCP config uses a bare `npx`, which on Windows is a `.cmd`
+    // shim CreateProcessW won't find. The resolver must locate it via PATHEXT.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("mytool.cmd"), "@echo off\n").unwrap();
+    let path = std::ffi::OsString::from(dir.path());
+    let resolved =
+        resolve_program_in("mytool", &path, ".COM;.EXE;.BAT;.CMD").expect("should resolve shim");
+    assert!(
+        resolved
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("mytool.cmd"),
+        "got: {resolved:?}"
+    );
+    // A name that already carries an extension or a path is used verbatim.
+    assert!(resolve_program_in("mytool.exe", &path, ".CMD").is_none());
+    assert!(resolve_program_in(r"C:\abs\mytool", &path, ".CMD").is_none());
+    // An unfindable bare name resolves to nothing (caller keeps the original).
+    assert!(resolve_program_in("does-not-exist-xyz", &path, ".CMD").is_none());
+}
+
 #[cfg(unix)]
 fn sh_quote(path: &std::path::Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))

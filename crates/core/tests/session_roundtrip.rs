@@ -1,8 +1,11 @@
 //! Integration test for session persistence: save records to a scratch
-//! `XDG_CONFIG_HOME`, then exercise list + load + the not-found path.
+//! `TOMTE_CONFIG_DIR`, then exercise list + load + the not-found path.
 //!
-//! Cargo runs integration tests in parallel by default. `set_var` is process-
-//! global, so each `#[test]` racing on `XDG_CONFIG_HOME` would corrupt every
+//! We override `TOMTE_CONFIG_DIR` (honored on every platform) rather than
+//! `XDG_CONFIG_HOME` (which `dirs` reads only on Unix, so on Windows the test
+//! would silently write to the real `%APPDATA%` and accumulate sessions across
+//! runs). Cargo runs integration tests in parallel by default and `set_var` is
+//! process-global, so each `#[test]` racing on the override would corrupt every
 //! other test's view of the sessions directory. We collapse the coverage into
 //! a single function so the env override is set once and used serially.
 
@@ -47,7 +50,7 @@ fn record(cwd: &Path, id: &str, ts: u64) -> SessionRecord {
 #[test]
 fn session_save_load_list_and_missing_id() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+    std::env::set_var("TOMTE_CONFIG_DIR", tmp.path());
 
     let cwd_a = PathBuf::from("/tmp/tomte-test-proj-a");
     let cwd_b = PathBuf::from("/tmp/tomte-test-proj-b");

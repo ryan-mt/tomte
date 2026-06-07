@@ -226,6 +226,83 @@ async fn grep_fallback_rejects_unsupported_glob_instead_of_ignoring_it() {
 }
 
 #[tokio::test]
+async fn native_fallback_searches_when_neither_rg_nor_grep_exists() {
+    // Stock Windows box: neither ripgrep nor an external grep can be spawned.
+    // The native fallback must still search, across all three output modes,
+    // with cwd-relative forward-slash paths and before/after context.
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "a.txt", "hello\nworld\n");
+    write(dir.path(), "b.txt", "no match here\n");
+    write(dir.path(), "c/d.txt", "say hello again\n");
+    let missing = missing_rg(dir.path());
+    let cx = ctx(dir.path().to_path_buf());
+
+    // content
+    let out = execute_grep_with_commands(&grep_args("hello"), &cx, &missing, &missing)
+        .await
+        .unwrap();
+    assert!(out.contains("a.txt:1:hello"), "got: {out}");
+    assert!(out.contains("c/d.txt:1:say hello again"), "got: {out}");
+    assert!(!out.contains("b.txt"), "got: {out}");
+
+    // files_with_matches
+    let mut fargs = grep_args("hello");
+    fargs.output_mode = Some("files_with_matches".to_string());
+    let out = execute_grep_with_commands(&fargs, &cx, &missing, &missing)
+        .await
+        .unwrap();
+    let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+    assert!(lines.contains(&"a.txt"), "got: {out}");
+    assert!(lines.contains(&"c/d.txt"), "got: {out}");
+    assert!(!lines.iter().any(|l| l.contains("b.txt")), "got: {out}");
+
+    // count
+    let mut cargs = grep_args("hello");
+    cargs.output_mode = Some("count".to_string());
+    let out = execute_grep_with_commands(&cargs, &cx, &missing, &missing)
+        .await
+        .unwrap();
+    assert!(out.contains("a.txt:1"), "got: {out}");
+    assert!(out.contains("c/d.txt:1"), "got: {out}");
+    assert!(!out.contains("b.txt"), "got: {out}");
+
+    // before/after context: the context line uses a `-` separator.
+    let mut xargs = grep_args("hello");
+    xargs.context_after = Some(1);
+    let out = execute_grep_with_commands(&xargs, &cx, &missing, &missing)
+        .await
+        .unwrap();
+    assert!(out.contains("a.txt:1:hello"), "got: {out}");
+    assert!(out.contains("a.txt:2-world"), "got: {out}");
+}
+
+#[tokio::test]
+async fn native_fallback_scopes_to_path_and_surfaces_invalid_regex() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "src/lib.rs", "needle\n");
+    write(dir.path(), "other/x.rs", "needle\n");
+    let missing = missing_rg(dir.path());
+    let cx = ctx(dir.path().to_path_buf());
+
+    let mut args = grep_args("needle");
+    args.path = Some("src".to_string());
+    let out = execute_grep_with_commands(&args, &cx, &missing, &missing)
+        .await
+        .unwrap();
+    assert!(out.contains("src/lib.rs:1:needle"), "got: {out}");
+    assert!(
+        !out.contains("other/"),
+        "path scope must exclude other/: {out}"
+    );
+
+    // An invalid regex must surface an error, not silent empty output.
+    let err = execute_grep_with_commands(&grep_args("("), &cx, &missing, &missing)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("invalid regex"), "got: {err}");
+}
+
+#[tokio::test]
 async fn grep_head_limit_caps_output_lines() {
     if !rg_available() {
         return;

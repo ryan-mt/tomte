@@ -1,4 +1,4 @@
-//! fs tool tests (part 1: read/write), split out of `fs`.
+//! fs tool tests: `read_file` and `write_file`.
 
 use super::test_support::{ctx, read_args};
 use super::*;

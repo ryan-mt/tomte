@@ -119,6 +119,34 @@ pub(super) fn path_to_slash_string(path: &std::path::Path) -> String {
     normalize_path_separators(&path.to_string_lossy())
 }
 
+/// Recursively collect every file under `root` as a `/`-separated path relative
+/// to `root`, skipping any `.git` directory (mirroring ripgrep's `!.git`).
+/// Symlinked directories are not descended into, so the walk cannot loop. Used
+/// by the no-ripgrep fallbacks of both `glob` and `grep`; errors reading a
+/// directory are skipped so a single unreadable subtree never aborts the listing.
+pub(super) fn walk_files_relative(root: &std::path::Path, out: &mut Vec<String>) {
+    fn recurse(base: &std::path::Path, rel: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(base.join(rel)) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name == ".git" {
+                continue;
+            }
+            let child = rel.join(&name);
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => recurse(base, &child, out),
+                Ok(ft) if ft.is_file() => {
+                    out.push(normalize_path_separators(&child.to_string_lossy()));
+                }
+                _ => {}
+            }
+        }
+    }
+    recurse(root, std::path::Path::new(""), out);
+}
+
 pub(super) fn normalize_path_separators(path: &str) -> String {
     path.replace('\\', "/")
 }

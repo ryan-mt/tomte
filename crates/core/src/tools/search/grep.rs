@@ -10,8 +10,8 @@ use tokio::process::Command;
 use crate::tools::{BuiltinTool, ToolContext};
 
 use super::shared::{
-    apply_limits, normalize_search_output_paths, resolved_relative_to_cwd, run_capped,
-    SEARCH_OUTPUT_CAP_BYTES,
+    apply_limits, normalize_path_separators, normalize_search_output_paths,
+    resolved_relative_to_cwd, run_capped, walk_files_relative, SEARCH_OUTPUT_CAP_BYTES,
 };
 
 pub struct Grep;
@@ -274,7 +274,13 @@ async fn execute_grep_with_commands(
         None => grep.arg("."),
     };
     grep.current_dir(&ctx.cwd);
-    let (out, overran) = run_capped(grep, SEARCH_OUTPUT_CAP_BYTES).await?;
+    let (out, overran) = match run_capped(grep, SEARCH_OUTPUT_CAP_BYTES).await {
+        Ok(v) => v,
+        // Neither ripgrep nor an external `grep` could be spawned (e.g. a stock
+        // Windows box with no Unix tooling): fall back to a native, dependency-
+        // free search instead of erroring out.
+        Err(_) => return native_grep_search(a, ctx, mode, context_before, context_after),
+    };
     if !overran && !out.status.success() && out.status.code() != Some(1) {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let msg = stderr.trim();
@@ -290,6 +296,119 @@ async fn execute_grep_with_commands(
         stdout
     };
     Ok(apply_limits(&stdout, a.head_limit, a.offset, 8000))
+}
+
+/// Native, dependency-free search used only when neither ripgrep nor an
+/// external `grep` can be spawned (e.g. a stock Windows box with no Unix
+/// tooling). Covers the same plain-pattern subset the external `grep` fallback
+/// does — `glob`, `file_type`, and `multiline` are rejected before we get here —
+/// and emits ripgrep-shaped lines (`path:lineno:text`, with `path:lineno-text`
+/// context lines and `--` group separators) so the shared limiter applies
+/// unchanged. Binary (NUL-containing), unreadable, or very large files are
+/// skipped, matching grep/ripgrep's defaults.
+fn native_grep_search(
+    a: &GrepArgs,
+    ctx: &ToolContext,
+    mode: &str,
+    context_before: Option<usize>,
+    context_after: Option<usize>,
+) -> Result<String> {
+    let re = regex::RegexBuilder::new(&a.pattern)
+        .case_insensitive(a.case_insensitive)
+        .build()
+        .map_err(|e| anyhow::anyhow!("invalid regex: {e}"))?;
+
+    // File list as forward-slash paths relative to ctx.cwd, scoped to `path`.
+    let rel_root = match a.path.as_deref() {
+        Some(p) => resolved_relative_to_cwd(&ctx.cwd, p)?,
+        None => std::path::PathBuf::new(),
+    };
+    let abs_root = ctx.cwd.join(&rel_root);
+    let prefix = normalize_path_separators(&rel_root.to_string_lossy());
+    let mut files: Vec<String> = Vec::new();
+    if abs_root.is_file() {
+        files.push(prefix.clone());
+    } else {
+        let mut found = Vec::new();
+        walk_files_relative(&abs_root, &mut found);
+        for f in found {
+            files.push(if prefix.is_empty() {
+                f
+            } else {
+                format!("{prefix}/{f}")
+            });
+        }
+    }
+    files.sort();
+
+    let before = context_before.unwrap_or(0);
+    let after = context_after.unwrap_or(0);
+    let mut out = String::new();
+    for rel in &files {
+        let abs = ctx.cwd.join(rel);
+        let Ok(meta) = std::fs::metadata(&abs) else {
+            continue;
+        };
+        if meta.len() > 50 * 1024 * 1024 {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&abs) else {
+            continue;
+        };
+        if bytes.contains(&0) {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let lines: Vec<&str> = text.lines().collect();
+        match mode {
+            "files_with_matches" => {
+                if lines.iter().any(|l| re.is_match(l)) {
+                    out.push_str(rel);
+                    out.push('\n');
+                }
+            }
+            "count" => {
+                let n = lines.iter().filter(|l| re.is_match(l)).count();
+                if n > 0 {
+                    out.push_str(&format!("{rel}:{n}\n"));
+                }
+            }
+            _ => {
+                let n = lines.len();
+                let mut want = vec![false; n];
+                let mut is_match = vec![false; n];
+                for (i, line) in lines.iter().enumerate() {
+                    if re.is_match(line) {
+                        is_match[i] = true;
+                        let lo = i.saturating_sub(before);
+                        let hi = (i + after).min(n.saturating_sub(1));
+                        for w in want.iter_mut().take(hi + 1).skip(lo) {
+                            *w = true;
+                        }
+                    }
+                }
+                let mut prev: Option<usize> = None;
+                for i in 0..n {
+                    if !want[i] {
+                        continue;
+                    }
+                    if prev.is_some_and(|p| i > p + 1) {
+                        out.push_str("--\n");
+                    }
+                    let sep = if is_match[i] { ':' } else { '-' };
+                    out.push_str(&format!("{rel}:{}{}{}\n", i + 1, sep, lines[i]));
+                    prev = Some(i);
+                }
+            }
+        }
+    }
+
+    Ok(apply_limits(
+        out.trim_end_matches('\n'),
+        a.head_limit,
+        a.offset,
+        8000,
+    ))
 }
 
 fn normalize_grep_output_mode(mode: Option<&str>) -> Option<&'static str> {

@@ -1,4 +1,4 @@
-//! App tests (part c), split out of `app`.
+//! App tests: plan-mode entry/exit gating and its interaction with active goals.
 
 use super::*;
 

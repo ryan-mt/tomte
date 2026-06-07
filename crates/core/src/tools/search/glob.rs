@@ -1,5 +1,5 @@
 //! The `glob` tool: list files matching a glob pattern via ripgrep
-//! `--files` with a `find` fallback. Split out of `search`; logic unchanged.
+//! `--files` with a native recursive-walk fallback. Split out of `search`.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -9,7 +9,9 @@ use tokio::process::Command;
 
 use crate::tools::{BuiltinTool, ToolContext};
 
-use super::shared::{apply_limits, normalize_path_separators, path_to_slash_string};
+use super::shared::{
+    apply_limits, normalize_path_separators, path_to_slash_string, walk_files_relative,
+};
 
 pub struct Glob;
 
@@ -114,28 +116,17 @@ Parameters:\n\
         let files: Vec<String> = if let Some(r) = raw {
             r
         } else {
-            // No ripgrep: enumerate files with `find`, then filter in-process
-            // with a matcher that respects path structure. The previous
-            // `-name <basename>` degraded `src/**/*.rs` to matching `*.rs` in
-            // every directory and dropped any pattern containing a slash
-            // (`-name` never matches a `/`).
-            let mut find = Command::new("find");
-            find.arg(".")
-                .arg("-path")
-                .arg("./.git")
-                .arg("-prune")
-                .arg("-o")
-                .arg("-type")
-                .arg("f")
-                .arg("-print")
-                .current_dir(&cwd);
-            crate::secret_env::scrub_secret_env(&mut find);
-            let find_out = find.output().await?;
-            String::from_utf8_lossy(&find_out.stdout)
-                .lines()
-                .filter(|l| !l.is_empty())
-                .filter(|l| glob_fallback_matches(&a.pattern, l.strip_prefix("./").unwrap_or(l)))
-                .map(|s| s.to_string())
+            // No ripgrep: enumerate files with a native recursive walk, then
+            // filter in-process with a matcher that respects path structure.
+            // A native walk works identically on every platform — the Unix
+            // `find` this used to shell out to is absent on Windows (or worse,
+            // resolves to System32's unrelated `find.exe`), which silently
+            // returned no results there.
+            let mut found = Vec::new();
+            walk_files_relative(&cwd, &mut found);
+            found
+                .into_iter()
+                .filter(|l| glob_fallback_matches(&a.pattern, l))
                 .collect()
         };
 
@@ -350,5 +341,27 @@ mod tests {
         // A pattern without a slash matches the basename at any depth.
         assert!(glob_fallback_matches("*.rs", "a/b/c.rs"));
         assert!(!glob_fallback_matches("*.rs", "a/b/c.tsx"));
+    }
+
+    #[test]
+    fn walk_collects_files_recursively_with_forward_slashes_and_skips_git() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.rs", "x");
+        write(dir.path(), "sub/b.rs", "y");
+        write(dir.path(), "sub/deep/c.txt", "z");
+        // A `.git` directory must be skipped entirely (mirrors rg's `!.git`).
+        write(dir.path(), ".git/config", "ignored");
+        let mut found = Vec::new();
+        walk_files_relative(dir.path(), &mut found);
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                "a.rs".to_string(),
+                "sub/b.rs".to_string(),
+                "sub/deep/c.txt".to_string(),
+            ],
+            "walk must recurse, use forward slashes, and skip .git"
+        );
     }
 }

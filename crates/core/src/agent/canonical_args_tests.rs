@@ -1,4 +1,4 @@
-//! Function-call-id tests (fcid_c), split out of `agent`.
+//! Tool-argument canonicalization (`history_tool_arguments`) tests.
 
 use super::*;
 

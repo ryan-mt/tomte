@@ -1,6 +1,7 @@
-//! `/slash` command dispatch (part 1: help..goal) and command parsing.
-//! The handler is chained across slash{,2,3}.rs by command group to keep each
-//! file small while preserving the original match order. Logic unchanged.
+//! `/slash` command entry point and parsing. The handler is chained across
+//! `slash.rs` → `slash_ops.rs` → `slash_meta.rs` by command group to keep each
+//! file small while preserving the original match order: this file matches the
+//! setup/auth/model commands, then delegates the rest down the chain.
 
 use super::*;
 
@@ -325,7 +326,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                 }
             }
         }
-        _ => handle_slash_2(app, head, arg).await,
+        _ => handle_slash_ops(app, head, arg).await,
     }
 }
 

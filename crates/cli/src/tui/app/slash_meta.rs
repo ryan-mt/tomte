@@ -1,9 +1,10 @@
-//! `/slash` command dispatch (part 3: todos..commands + unknown fallback).
-//! Chained from `handle_slash_2`; preserves match order. Logic unchanged.
+//! `/slash` command dispatch — meta/info commands (todos, about, agents,
+//! skills, commands, quit) plus the unknown-command fallback. The final link in
+//! the chain from `handle_slash` → `handle_slash_ops`; preserves match order.
 
 use super::*;
 
-pub async fn handle_slash_3(app: &mut App, head: &str, arg: &str) {
+pub async fn handle_slash_meta(app: &mut App, head: &str, arg: &str) {
     match head {
         "todos" | "todo" => {
             if app.session_todos.is_empty() {

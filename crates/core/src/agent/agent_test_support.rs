@@ -1,4 +1,4 @@
-//! Shared helpers for the function-call-id test groups.
+//! Shared helpers for the agent unit-test groups.
 
 use std::collections::HashMap;
 

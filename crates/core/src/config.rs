@@ -227,6 +227,16 @@ impl Default for Config {
 }
 
 pub fn config_dir() -> PathBuf {
+    // An explicit `TOMTE_CONFIG_DIR` relocates the whole config tree (config,
+    // auth, sessions, logs). Used by power users to keep state off the default
+    // OS location, and by tests to isolate onto a scratch dir on every platform
+    // — `dirs::config_dir()` only honors `XDG_CONFIG_HOME` on Unix, so a Windows
+    // test that set that alone would silently write to the real `%APPDATA%`.
+    if let Some(dir) = std::env::var_os("TOMTE_CONFIG_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
     // Never fall back to the current working directory: that risks writing
     // `auth.json` (OAuth tokens) into a project checkout that then gets
     // git-committed. Prefer the OS config dir, then `~/.config`, then a temp

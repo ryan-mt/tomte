@@ -161,6 +161,42 @@ impl Drop for McpState {
     }
 }
 
+/// Resolve a bare program name (e.g. `npx`) to a concrete executable on Windows
+/// by searching PATH × PATHEXT, the way a shell does. `CreateProcessW` (which
+/// Rust's `Command` uses) only appends `.exe`, so `npx`/`pnpm`/`node`-style
+/// shims that live as `.cmd`/`.bat` are otherwise unspawnable. Returns `None`
+/// for a command that already carries a path or extension (used verbatim) or
+/// that can't be found (caller falls back to the original name and its error).
+#[cfg(windows)]
+fn resolve_windows_program(command: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    resolve_program_in(command, &path, &pathext)
+}
+
+/// PATH×PATHEXT resolution as a pure function so it can be tested without
+/// mutating the process environment.
+#[cfg(windows)]
+fn resolve_program_in(
+    command: &str,
+    path: &std::ffi::OsStr,
+    pathext: &str,
+) -> Option<std::path::PathBuf> {
+    // A command that already names a path or an extension is used as-is.
+    if command.contains(['/', '\\']) || std::path::Path::new(command).extension().is_some() {
+        return None;
+    }
+    for dir in std::env::split_paths(path) {
+        for ext in pathext.split(';').filter(|e| !e.is_empty()) {
+            let candidate = dir.join(format!("{command}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 impl McpClient {
     /// Spawn a new server, perform the `initialize` handshake, and list its
     /// tools. Returns a ready-to-use client.
@@ -173,7 +209,18 @@ impl McpClient {
         config: McpServerConfig,
         request_timeout: Duration,
     ) -> Result<Self> {
-        let mut cmd = Command::new(&config.command);
+        // On Windows the canonical MCP config — `"command": "npx"` — names a
+        // `.cmd` shim, but `CreateProcessW` only appends `.exe`, so a bare name
+        // never resolves and every npx/node-wrapped server fails to spawn.
+        // Resolve it against PATH+PATHEXT to the real `.cmd`/`.bat`/`.exe`;
+        // already-qualified commands and all non-Windows targets are unchanged.
+        #[cfg(windows)]
+        let program: std::ffi::OsString = resolve_windows_program(&config.command)
+            .map(Into::into)
+            .unwrap_or_else(|| config.command.clone().into());
+        #[cfg(not(windows))]
+        let program: std::ffi::OsString = config.command.clone().into();
+        let mut cmd = Command::new(&program);
         cmd.args(&config.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

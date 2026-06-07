@@ -50,8 +50,8 @@ mod overlay;
 mod prompts;
 mod resume;
 mod slash;
-mod slash2;
-mod slash3;
+mod slash_meta;
+mod slash_ops;
 mod summary;
 mod turn;
 mod types;
@@ -67,17 +67,17 @@ pub use overlay::*;
 pub use prompts::*;
 pub use resume::*;
 pub use slash::*;
-pub use slash2::*;
-pub use slash3::*;
+pub use slash_meta::*;
+pub use slash_ops::*;
 pub use summary::*;
 pub use turn::*;
 pub use types::*;
 
 #[cfg(test)]
-mod tests_a;
+mod app_behavior_tests;
 #[cfg(test)]
-mod tests_b;
+mod app_goal_todo_tests;
 #[cfg(test)]
-mod tests_c;
+mod app_plan_mode_tests;
 #[cfg(test)]
-mod tests_common;
+mod app_test_support;

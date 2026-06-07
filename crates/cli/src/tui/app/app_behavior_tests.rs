@@ -1,6 +1,7 @@
-//! App tests (part a), split out of `app`.
+//! App tests: general behavior — slash parsing, cwd, context/usage rendering,
+//! markdown export, streaming/commit, and goal/session snapshots.
 
-use super::tests_common::*;
+use super::app_test_support::*;
 use super::*;
 
 // Regression: agent-locking deferred ops (resume/undo) must be blocked while

@@ -12,11 +12,11 @@ mod undo;
 mod write;
 
 #[cfg(test)]
+mod edit_undo_tests;
+#[cfg(test)]
+mod read_write_tests;
+#[cfg(test)]
 mod test_support;
-#[cfg(test)]
-mod tests_a;
-#[cfg(test)]
-mod tests_b;
 
 pub use edit::{EditFile, MultiEdit};
 pub use list::ListDir;

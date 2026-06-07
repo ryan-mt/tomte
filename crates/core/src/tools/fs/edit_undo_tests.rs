@@ -1,4 +1,4 @@
-//! fs tool tests (part 2: edit/undo/permissions), split out of `fs`.
+//! fs tool tests: `edit_file`/`multi_edit`, undo, and permission preservation.
 
 use super::test_support::ctx;
 use super::*;
@@ -227,6 +227,58 @@ async fn write_then_edit_without_reread_succeeds() {
     assert_eq!(
         std::fs::read_to_string(dir.path().join("gen.txt")).unwrap(),
         "fn run() {}"
+    );
+}
+
+#[tokio::test]
+async fn edit_file_matches_across_crlf_line_endings() {
+    // A CRLF file: read_file strips the `\r` (str::lines), so the model can only
+    // ever build an `\n`-joined old_string. edit_file must still match it against
+    // the CRLF bytes on disk and preserve CRLF on write — otherwise every
+    // multi-line edit to a Windows-style file fails with "old_string not found".
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("crlf.txt"), "alpha\r\nbeta\r\ngamma\r\n").unwrap();
+    let ctx = ctx(dir.path().to_path_buf());
+    ReadFile
+        .execute(json!({"path": "crlf.txt"}), &ctx)
+        .await
+        .unwrap();
+    EditFile
+        .execute(
+            json!({"path": "crlf.txt", "old_string": "alpha\nbeta", "new_string": "ALPHA\nBETA"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("crlf.txt")).unwrap(),
+        "ALPHA\r\nBETA\r\ngamma\r\n",
+        "the edited region is rewritten and CRLF endings are preserved"
+    );
+}
+
+#[tokio::test]
+async fn multi_edit_matches_across_crlf_line_endings() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("crlf.txt"), "one\r\ntwo\r\nthree\r\n").unwrap();
+    let ctx = ctx(dir.path().to_path_buf());
+    ReadFile
+        .execute(json!({"path": "crlf.txt"}), &ctx)
+        .await
+        .unwrap();
+    MultiEdit
+        .execute(
+            json!({"path": "crlf.txt", "edits": [
+                {"old_string": "one\ntwo", "new_string": "1\n2"},
+                {"old_string": "three", "new_string": "3"},
+            ]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("crlf.txt")).unwrap(),
+        "1\r\n2\r\n3\r\n"
     );
 }
 

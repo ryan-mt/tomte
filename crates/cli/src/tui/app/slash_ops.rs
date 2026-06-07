@@ -1,9 +1,11 @@
-//! `/slash` command dispatch (part 2: plan..compact). Chained from
-//! `handle_slash`; preserves match order. Logic unchanged.
+//! `/slash` command dispatch — session & repo operations (modes, approvals,
+//! undo, cost/usage, config, git, export). Chained from `handle_slash`;
+//! preserves the original match order, and delegates the rest to
+//! `handle_slash_meta`.
 
 use super::*;
 
-pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
+pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
     match head {
         "plan" => {
             set_permission_mode_and_save(app, PermissionMode::Plan);
@@ -357,6 +359,6 @@ pub async fn handle_slash_2(app: &mut App, head: &str, arg: &str) {
                 app.pending_compact = true;
             }
         }
-        _ => handle_slash_3(app, head, arg).await,
+        _ => handle_slash_meta(app, head, arg).await,
     }
 }

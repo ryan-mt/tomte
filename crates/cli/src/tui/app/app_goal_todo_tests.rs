@@ -1,6 +1,7 @@
-//! App tests (part b), split out of `app`.
+//! App tests: active-goal lifecycle, todo snapshots, usage/commit slashes, and
+//! history recall.
 
-use super::tests_common::*;
+use super::app_test_support::*;
 use super::*;
 
 #[tokio::test]

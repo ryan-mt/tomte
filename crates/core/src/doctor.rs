@@ -398,16 +398,22 @@ fn tools_section() -> Section {
     checks.push(if rg {
         Check::ok("ripgrep (rg)")
     } else {
-        Check::warn("ripgrep (rg) not found — the grep tool falls back to slower `grep -rn`")
+        Check::warn(
+            "ripgrep (rg) not found — search falls back to grep, then a built-in walk (slower, ignores .gitignore)",
+        )
     });
-    // grep is the fallback search backend. Missing grep only matters when rg is
-    // also missing — then the grep tool has nothing to run.
+    // grep is the middle search backend; below it, glob/grep use a native,
+    // dependency-free fallback (recursive walk + in-process regex), so search
+    // still works with neither installed — just slower and without .gitignore
+    // awareness. A missing grep is therefore never a hard error.
     checks.push(if grep {
         Check::ok("grep")
     } else if rg {
         Check::info("grep not found (ripgrep present, so search still works)")
     } else {
-        Check::error("neither ripgrep (rg) nor grep found — the grep tool cannot run")
+        Check::warn(
+            "neither ripgrep (rg) nor grep found — grep/glob use a built-in fallback (slower, ignores .gitignore)",
+        )
     });
     Section {
         title: "External tools".to_string(),

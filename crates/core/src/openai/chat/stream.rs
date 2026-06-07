@@ -225,6 +225,6 @@ pub fn handle_chat_response(resp: reqwest::Response) -> StreamHandle {
 }
 
 #[cfg(test)]
-mod tests_a;
+mod stream_content_tests;
 #[cfg(test)]
-mod tests_b;
+mod stream_reasoning_tests;

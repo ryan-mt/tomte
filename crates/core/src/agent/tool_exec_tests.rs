@@ -1,6 +1,6 @@
-//! Function-call-id tests (fcid_d), split out of `agent`.
+//! Tool-execution tests: dispatch, timeouts, and safe error rendering.
 
-use super::fcid_common::*;
+use super::agent_test_support::*;
 use super::*;
 use crate::tools::BuiltinTool;
 use async_trait::async_trait;

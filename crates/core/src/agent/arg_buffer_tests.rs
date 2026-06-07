@@ -1,4 +1,4 @@
-//! Function-call-id tests (fcid_a), split out of `agent`.
+//! Streamed tool-argument buffer (`ToolArgsBuffer`) accumulation tests.
 
 use super::*;
 
