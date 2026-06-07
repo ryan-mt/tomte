@@ -175,17 +175,38 @@ pub fn save_auth(record: &AuthRecord) -> Result<()> {
 /// (the file already inherits the per-user profile ACL if this can't run).
 #[cfg(windows)]
 fn restrict_to_owner_windows(path: &std::path::Path) {
+    // Best-effort (a failure leaves the inherited per-user %APPDATA% ACL, which
+    // already excludes other standard users), but no longer SILENT: a failed or
+    // skipped tighten is logged so the degraded posture is observable instead of
+    // an invisible no-op.
     let Some(user) = current_windows_user() else {
+        tracing::warn!(
+            "credential file kept its inherited %APPDATA% ACL: could not determine the \
+             Windows user (USERNAME unset), so no explicit owner-only grant was applied"
+        );
         return;
     };
-    let _ = std::process::Command::new("icacls")
+    match std::process::Command::new("icacls")
         .arg(path)
         .arg("/inheritance:r")
         .arg("/grant:r")
         .arg(format!("{user}:(R,W)"))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
+        .status()
+    {
+        Ok(s) if s.success() => {}
+        Ok(s) => tracing::warn!(
+            code = ?s.code(),
+            "icacls could not restrict the credential file to the current user; \
+             it kept its inherited %APPDATA% ACL"
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "could not run icacls to restrict the credential file; \
+             it kept its inherited %APPDATA% ACL"
+        ),
+    }
 }
 
 /// The current user as `DOMAIN\user` (or bare `user`) for an `icacls` grant.

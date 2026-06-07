@@ -35,6 +35,20 @@ const ENV_DENYLIST_SUBSTRINGS: &[&str] = &[
     "SSH_AUTH",    // SSH_AUTH_SOCK — live ssh-agent socket (auth without a key)
     "SSH_AGENT",   // SSH_AGENT_PID and friends
     "GPG_AGENT",   // GPG_AGENT_INFO — live gpg-agent socket
+    // Secret material that does NOT follow the *_KEY / *_TOKEN / *_SECRET
+    // convention the catch-alls above already cover. Each substring below is
+    // chosen to avoid colliding with benign vars (PATH/HOME/USER/LANG/TERM/…).
+    "JWT",        // raw JSON Web Tokens
+    "BEARER",     // bearer credentials
+    "OAUTH",      // OAuth client material
+    "_SID",       // service IDs used as secrets (e.g. TWILIO_ACCOUNT_SID)
+    "SIGNING",    // signing keys/secrets
+    "ENCRYPTION", // encryption keys
+    "MNEMONIC",   // wallet seed phrases
+    "STRIPE",     // Stripe keys (sk_live_…, often unsuffixed)
+    "TWILIO",     // Twilio auth token / SID
+    "SENDGRID",   // SendGrid API credentials
+    "DOPPLER",    // Doppler secrets-manager token
 ];
 
 /// Whether an env var name looks secret enough to scrub before spawning a child
@@ -88,6 +102,17 @@ mod tests {
             "NETRC",
             "SSH_AUTH_SOCK",
             "SSH_AGENT_PID",
+            "JWT",
+            "MY_BEARER",
+            "GOOGLE_OAUTH",
+            "TWILIO_ACCOUNT_SID",
+            "REQUEST_SIGNING",
+            "DATA_ENCRYPTION",
+            "WALLET_MNEMONIC",
+            "STRIPE",
+            "TWILIO_AUTH",
+            "SENDGRID",
+            "DOPPLER",
         ] {
             assert!(is_secret_env_name(name), "should scrub {name}");
         }

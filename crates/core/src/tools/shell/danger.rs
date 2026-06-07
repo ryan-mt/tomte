@@ -85,15 +85,32 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
         && tokens
             .iter()
             .any(|t| matches!(*t, "-R" | "-r" | "--recursive") || short_flag_has(t, 'r'))
-        && tokens.iter().any(|t| *t == "/" || *t == "/*")
+        && tokens
+            .iter()
+            .any(|t| !t.starts_with('-') && is_dangerous_chmod_target(t))
     {
-        return Some("recursive chmod/chown at filesystem root");
+        return Some("recursive chmod/chown on a system, home, or root path");
     }
     if has("git") && has("push") && git_push_is_destructive(&tokens) {
         return Some("git push can rewrite or delete remote history");
     }
-    if has("git") && has("reset") && tokens.contains(&"--hard") {
-        return Some("git reset --hard discards uncommitted work");
+    if has("git")
+        && has("reset")
+        && tokens
+            .iter()
+            .any(|t| matches!(*t, "--hard" | "--merge" | "--keep"))
+    {
+        return Some("git reset --hard/--merge/--keep discards uncommitted work");
+    }
+    if has("git")
+        && has("rm")
+        && tokens.iter().any(|t| {
+            matches!(*t, "-r" | "-rf" | "-fr" | "--force")
+                || short_flag_has(t, 'r')
+                || short_flag_has(t, 'f')
+        })
+    {
+        return Some("git rm -r/-f deletes tracked files from the worktree");
     }
     if has("git") && has("clean") {
         // Plain `-f`/`--force` already deletes untracked files; the extra `d`/`x`
@@ -134,15 +151,50 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
     if has("git") && has("filter-branch") {
         return Some("git filter-branch rewrites history destructively");
     }
+    if has("git")
+        && has("worktree")
+        && tokens.contains(&"remove")
+        && tokens
+            .iter()
+            .any(|t| *t == "--force" || short_flag_has(t, 'f'))
+    {
+        return Some("git worktree remove --force discards a worktree with changes");
+    }
     const PIPE_INTERPRETERS: &[&str] = &["sh", "bash", "zsh", "dash", "python", "perl"];
-    // Split the command into pipeline stages; the first stage is the source
-    // (curl/wget), so only the downstream stages actually run the piped output.
+    // Any pipeline stage after the first that feeds bytes into a shell
+    // interpreter runs attacker-controlled output as code. Gating this on a
+    // curl/wget *source* missed every other producer (`cat x | sh`, `base64 -d
+    // | bash`, `xargs sh`), so the source is no longer required.
     let pipes_into_interpreter = lower
         .split('|')
         .skip(1)
         .any(|stage| pipe_stage_runs_interpreter(stage, PIPE_INTERPRETERS));
-    if (has("curl") || has("wget")) && pipes_into_interpreter {
-        return Some("piping curl/wget output into a shell");
+    if pipes_into_interpreter {
+        return Some("piping output into a shell interpreter");
+    }
+    // `eval`/`iex` assemble and run a command at runtime, so no literal
+    // destructive token is present at classify time. Only a command word (the
+    // start of a `;`/`|`/`&` segment) counts, so a benign `grep eval` argument
+    // is left alone.
+    for kw in ["eval", "iex", "invoke-expression"] {
+        if command_runs_keyword(&scan, kw) {
+            return Some("eval/iex runs a dynamically-assembled command");
+        }
+    }
+    // Windows cmd / PowerShell destructive verbs. The classifier runs on every
+    // platform and the Unix vocabulary above never matches these; on Windows the
+    // sandbox does not confine the filesystem, so this gate matters most there.
+    if (has("del") || has("erase") || has("rd") || has("rmdir")) && tokens.contains(&"/s") {
+        return Some("del/rd /s recursively deletes a directory tree");
+    }
+    if has("format") && tokens.iter().any(|t| t.len() == 2 && t.ends_with(':')) {
+        return Some("format wipes a drive");
+    }
+    if (has("remove-item") || has("ri") || has("rm"))
+        && tokens.iter().any(|t| t.starts_with("-rec"))
+        && tokens.iter().any(|t| t.starts_with("-for") || *t == "-f")
+    {
+        return Some("Remove-Item -Recurse -Force deletes a directory tree");
     }
     None
 }
@@ -219,6 +271,18 @@ fn is_env_assignment(token: &str) -> bool {
         }
         None => false,
     }
+}
+
+/// True when `keyword` is the command word at the start of any `;`/`|`/`&`
+/// separated segment (`eval …`, `x; eval …`, `… | iex`). An argument
+/// occurrence (`grep eval`) is ignored, so it doesn't over-flag.
+fn command_runs_keyword(scan: &str, keyword: &str) -> bool {
+    scan.split([';', '&', '|', '\n']).any(|seg| {
+        seg.split_whitespace()
+            .map(degroup)
+            .find(|w| !w.is_empty() && !w.starts_with('-') && !is_env_assignment(w))
+            .is_some_and(|w| shell_token_command_name(w) == keyword)
+    })
 }
 
 /// A raw block-device path that a write/redirect could corrupt. Kept to the
@@ -395,7 +459,7 @@ fn git_push_is_destructive(tokens: &[&str]) -> bool {
     if tokens.iter().any(|t| {
         matches!(
             *t,
-            "--force" | "-f" | "--force-with-lease" | "--mirror" | "--delete" | "-d"
+            "--force" | "-f" | "--force-with-lease" | "--mirror" | "--delete" | "-d" | "--prune"
         ) || short_flag_has(t, 'f')
     }) {
         return true;
@@ -431,9 +495,35 @@ fn is_broad_git_target(token: &str) -> bool {
     )
 }
 
+/// A recursive-`chmod`/`chown` target whose blast radius is the OS, a home dir,
+/// or the filesystem root. Unlike [`is_dangerous_rm_target`] it deliberately
+/// ignores relative targets (`.`, `*`) — a recursive mode change under the
+/// project tree is common and not worth an override prompt.
+fn is_dangerous_chmod_target(token: &str) -> bool {
+    let token = token.trim_end_matches([';', '&', '|']);
+    let literal = token.trim_matches(|c| matches!(c, '"' | '\''));
+    if literal == "/"
+        || is_root_equivalent(literal)
+        || literal.starts_with("/*")
+        || is_critical_system_path(literal)
+    {
+        return true;
+    }
+    let is_unquoted = !token.contains('"') && !token.contains('\'');
+    if is_unquoted && (literal.starts_with('~') || literal.starts_with('$')) {
+        return true;
+    }
+    token.contains('`') || token.contains("$(")
+}
+
 fn is_dangerous_rm_target(token: &str) -> bool {
     let token = token.trim_end_matches([';', '&', '|']);
     let literal = token.trim_matches(|c| matches!(c, '"' | '\''));
+    // Command substitution hides the real path at classify time (`rm -rf $(…)`,
+    // `rm -rf `…``) — err toward flagging.
+    if token.contains('`') || token.contains("$(") {
+        return true;
+    }
     if matches!(
         literal,
         "/" | "/*" | "." | "./" | "./*" | "./.*" | ".." | "../*" | ".*" | "*"

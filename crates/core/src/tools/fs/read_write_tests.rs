@@ -76,6 +76,69 @@ async fn read_file_empty_returns_system_reminder() {
 }
 
 #[tokio::test]
+async fn read_file_renders_ipynb_as_cells() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = r##"{
+      "cells": [
+        {"cell_type":"markdown","id":"md1","metadata":{},"source":["# Heading One\n"]},
+        {"cell_type":"code","id":"code1","metadata":{},"execution_count":1,
+         "source":["compute()\n"],
+         "outputs":[
+           {"output_type":"stream","name":"stdout","text":["answer=42\n"]},
+           {"output_type":"display_data","data":{"image/png":"iVBORw0KGgo="},"metadata":{}}
+         ]}
+      ],
+      "metadata":{}, "nbformat":4, "nbformat_minor":5
+    }"##;
+    std::fs::write(dir.path().join("nb.ipynb"), nb).unwrap();
+    let out = ReadFile
+        .execute(
+            read_args("nb.ipynb", None, None),
+            &ctx(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+    assert!(out.contains("Jupyter notebook (2 cells)"), "got: {out}");
+    assert!(out.contains("[cell 0 id=md1] markdown"), "got: {out}");
+    assert!(out.contains("# Heading One"), "got: {out}");
+    assert!(out.contains("[cell 1 id=code1] code"), "got: {out}");
+    assert!(out.contains("compute()"), "got: {out}");
+    assert!(out.contains("--- output ---"), "got: {out}");
+    // `answer=42` only appears in the rendered stream output.
+    assert!(out.contains("answer=42"), "got: {out}");
+    // The base64 PNG is omitted, not dumped.
+    assert!(out.contains("[image/png output omitted]"), "got: {out}");
+    assert!(
+        !out.contains("iVBORw0KGgo="),
+        "image bytes must not leak: {out}"
+    );
+    // Rendered as cells, not the raw JSON.
+    assert!(
+        !out.contains("\"cell_type\""),
+        "should not be raw JSON: {out}"
+    );
+}
+
+#[tokio::test]
+async fn read_file_ipynb_with_limit_returns_raw_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let nb = r#"{"cells":[{"cell_type":"code","id":"c0","source":["x=1\n"],"outputs":[]}],"metadata":{},"nbformat":4}"#;
+    std::fs::write(dir.path().join("nb.ipynb"), nb).unwrap();
+    // A sliced read (explicit limit) bypasses cell rendering and shows raw JSON.
+    let out = ReadFile
+        .execute(
+            read_args("nb.ipynb", None, Some(2000)),
+            &ctx(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        out.contains("\"cell_type\""),
+        "expected raw JSON slice: {out}"
+    );
+}
+
+#[tokio::test]
 async fn read_file_caps_at_default_limit_and_emits_continuation_notice() {
     let dir = tempfile::tempdir().unwrap();
     // 2500 lines: hits the 2000-line default cap, leaves 500 remaining.

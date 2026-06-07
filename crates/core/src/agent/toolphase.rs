@@ -219,11 +219,28 @@ impl Agent {
                                 precomputed.push((pc.call_id.clone(), reason, true));
                             }
                             ToolPreflight::Proceed { decision } => {
+                                // Gate inputs, computed once for both the
+                                // conscience-conflict path and the normal path below.
+                                let auto_via_accept_edits = self.auto_approve_edits
+                                    && EDIT_TOOLS.contains(&tool_name.as_str());
+                                let base_gate = self.require_approval
+                                    && matches!(
+                                        self.approval,
+                                        ApprovalMode::OnRequest | ApprovalMode::Manual
+                                    )
+                                    && !is_effectively_read_only
+                                    && !ALWAYS_AUTO_TOOLS.contains(&tool_name.as_str())
+                                    && !auto_via_accept_edits;
+                                // A classifier-flagged destructive command (e.g.
+                                // `rm -rf`, force-push) must be seen by a human even
+                                // under an allow rule or bypass, so the gate forces a
+                                // prompt / refusal for it.
+                                let danger = t.danger_reason(&args);
                                 // Pillar 5 (A2 Tier 2) — a conscience conflict for
                                 // this edit takes over the gate: the human chooses
-                                // abort / supersede / edit-anyway (a headless run
-                                // proceeds and logs). It replaces the normal
-                                // approval for this one call.
+                                // abort / supersede / edit-anyway. Interactively the
+                                // card IS the approval; headless it must not be more
+                                // permissive than the baseline gate (see below).
                                 if let Some(conflict) = conscience_conflicts.get(&pc.call_id) {
                                     let choice = if self.non_interactive {
                                         ConscienceChoice::EditAnyway
@@ -307,39 +324,54 @@ impl Agent {
                                                 .await;
                                         }
                                     }
-                                    // The human consented through the conscience
-                                    // card, so bypass the normal approval gate;
-                                    // still honor any PreToolUse hook before running.
+                                    // Interactive: the human resolved the 3-way card
+                                    // (Abort already returned), so EditAnyway /
+                                    // Supersede is explicit consent that stands in for
+                                    // the gate. Headless: nobody saw the card, so fall
+                                    // back to the baseline gate — the conscience may
+                                    // only ADD friction, never turn a headless edit the
+                                    // gate would DENY into an executed write. Either
+                                    // way, still honor any PreToolUse hook.
+                                    let approved = if self.non_interactive {
+                                        matches!(
+                                            approval_outcome(
+                                                self.non_interactive,
+                                                base_gate,
+                                                decision,
+                                                danger.is_some(),
+                                            ),
+                                            ApprovalOutcome::AutoRun
+                                        )
+                                    } else {
+                                        true
+                                    };
                                     match post_approval_tool_gate(
                                         &self.hooks,
                                         &tool_name,
                                         &args,
-                                        true,
+                                        approved,
                                     )
                                     .await
                                     {
                                         Ok(()) => runnable.push((pc.call_id.clone(), args, t)),
                                         Err(reason) => {
-                                            precomputed.push((pc.call_id.clone(), reason, true))
+                                            let reason = if !approved && self.non_interactive {
+                                                match danger {
+                                                    Some(d) => format!(
+                                                        "Error: refused: {d}. Destructive commands are not allowed in a non-interactive run and cannot be overridden by the model; the command was not executed."
+                                                    ),
+                                                    None => {
+                                                        non_interactive_blocked_message(&tool_name)
+                                                    }
+                                                }
+                                            } else {
+                                                reason
+                                            };
+                                            precomputed.push((pc.call_id.clone(), reason, true));
                                         }
                                     }
                                     continue;
                                 }
-                                let auto_via_accept_edits = self.auto_approve_edits
-                                    && EDIT_TOOLS.contains(&tool_name.as_str());
-                                let base_gate = self.require_approval
-                                    && matches!(
-                                        self.approval,
-                                        ApprovalMode::OnRequest | ApprovalMode::Manual
-                                    )
-                                    && !is_effectively_read_only
-                                    && !ALWAYS_AUTO_TOOLS.contains(&tool_name.as_str())
-                                    && !auto_via_accept_edits;
-                                // A classifier-flagged destructive command
-                                // (e.g. `rm -rf`, force-push) must be seen by a
-                                // human even under an allow rule or bypass, so
-                                // the gate forces a prompt / refusal for it.
-                                let danger = t.danger_reason(&args);
                                 let approved = match approval_outcome(
                                     self.non_interactive,
                                     base_gate,
