@@ -98,6 +98,7 @@
 - Bounded skill discovery against a symlink fan-out — a visited-set caps a self-referential `.tomte/skills/` walk while still following legitimate symlinked skill dirs.
 - Closed a sub-agent confinement bypass — a project-local agent matched only by its frontmatter `name` is confined to read-only tools, instead of running mutating tools under Auto / `--dangerously-skip-permissions`.
 - Fixed assorted TUI/tool issues — `/clear` resets the model's conversation history (not just the transcript), a `---` after a line containing `|` isn't misrendered as a table, a shell result can't spoof its rendered exit code, a failed resume reopens the picker, `/buddy` guards an empty rarity tier, off-screen sub-agent rows ignore clicks, and `/export` uses safe Markdown fences.
+- Locked the markdown table renderer's bounds-safety with regression tests — a malformed table from model output (ragged columns, missing cells, a header-only table with no body) is now covered, so a later refactor can't reintroduce an out-of-bounds panic on the `tbl[2..]` / `cells[c]` accesses; an audit confirmed those paths are already safe, so there is no behavior change.
 
 ## 0.0.1-beta.4
 

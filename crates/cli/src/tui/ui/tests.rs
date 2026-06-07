@@ -487,6 +487,33 @@ mod input_wrap_tests {
             let _ = render_assistant_md(md, w);
         }
     }
+
+    #[test]
+    fn table_with_ragged_columns_does_not_panic() {
+        // Body rows with more and fewer cells than the header: `ncols` widens to
+        // the max, short rows fall back to empty cells. Guards the `ncols.max(1)`
+        // sizing and the `cells.get(c)` access in render_md_table against a
+        // malformed table from model output.
+        let md = "| A | B |\n|---|---|\n| 1 | 2 | 3 | 4 |\n| only-one |";
+        let rows = render_assistant_md(md, 60);
+        // top rule + header + divider + 2 body rows + bottom rule.
+        assert_eq!(rows.len(), 6);
+        let first: String = rows[0].iter().map(|s| s.content.as_ref()).collect();
+        assert!(first.starts_with('┌') && first.ends_with('┐'));
+    }
+
+    #[test]
+    fn table_with_header_only_renders_without_body() {
+        // Header + separator but no body rows: `tbl` is exactly two lines, so the
+        // `tbl[2..]` body slice is empty. Guards the `tbl[0]` / `tbl[2..]`
+        // indexing against a header-only table.
+        let md = "| H1 | H2 |\n|----|----|";
+        let rows = render_assistant_md(md, 40);
+        // top rule + header + divider + bottom rule (no body).
+        assert_eq!(rows.len(), 4);
+        let first: String = rows[0].iter().map(|s| s.content.as_ref()).collect();
+        assert!(first.starts_with('┌') && first.ends_with('┐'));
+    }
 }
 
 #[cfg(test)]
