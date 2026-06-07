@@ -227,6 +227,13 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
     if pipes_into_interpreter {
         return Some("piping output into a command interpreter");
     }
+    // `find … | xargs rm -rf` (or `… | parallel rm -rf`) recursively force-deletes
+    // whatever paths the upstream stage emits. The deletion targets arrive on
+    // stdin, so there is no dangerous target *token* for the rm guard above to
+    // match — the same hidden-target case as `rm -rf $(…)`, which is flagged.
+    if lower.split('|').skip(1).any(pipe_stage_xargs_recursive_rm) {
+        return Some("xargs/parallel feeds stdin paths to a recursive rm");
+    }
     // `eval`/`iex` assemble and run a command at runtime, so no literal
     // destructive token is present at classify time. Only a command word (the
     // start of a `;`/`|`/`&` segment) counts, so a benign `grep eval` argument
@@ -371,6 +378,41 @@ fn pipe_stage_runs_interpreter(stage: &str, interpreters: &[&str]) -> bool {
         return words.iter().copied().map(degroup).any(is_interp);
     }
     false
+}
+
+/// True when a pipeline stage runs `xargs`/`parallel` invoking `rm` with a
+/// recursive/force flag. The paths to delete come from stdin, so no dangerous
+/// target token is present — but a recursive force delete of upstream-supplied
+/// paths is the destructive intent. Plain `xargs rm` (per-file, no `-r`/`-f`) is
+/// left alone: it's a routine `find … | xargs rm` cleanup, like `rm file`.
+fn pipe_stage_xargs_recursive_rm(stage: &str) -> bool {
+    let segment = stage.split([';', '&']).next().unwrap_or(stage);
+    let words: Vec<&str> = segment.split_whitespace().map(degroup).collect();
+    let Some(first) = words
+        .iter()
+        .copied()
+        .find(|w| !w.is_empty() && !w.starts_with('-') && !is_env_assignment(w))
+    else {
+        return false;
+    };
+    let leader = shell_token_command_name(first);
+    if leader != "xargs" && leader != "parallel" {
+        return false;
+    }
+    // Only flags *after* `rm` are rm's own — `xargs -r rm file` has the `-r` on
+    // xargs (--no-run-if-empty), not a recursive rm.
+    let Some(rm_pos) = words
+        .iter()
+        .position(|w| shell_token_command_name(w) == "rm")
+    else {
+        return false;
+    };
+    words.iter().skip(rm_pos + 1).any(|w| {
+        matches!(
+            *w,
+            "-rf" | "-fr" | "-r" | "-R" | "--recursive" | "-f" | "--force"
+        ) || (w.starts_with('-') && !w.starts_with("--") && (w.contains('r') || w.contains('f')))
+    })
 }
 
 /// Strip surrounding shell grouping punctuation from a word so the real command

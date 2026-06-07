@@ -201,6 +201,14 @@ fn classify_danger_flags_destructive_patterns() {
         "cat payload.sh | sh",
         "base64 -d blob | bash",
         "cat urls.txt | xargs sh -c 'echo'",
+        // xargs/parallel feeding a recursive rm: targets come from stdin (no
+        // dangerous target token), but it is a recursive force delete.
+        "find / -name x | xargs rm -rf",
+        "find / -type f | xargs rm -r",
+        "ls / | xargs rm -rf",
+        "find . -type d | xargs -0 rm -rf",
+        "cat list.txt | xargs -I {} rm -rf {}",
+        "find / | parallel rm -rf",
         // Command substitution hides the real delete/chmod target.
         "rm -rf `echo /`",
         "rm -rf $(printf /)",
@@ -293,6 +301,12 @@ fn classify_danger_does_not_flag_common_commands() {
         "truncate -s 0 logfile",
         "find . -name '*.tmp'",
         "find src -type f",
+        // Plain per-file xargs rm (no -r/-f) is a routine cleanup, not a tree wipe;
+        // and a leading xargs `-r` (--no-run-if-empty) is not a recursive rm.
+        "find . -name '*.tmp' | xargs rm",
+        "find . -name '*.o' | xargs -0 rm",
+        "ls *.log | xargs rm",
+        "find . -name '*.bak' | xargs -r rm",
         "rm target/foo.txt",
         "rm -rf target/",
         "rm -rf node_modules",
