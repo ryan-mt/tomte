@@ -369,7 +369,12 @@ fn mcp_section() -> Section {
 fn discovery_section(cwd: &Path) -> Section {
     let skills = crate::skill::discover(cwd).len();
     let subagents = crate::subagent::load_all(cwd).len();
-    let hooks = crate::hooks::load().config.pre_tool_use.len();
+    let hc = crate::hooks::load().config;
+    let hooks = hc.pre_tool_use.len()
+        + hc.post_tool_use.len()
+        + hc.user_prompt_submit.len()
+        + hc.session_start.len()
+        + hc.stop.len();
     Section {
         title: "Skills, subagents & hooks".to_string(),
         checks: vec![
@@ -378,10 +383,7 @@ fn discovery_section(cwd: &Path) -> Section {
                 "{subagents} subagent{} discovered",
                 plural(subagents)
             )),
-            Check::info(format!(
-                "{hooks} PreToolUse hook{} configured",
-                plural(hooks)
-            )),
+            Check::info(format!("{hooks} hook{} configured", plural(hooks))),
         ],
     }
 }

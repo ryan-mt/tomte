@@ -523,7 +523,7 @@ fn save_to_path(path: &Path, cfg: &Config) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn write_config_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_config_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -538,7 +538,7 @@ fn write_config_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn write_config_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_config_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)
 }
 
@@ -572,7 +572,7 @@ fn normalize_enum_value(value: &str, allowed: &[&str]) -> Option<String> {
     allowed.contains(&normalized.as_str()).then_some(normalized)
 }
 
-fn unique_tmp_path(path: &Path) -> PathBuf {
+pub(crate) fn unique_tmp_path(path: &Path) -> PathBuf {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())

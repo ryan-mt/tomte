@@ -71,6 +71,48 @@ fn kill_process_group(pid: Option<u32>) {
 #[cfg(not(unix))]
 fn kill_process_group(_pid: Option<u32>) {}
 
+/// Choose the shell that runs a hook command, per OS. Unix always uses
+/// `sh -c`. Windows prefers `sh -c` when a `sh` interpreter is on PATH (Git
+/// Bash / MSYS, so existing POSIX-style hooks keep working) and otherwise falls
+/// back to `cmd /C`, so a hook still runs on a stock Windows box with no Git
+/// Bash installed. Pure in `sh_available` so both Windows branches are
+/// unit-testable on any host.
+fn shell_invocation(sh_available: bool) -> (&'static str, &'static str) {
+    if cfg!(windows) {
+        if sh_available {
+            ("sh", "-c")
+        } else {
+            ("cmd", "/C")
+        }
+    } else {
+        let _ = sh_available;
+        ("sh", "-c")
+    }
+}
+
+/// Is a `sh` interpreter on PATH? Consulted only on Windows (on Unix `sh` is a
+/// POSIX given, so we never scan). A bare name searched on PATH, honoring the
+/// OS executable extension — the same lightweight `which` the doctor uses.
+fn sh_on_path() -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let exe_ext = std::env::consts::EXE_EXTENSION;
+    std::env::split_paths(&paths).any(|dir| {
+        dir.join("sh").is_file()
+            || (!exe_ext.is_empty() && dir.join(format!("sh.{exe_ext}")).is_file())
+    })
+}
+
+/// Build the `Command` that runs `command` through the OS-appropriate shell.
+/// `&&` short-circuits so the PATH scan only happens on Windows.
+fn build_shell_command(command: &str) -> Command {
+    let (program, flag) = shell_invocation(cfg!(windows) && sh_on_path());
+    let mut cmd = Command::new(program);
+    cmd.arg(flag).arg(command);
+    cmd
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct HooksConfig {
     #[serde(default, rename = "PreToolUse")]
@@ -350,10 +392,8 @@ async fn run_hook_with_timeout(
     payload: &Value,
     timeout: Duration,
 ) -> Result<(i32, String)> {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(command)
-        .stdin(Stdio::piped())
+    let mut cmd = build_shell_command(command);
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -465,6 +505,8 @@ where
     }
     Ok(out)
 }
+
+pub mod presets;
 
 #[cfg(test)]
 mod tests;

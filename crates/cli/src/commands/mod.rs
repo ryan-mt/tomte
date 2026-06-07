@@ -4,5 +4,6 @@ pub mod chat;
 pub mod config_cmd;
 pub mod cost;
 pub mod doctor;
+pub mod hooks;
 pub mod login;
 pub mod why;

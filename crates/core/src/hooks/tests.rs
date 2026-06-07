@@ -157,3 +157,17 @@ async fn run_hook_does_not_deadlock_when_output_precedes_stdin_read() {
     .expect("must not hang or error");
     assert_eq!(code, 0);
 }
+
+#[test]
+fn shell_invocation_is_cross_platform() {
+    // Unix always runs hooks via `sh -c`. Windows uses `sh -c` when Git Bash is
+    // present and falls back to `cmd /C` otherwise — so a hook runs on every OS,
+    // not just the box that happens to ship a POSIX shell.
+    if cfg!(windows) {
+        assert_eq!(shell_invocation(true), ("sh", "-c"));
+        assert_eq!(shell_invocation(false), ("cmd", "/C"));
+    } else {
+        assert_eq!(shell_invocation(true), ("sh", "-c"));
+        assert_eq!(shell_invocation(false), ("sh", "-c"));
+    }
+}

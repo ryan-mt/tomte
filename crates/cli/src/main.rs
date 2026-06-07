@@ -139,6 +139,13 @@ enum Command {
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
     },
+    /// Manage lifecycle hooks — list, enable, or disable built-in presets that
+    /// make tomte auto-trigger an action (e.g. `cargo fmt`) when it edits a
+    /// file. Presets write to settings.json and run on Linux, macOS, and Windows.
+    Hooks {
+        #[command(subcommand)]
+        action: Option<commands::hooks::HooksAction>,
+    },
 }
 
 fn init_tracing(stderr_logs: bool) {
@@ -268,6 +275,7 @@ async fn async_main() -> Result<()> {
         }) => commands::why::run(loc, all, reconcile, cwd).await,
         Some(Command::Blame { file, cwd }) => commands::blame::run(file, cwd).await,
         Some(Command::Cost { session, cwd }) => commands::cost::run(session, cwd).await,
+        Some(Command::Hooks { action }) => commands::hooks::run(action).await,
     }
 }
 
