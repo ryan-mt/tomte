@@ -17,9 +17,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use once_cell::sync::Lazy;
 use serde::Deserialize;
-use tokio::sync::Mutex as AsyncMutex;
 
 use super::pkce::{generate_pkce, random_state, Pkce};
 use super::storage::{load_auth, save_auth, AuthMode, AuthRecord, StoredTokens};
@@ -39,11 +37,6 @@ pub const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 pub const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 pub const MANUAL_REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
 pub const SCOPES: &str = "org:create_api_key user:profile user:inference";
-
-/// Serializes refresh swaps for the Anthropic refresh-token grant. Two
-/// concurrent turns racing the refresh endpoint would otherwise burn the
-/// single-use refresh_token and brick the credential.
-static REFRESH_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TokenSet {
@@ -243,7 +236,7 @@ pub async fn ensure_fresh(record: &AuthRecord) -> Result<String> {
         return Ok(tokens.access_token.clone());
     }
 
-    let _guard = REFRESH_LOCK.lock().await;
+    let _guard = super::REFRESH_LOCK.lock().await;
     // After acquiring the lock, re-load from disk in case a sibling caller
     // already refreshed while we were waiting. If their swap is still good,
     // return that access_token directly. Otherwise, still prefer their

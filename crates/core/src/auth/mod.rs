@@ -19,8 +19,23 @@ pub use storage::{
 };
 
 use anyhow::Result;
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::provider::Provider;
+
+/// Process-wide serialization for ALL OAuth token refreshes — both the OpenAI
+/// (`oauth`) and Anthropic (`anthropic`) flows acquire this one lock.
+///
+/// Each refresh is load_auth → network token swap → reload-and-merge →
+/// save_auth. That read-modify-write is not atomic, so two providers refreshing
+/// at once could otherwise interleave between one's load and the other's save
+/// and write back a stale snapshot — reverting the sibling's freshly-rotated,
+/// single-use refresh_token and bricking that credential on its next refresh.
+/// A single shared lock makes the reload-and-merge correct across providers too
+/// (same-provider siblings were already serialized). Held across the network
+/// round-trip, which is fine: refreshes are rare (~hourly) and sub-second.
+pub(crate) static REFRESH_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
 
 pub fn effective_mode_with_env(record: &AuthRecord) -> AuthMode {
     effective_mode_with_env_values(
@@ -274,6 +289,25 @@ mod tests {
         assert_eq!(
             effective_mode_with_env_values(&record, String::new(), "sk-ant-env".to_string()),
             AuthMode::AnthropicApiKey
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_lock_is_a_single_process_wide_mutex() {
+        // Both providers' `ensure_fresh` acquire THIS one lock, so a
+        // cross-provider refresh cannot interleave between one provider's
+        // load_auth and the other's save_auth and revert a freshly-rotated
+        // single-use refresh_token. Pins the shared lock so a per-module lock
+        // (the original cross-provider clobber bug) can't quietly return.
+        let held = REFRESH_LOCK.lock().await;
+        assert!(
+            REFRESH_LOCK.try_lock().is_err(),
+            "a second refresh must block while one is in flight"
+        );
+        drop(held);
+        assert!(
+            REFRESH_LOCK.try_lock().is_ok(),
+            "the lock must be free once the in-flight refresh releases it"
         );
     }
 }

@@ -5,20 +5,12 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use once_cell::sync::Lazy;
 use serde::Deserialize;
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 
 use super::pkce::{generate_pkce, random_state, Pkce};
 use super::storage::{load_auth, save_auth, AuthMode, AuthRecord, StoredTokens};
 
-/// Serializes refresh_token swaps across the process. Without this, two
-/// concurrent turns both see the same near-expiry token, both POST to
-/// /oauth/token, and the second `save_auth` overwrites the first with a
-/// now-invalid refresh_token — bricking the credential on next expiry.
-/// Holding this lock for the duration of the network round-trip is fine
-/// because token refreshes are rare (every ~hour) and short (sub-second).
-static REFRESH_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
 type ShutdownHandle = Arc<AsyncMutex<Option<oneshot::Sender<()>>>>;
 
 pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -390,11 +382,12 @@ pub async fn ensure_fresh(record: &AuthRecord) -> Result<String> {
         return Ok(tokens.access_token.clone());
     }
 
-    // Serialize concurrent refreshes. Two parallel turns would otherwise both
-    // see the expiring token, both POST to /oauth/token, and the second
-    // save_auth would clobber the first refresh_token swap with a refresh
-    // token that is no longer valid (refresh tokens are single-use).
-    let _guard = REFRESH_LOCK.lock().await;
+    // Serialize concurrent refreshes on the shared process-wide lock (both
+    // providers contend on it). Two parallel turns would otherwise both see the
+    // expiring token, both POST to /oauth/token, and the second save_auth would
+    // clobber the first refresh_token swap with a refresh token that is no
+    // longer valid (refresh tokens are single-use).
+    let _guard = super::REFRESH_LOCK.lock().await;
 
     // After acquiring the lock, re-load from disk in case a sibling caller
     // already refreshed while we were waiting. If their swap is still good,
