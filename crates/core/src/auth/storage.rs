@@ -140,6 +140,11 @@ pub fn save_auth(record: &AuthRecord) -> Result<()> {
 
     let dir = config::config_dir();
     config::create_dir_secure(&dir)?;
+    // Tighten the directory to owner-only *with inheritance* so the temp file
+    // created below is owner-only from birth, not just after the per-file icacls.
+    // Closes the brief broad-ACL window on profiles whose %APPDATA% (or a custom
+    // TOMTE_CONFIG_DIR) is not already owner-restricted.
+    restrict_dir_to_owner_windows(&dir);
     let path = auth_file();
     let text = serde_json::to_string_pretty(record)?;
     // Unique temp name so two concurrent writers (e.g. both providers refreshing
@@ -207,6 +212,29 @@ fn restrict_to_owner_windows(path: &std::path::Path) {
              it kept its inherited %APPDATA% ACL"
         ),
     }
+}
+
+/// Strip inherited ACEs from the config directory and grant only the current
+/// user, *with inheritance* (`(OI)(CI)`), so a file created inside is owner-only
+/// from birth. Without this, the freshly created temp credential file carries
+/// the directory's inherited ACL until the per-file `restrict_to_owner_windows`
+/// runs — a brief window where it is broader than the user on a profile whose
+/// `%APPDATA%` (or a custom `TOMTE_CONFIG_DIR`) is not already owner-restricted.
+/// Best-effort and idempotent, matching the per-file grant; only the dir's own
+/// ACL is changed, so pre-existing sibling files keep their permissions.
+#[cfg(windows)]
+fn restrict_dir_to_owner_windows(dir: &std::path::Path) {
+    let Some(user) = current_windows_user() else {
+        return; // restrict_to_owner_windows already warns about an unset USERNAME
+    };
+    let _ = std::process::Command::new("icacls")
+        .arg(dir)
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .arg(format!("{user}:(OI)(CI)(F)"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// The current user as `DOMAIN\user` (or bare `user`) for an `icacls` grant.
@@ -493,6 +521,24 @@ mod windows_perm_tests {
             "owner must keep read access after the ACL is tightened"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn restrict_dir_to_owner_keeps_owner_access_and_lets_files_be_created() {
+        // Hardening the directory must not lock the owner out: it must still be
+        // able to create and read a file inside (the credential temp file).
+        let dir = std::env::temp_dir().join(format!("tomte-auth-dir-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        restrict_dir_to_owner_windows(&dir);
+        let file = dir.join("auth.json");
+        std::fs::write(&file, "{}").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "{}",
+            "owner must keep create+read access to a file in the hardened dir"
+        );
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
