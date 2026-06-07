@@ -355,7 +355,9 @@ pub(crate) fn reconcile_at(store: &Path, root: &Path) -> ReconcileReport {
     }
 
     if report.changed() {
-        let _ = save_all(store, &records);
+        if let Err(e) = save_all(store, &records) {
+            tracing::warn!("decision-trail reconcile could not persist healed locs: {e:#}");
+        }
     }
     report
 }
@@ -374,7 +376,13 @@ fn save_all(path: &Path, records: &[DecisionRecord]) -> anyhow::Result<()> {
         body.push_str(&serde_json::to_string(r).context("serialize decision")?);
         body.push('\n');
     }
-    let tmp = path.with_extension("jsonl.tmp");
+    // Unique per-process temp name so two concurrent reconciles can't clobber
+    // each other's staging file before the rename (mirrors session/config saves).
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = path.with_extension(format!("jsonl.tmp.{}.{}", std::process::id(), nanos));
     std::fs::write(&tmp, body).with_context(|| format!("write {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
     Ok(())
