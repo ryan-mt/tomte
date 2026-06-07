@@ -423,6 +423,10 @@ pub(super) fn friendly_header(name: &str, args: &serde_json::Value) -> (String, 
         "glob" => ("Glob".into(), s("pattern")),
         "todo_write" => ("Update Todos".into(), String::new()),
         "goal_update" => ("Goal Update".into(), s("status")),
+        // The custodian remembering the house: surface the decision in the
+        // header and the *why* in the body, so the moat is visible the instant
+        // it's recorded — not a silent tool call (Pillar 2).
+        "record_decision" => ("Remember".into(), s("decision")),
         "enter_plan_mode" => ("Enter Plan".into(), String::new()),
         "exit_plan_mode" => ("Plan Ready".into(), String::new()),
         "ask_user_question" => {

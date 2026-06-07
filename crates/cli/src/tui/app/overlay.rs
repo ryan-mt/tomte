@@ -275,6 +275,7 @@ pub async fn handle_overlay_select(app: &mut App, kind: OverlayKind, key_sel: &s
                     .push(Block::System(format!("config save failed: {e}")));
             }
             app.blocks.push(Block::System(format!("model → {key_sel}")));
+            app.note_trail_follows_model(key_sel);
             if app.chain_to_effort {
                 app.chain_to_effort = false;
                 app.open_overlay(OverlayKind::EffortPicker);

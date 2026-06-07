@@ -283,18 +283,40 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
             }
         }
         "why" => {
-            // Read-only view of the decision trail: why earlier changes were
-            // made, and by which model. `arg` narrows to one `file:line`.
-            let arg = arg.trim();
-            let report = if arg.is_empty() {
-                tomte_core::decisions::render_all(&tomte_core::decisions::load(&app.cwd))
-            } else {
-                tomte_core::decisions::render_for_loc(
-                    &tomte_core::decisions::for_loc(&app.cwd, arg),
-                    arg,
-                )
+            // Read-only view of the decision trail (Pillar 2): why earlier
+            // changes were made, and by which model. No arg or `--all` lists
+            // everything; `--reconcile` runs Drift Watch (audits the trail
+            // against the tree); otherwise `arg` narrows to one `file:line`.
+            let report = match arg.trim() {
+                "" | "--all" => {
+                    tomte_core::decisions::render_all(&tomte_core::decisions::load(&app.cwd))
+                }
+                "--reconcile" => tomte_core::decisions::render_reconcile(
+                    &tomte_core::decisions::reconcile(&app.cwd),
+                ),
+                loc => tomte_core::decisions::render_for_loc(
+                    &tomte_core::decisions::for_loc(&app.cwd, loc),
+                    loc,
+                ),
             };
             app.blocks.push(Block::System(report));
+        }
+        "blame" => {
+            // The file-scoped, one-line-per-decision view of the trail (Pillar
+            // 2), mirroring the `tomte blame` CLI so the TUI reaches the same
+            // trail from inside a session.
+            let file = arg.trim();
+            if file.is_empty() {
+                app.blocks.push(Block::System(
+                    "Usage: /blame <file>  — decisions recorded for one file".into(),
+                ));
+            } else {
+                let report = tomte_core::decisions::render_blame(
+                    &tomte_core::decisions::for_file(&app.cwd, file),
+                    file,
+                );
+                app.blocks.push(Block::System(report));
+            }
         }
         "review" => {
             let prompt = "Review the uncommitted changes in this repository. Run `git diff` (or \

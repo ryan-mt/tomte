@@ -348,6 +348,34 @@ pub(super) fn friendly_body<'a>(
             // No inline body: the System block rendered right below this tool
             // result already shows the question or plan approval prompt.
         }
+        "record_decision" => {
+            // The decision is in the header; the body carries the *why* and the
+            // rejected alternatives — the reasoning that survives a model switch,
+            // shown at the moment it's recorded (Pillar 2).
+            let why = args.get("why").and_then(|v| v.as_str()).unwrap_or("");
+            for w in wrap(why, avail) {
+                out.push(Line::from(Span::styled(w, style_code)));
+            }
+            if let Some(rejected) = args.get("rejected").and_then(|v| v.as_array()) {
+                for alt in rejected
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                {
+                    for w in wrap(&format!("rejected {alt}"), avail) {
+                        out.push(Line::from(Span::styled(w, style_meta)));
+                    }
+                }
+            }
+            // Args stream in; if `why` hasn't arrived yet, fall back to the
+            // tool's confirmation line so the body is never empty.
+            if out.is_empty() {
+                out.push(Line::from(Span::styled(
+                    text.lines().next().unwrap_or("").to_string(),
+                    style_summary,
+                )));
+            }
+        }
         "glob" | "list_dir" => {
             let total = text.lines().filter(|l| !l.is_empty()).count();
             out.push(Line::from(Span::styled(

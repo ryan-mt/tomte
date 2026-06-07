@@ -709,3 +709,77 @@ fn shift_selection_rows_tracks_content_across_scroll() {
     app.shift_selection_rows(3);
     assert!(app.selection.is_none());
 }
+
+// ---- decision trail surfaced inside the TUI (Pillar 2 parity with the CLI) ----
+
+#[tokio::test]
+async fn blame_slash_reports_an_empty_trail_for_a_file() {
+    let mut app = App::new();
+    // A fresh, unique cwd keys to an empty trail, so the read is deterministic
+    // and never touches a real project's decisions.jsonl.
+    app.cwd = std::env::temp_dir().join(format!("tomte-blame-{}", rand::random::<u64>()));
+    handle_slash(&mut app, "blame src/x.rs").await;
+    let Some(Block::System(text)) = app.blocks.last() else {
+        panic!("expected a system block from /blame");
+    };
+    assert!(text.contains("no decisions recorded"), "{text}");
+    assert!(text.contains("src/x.rs"), "{text}");
+}
+
+#[tokio::test]
+async fn blame_slash_without_a_file_shows_usage() {
+    let mut app = App::new();
+    handle_slash(&mut app, "blame").await;
+    let Some(Block::System(text)) = app.blocks.last() else {
+        panic!("expected a system block from /blame");
+    };
+    assert!(text.contains("Usage: /blame"), "{text}");
+}
+
+#[tokio::test]
+async fn why_reconcile_reports_a_tidy_trail_in_the_tui() {
+    let mut app = App::new();
+    app.cwd = std::env::temp_dir().join(format!("tomte-why-recon-{}", rand::random::<u64>()));
+    handle_slash(&mut app, "why --reconcile").await;
+    let Some(Block::System(text)) = app.blocks.last() else {
+        panic!("expected a system block from /why --reconcile");
+    };
+    assert!(text.contains("in order"), "{text}");
+}
+
+#[tokio::test]
+async fn model_switch_announces_the_trail_follows_only_when_non_empty() {
+    let mut app = App::new();
+    app.cwd = std::env::temp_dir().join(format!("tomte-trail-follow-{}", rand::random::<u64>()));
+    // Empty trail → nothing to carry → stay silent.
+    app.note_trail_follows_model("claude-opus-4-8");
+    assert!(
+        !app.blocks
+            .iter()
+            .any(|b| matches!(b, Block::System(t) if t.contains("follow you"))),
+        "an empty trail must not announce anything"
+    );
+    // Seed one decision, then switch → one announcement naming the target model.
+    let rec = tomte_core::decisions::DecisionRecord {
+        loc: "src/a.rs:1".into(),
+        decision: "use argon2".into(),
+        why: "memory-hard".into(),
+        rejected: Vec::new(),
+        model: "gpt-5.5".into(),
+        ts: 1,
+        anchor: None,
+    };
+    tomte_core::decisions::append(&app.cwd, &rec).unwrap();
+    app.note_trail_follows_model("claude-opus-4-8");
+    let Some(Block::System(text)) = app.blocks.last() else {
+        panic!("expected a system block from the model switch");
+    };
+    assert!(text.contains("follow you to claude-opus-4-8"), "{text}");
+    assert!(text.contains("1 recorded decision"), "{text}");
+    // Clean up the per-project artifact written under the config dir.
+    let store = tomte_core::decisions::store_path(&app.cwd);
+    let _ = std::fs::remove_file(&store);
+    if let Some(parent) = store.parent() {
+        let _ = std::fs::remove_dir_all(parent);
+    }
+}

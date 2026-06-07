@@ -367,6 +367,37 @@ pub fn render_blame(records: &[DecisionRecord], file: &str) -> String {
     out.trim_end().to_string()
 }
 
+/// A calm, one-glance summary of a Drift Watch (`reconcile`) pass: what
+/// self-healed and what now needs a human's eyes. Shared by `tomte why
+/// --reconcile` and the TUI `/why --reconcile` so both read identically.
+/// Silent-on-a-tidy-house in spirit (Pillar 4).
+pub fn render_reconcile(r: &ReconcileReport) -> String {
+    if !r.changed() && r.stale() == 0 {
+        return "decision trail is in order — every anchored decision still matches its code."
+            .into();
+    }
+    let mut out = String::new();
+    if r.changed() {
+        out.push_str(&format!(
+            "healed {} decision(s) that drifted:\n",
+            r.moved.len()
+        ));
+        for (old, new) in &r.moved {
+            out.push_str(&format!("  {old}  ->  {new}\n"));
+        }
+    }
+    if r.stale() > 0 {
+        out.push_str(&format!(
+            "{} decision(s) no longer match their code — re-record or run `tomte why <loc>`:\n",
+            r.stale()
+        ));
+        for loc in r.gone.iter().chain(r.ambiguous.iter()) {
+            out.push_str(&format!("  {loc}\n"));
+        }
+    }
+    out.trim_end().to_string()
+}
+
 fn gist(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -567,6 +598,23 @@ mod tests {
         assert!(first.contains("validate at the boundary"));
         assert!(first.contains("gpt-5.5"));
         assert!(render_blame(&[], "src/x.rs").contains("no decisions recorded"));
+    }
+
+    #[test]
+    fn render_reconcile_is_calm_on_a_tidy_trail_and_lists_drift() {
+        // Tidy: nothing moved, nothing stale → one reassuring line, no noise.
+        assert!(render_reconcile(&ReconcileReport::default()).contains("in order"));
+        // Drift: a heal and a gone loc are both surfaced for the user.
+        let drifted = ReconcileReport {
+            present: 1,
+            moved: vec![("src/a.rs:1".into(), "src/a.rs:3".into())],
+            gone: vec!["src/gone.rs:1".into()],
+            ..Default::default()
+        };
+        let out = render_reconcile(&drifted);
+        assert!(out.contains("healed 1"), "{out}");
+        assert!(out.contains("src/a.rs:1  ->  src/a.rs:3"), "{out}");
+        assert!(out.contains("src/gone.rs:1"), "{out}");
     }
 
     // ---- Drift Watch (Pillar 5, A1) ----

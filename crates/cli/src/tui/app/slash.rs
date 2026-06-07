@@ -36,7 +36,8 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  /init               create CLAUDE.md for this project\n  \
                  /memory             show CLAUDE.md\n  \
                  /diff               show `git diff` for the working tree\n  \
-                 /why [loc]          show the decision trail (why changes were made)\n  \
+                 /why [loc]          decision trail: why changes were made (--all, --reconcile)\n  \
+                 /blame <file>       the decision trail for one file (greppable)\n  \
                  /review             ask the agent to review uncommitted changes\n  \
                  /commit             stage & commit with a generated message\n  \
                  /commit-push-pr     commit, push a branch, and open a PR\n  \
@@ -185,6 +186,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                         .push(Block::System(format!("config save failed: {e}")));
                 }
                 app.blocks.push(Block::System(format!("model → {model}")));
+                app.note_trail_follows_model(&model);
             }
         }
         "effort" | "thinking" => {

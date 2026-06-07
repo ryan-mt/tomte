@@ -19,7 +19,7 @@ pub async fn run(
 
     if reconcile {
         let report = decisions::reconcile(&here);
-        println!("{}", render_reconcile(&report));
+        println!("{}", decisions::render_reconcile(&report));
         return Ok(());
     }
 
@@ -34,33 +34,4 @@ pub async fn run(
         }
     }
     Ok(())
-}
-
-/// A calm, one-glance summary of a Drift Watch pass: what self-healed and what
-/// now needs a human's eyes. Silent-on-a-tidy-house in spirit (Pillar 4).
-fn render_reconcile(r: &decisions::ReconcileReport) -> String {
-    if !r.changed() && r.stale() == 0 {
-        return "decision trail is in order — every anchored decision still matches its code."
-            .into();
-    }
-    let mut out = String::new();
-    if r.changed() {
-        out.push_str(&format!(
-            "healed {} decision(s) that drifted:\n",
-            r.moved.len()
-        ));
-        for (old, new) in &r.moved {
-            out.push_str(&format!("  {old}  ->  {new}\n"));
-        }
-    }
-    if r.stale() > 0 {
-        out.push_str(&format!(
-            "{} decision(s) no longer match their code — re-record or run `tomte why <loc>`:\n",
-            r.stale()
-        ));
-        for loc in r.gone.iter().chain(r.ambiguous.iter()) {
-            out.push_str(&format!("  {loc}\n"));
-        }
-    }
-    out.trim_end().to_string()
 }

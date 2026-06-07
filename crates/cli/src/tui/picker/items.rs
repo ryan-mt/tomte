@@ -38,7 +38,12 @@ pub fn slash_commands() -> Vec<PickerItem> {
         item(
             "why",
             "/why",
-            "show the decision trail (why changes were made)",
+            "decision trail: why changes were made (--all, --reconcile)",
+        ),
+        item(
+            "blame",
+            "/blame",
+            "the decision trail for one file (greppable)",
         ),
         item(
             "review",

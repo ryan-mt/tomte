@@ -103,6 +103,21 @@ impl App {
         app
     }
 
+    /// Surface the decision trail at a model switch: the whole point of Pillar 2
+    /// is that the *why* — not a lossy summary — follows you across providers, so
+    /// say so out loud the moment the user changes models. No-op when the trail
+    /// is empty (nothing to carry → nothing to announce).
+    pub fn note_trail_follows_model(&mut self, to: &str) {
+        let n = tomte_core::decisions::load(&self.cwd).len();
+        if n == 0 {
+            return;
+        }
+        let plural = if n == 1 { "decision" } else { "decisions" };
+        self.blocks.push(Block::System(format!(
+            "📓 {n} recorded {plural} follow you to {to} — tomte carries the reasoning across the switch, not a summary."
+        )));
+    }
+
     /// Record a submitted prompt in the input history (skipping a consecutive
     /// duplicate) and reset the browse cursor.
     pub fn record_history(&mut self, text: &str) {
