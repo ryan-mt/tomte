@@ -2,8 +2,6 @@
 
 ## 0.0.2
 
-### Added
-
 - Taught the agent to see a task through by default — a `# Seeing a task through` section in the system prompt every turn inherits: plan, write the failing test first (TDD), finish the job, then prove it with build/test/lint and loop until green; scaled so a one-line fix stays light.
 - Added a glass-box pre-flight — before a write or shell command runs, one calm line states what it changes and how far it reaches (plus a leash note for destructive ones); reads and searches stay cardless.
 - Surfaced a file's recorded decisions as house rules in the pre-flight — an edit to a file with recorded decisions lists them first, so the agent re-reads its own constraints before it could break one.
@@ -22,9 +20,6 @@
 - Added a live context gauge to the status line — `N% ctx` next to the model, colored calm → warning → danger toward the ~85% auto-compact threshold.
 - Added `tomte-website/` — the static Next.js marketing & docs site, deployed at https://tomte-website.vercel.app.
 - Added runnable, std-only previews of all five SOUL pillars under `docs/previews/` (hand-compiled, invisible to cargo/CI), including a `cost_receipts.rs` cross-provider cost demo.
-
-### Changed
-
 - Rebuilt the welcome card into a full first-screen panel — pixel-pet, brand/version, live setup (`model · effort · account`), workspace, a `/init`-style house-rules check, and a shortcuts footer; spans the full terminal width.
 - Reworked the turn spinner — a flickering-hearthfire glyph (`▁▂▄▆█▆▄▂`) instead of braille and a ~245-word tomte-voiced pool that holds a word ~8s then drifts on a pure `seed × elapsed` schedule, so it never flickers; a running todo's `active_form` takes the line instead.
 - Made the spinner words configurable on Claude Code's schema — `spinner_verbs { verbs, exclude_default }` in `config.json` appends to or replaces the built-in pool.
@@ -46,9 +41,7 @@
 - Reorganized the codebase so every Rust source file is ≤500 lines — large modules split into focused submodules, later renamed to semantic names (`canonical_args`, `todo_reminder`, `slash_ops` / `slash_meta`, content-named `*_tests`); pure refactor, no behavior change.
 - Removed the unused `keyring` dependency for a smaller build and attack surface — credentials stay in `auth.json` with `0o600` perms.
 - Renamed the project from `opencli` to `tomte` — binary, crates, config dir (`~/.config/tomte`), `TOMTE_*` env vars, logo, and user-agent — **breaking:** the old `~/.config/opencli` is no longer read, so re-run `tomte login`.
-
-### Fixed
-
+- Hardened the decision-trail reconcile write — a failed atomic rewrite of `decisions.jsonl` is now logged instead of silently swallowed, and the staging temp uses a unique per-process name so two concurrent reconciles can't clobber each other's temp before the rename.
 - Fixed sign-in on Windows — `auth.json` now persists under `%APPDATA%\tomte` (owner-only via `icacls`), so an OAuth login can complete instead of looping the sign-in picker.
 - Fixed MCP servers failing to spawn on Windows — a bare `npx` / `node` / `pnpm` command (a `.cmd` shim) now resolves against PATH×PATHEXT, since `CreateProcessW` only appends `.exe`.
 - Fixed `edit_file` / `multi_edit` failing on CRLF (Windows) files — line endings are reconciled so an `\n`-joined `old_string` matches the `\r\n` on disk, and CRLF is preserved.

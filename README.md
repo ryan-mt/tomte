@@ -28,7 +28,7 @@ tomte chat "explain what this repo does, then add a test for the parser"
 - **Bring your own brain.** Sign in with a ChatGPT or Claude subscription (OAuth) *or* drop in
   an API key. Switch models mid-session with `/model`.
 - **A real tool belt, not a toy.** Files, shell, search, web, notebooks, sub-agents, todos,
-  plan mode, persistent memory — 26 tools, streamed and run in parallel where it's safe.
+  plan mode, persistent memory — 27 tools, streamed and run in parallel where it's safe.
 - **Code intelligence, zero setup.** The `lsp` tool gives you symbols, go-to-definition,
   references, and hover for Rust, TypeScript/JavaScript, Python, and Go — no language server
   to install.
@@ -36,6 +36,13 @@ tomte chat "explain what this repo does, then add a test for the parser"
   worktree; `exit_worktree` cleans it up after a safety check so you never clobber main.
 - **Knows what it's spending.** `/usage` reads your provider's live quota, `/cost` tallies
   tokens and dollars, `/context` shows where the window is going.
+- **Remembers *why*, across models.** `record_decision` logs the reasoning behind a non-obvious
+  change to a decision trail that's re-injected every session, so a later session — or a
+  different model — inherits *why* it was done that way. Read it back with `tomte why <loc>`,
+  `tomte blame <file>`, or `/why`.
+- **Tells you before it acts.** A glass-box pre-flight states what a write or shell command will
+  change and how far it reaches before it runs, and a file's recorded decisions surface as house
+  rules so the agent re-reads its own constraints before it can break one.
 
 ## 60-second start
 
@@ -110,7 +117,7 @@ when read-only:
 | **Web** | `web_fetch` · `web_search` |
 | **Flow** | `todo_write` · `goal_update` · `enter_plan_mode` · `exit_plan_mode` · `wait` |
 | **Agents** | `dispatch_agent` · `ask_user_question` · `skill` · `tool_search` |
-| **Memory** | `memory` |
+| **Memory** | `memory` · `record_decision` |
 | **Git worktrees** | `enter_worktree` · `exit_worktree` |
 | **Notebooks** | `notebook_edit` |
 
@@ -129,7 +136,11 @@ Inside the TUI:
 | `/context` (`/ctx`) | context-window usage and where tokens are going |
 | `/worktree create [name]` · `/worktree exit keep\|remove [--discard]` | isolated git worktrees |
 | `/commit` · `/commit-push-pr` | Conventional-Commit generation, push, and PR via `gh` |
+| `/why` | read back the decision trail — *why* past changes were made (`tomte why <loc>` / `tomte blame <file>` from the CLI) |
 | `/buddy` | hatch a pixel companion — a rarity-weighted species seeded from your account, so it's stable for you and only re-rolls on an account switch (`/buddy off`, `/buddy reset`) |
+
+**Composer prefixes** (Claude Code / Codex-style): `@<path>` attaches a file via gitignore-aware
+typeahead, `!<command>` runs a shell command inline, and `#<note>` appends a note to `CLAUDE.md`.
 
 It also inherits memory and skills from your existing setup: `AGENTS.md` / `CLAUDE.md` from the
 git root down to your cwd are folded into the system prompt, and Codex/Claude skills and agents
@@ -193,7 +204,7 @@ wraps it in subcommands (`login`, `chat`, `status`, `config`, `resume`, …) and
 ## Build from source
 
 **You'll need:** Rust stable (CI tracks the latest stable; this release was verified with Rust
-1.95.0) and `ripgrep` (recommended — powers the `grep` tool).
+1.96.0) and `ripgrep` (recommended — powers the `grep` tool).
 
 ```bash
 git clone https://github.com/ryan-mt/tomte && cd tomte
@@ -234,10 +245,16 @@ the Conventional-Commit style, and the PR flow. The short version: branch off
   stdout, while keeping tomte's own status styling.
 - Provider parse/SSE errors use bounded, auth-redacted excerpts instead of raw response bodies
   or event payloads.
-- `run_shell` executes **directly on your machine** — there is no sandbox yet, so review any
-  prompt that includes destructive commands. tomte flags obvious ones (`rm -rf` on system or
-  home paths, `curl … | sh`, `mkfs`, raw block-device writes, force-pushes, …) and refuses them
-  until you explicitly override.
+- **`run_shell` runs inside an OS-level sandbox** — default `workspace-write` with outbound
+  network off. On Linux it applies Landlock + seccomp, on macOS `sandbox-exec`, so a
+  prompt-injected `curl … | sh` or `rm -rf ~` can't reach the network or write outside the
+  workspace. **On Windows it is best-effort process-tree cleanup only — the filesystem and
+  network are not yet confined** (`tomte doctor` reports the platform as unsandboxed), so keep
+  reviewing destructive prompts there. Modes: `read-only` · `workspace-write` ·
+  `danger-full-access`, with per-run `--sandbox <mode>` / `--sandbox-allow-net` overrides.
+- On top of the sandbox, tomte flags obvious destructive commands (`rm -rf` on system or home
+  paths, `curl … | sh`, `mkfs`, raw block-device writes, force-pushes, …) and refuses them until
+  you explicitly override — the permission layer and the sandbox are independent.
 - Environment variables that look like secrets (names containing `TOKEN`, `SECRET`, `KEY`,
   `OPENAI`, `AWS_`, `GITHUB_`, …) are stripped from `run_shell`'s child process so the model
   can't read them back via `env`.

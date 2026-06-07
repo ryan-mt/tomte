@@ -102,7 +102,7 @@ one muted accent); notifications only at decision points; the diff shown before 
 landed; the inline viewport is opt-in via `TOMTE_INLINE=1`, with the alternate screen still the
 default — see `docs/pillar-4-calm-terminal.md` § Status.)*
 
-**Pillar 5 — The custodian's conscience: the active decision trail.** *(Proposed; builds on 1, 2 & 4.)*
+**Pillar 5 — The custodian's conscience: the active decision trail.** *(Partly shipped in 0.0.2 — A1 Drift Watch + A2 Tier 1 (house rules in the pre-flight) landed; A2 Tier 2 + A3 still proposed. Builds on 1, 2 & 4.)*
 The Pillar-2 trail today is inert — replayed verbatim, never reconciled against the code it describes.
 Pillar 5 makes it *active*: it reconciles itself against the working tree (a decision never cites code
 that moved or vanished), surfaces a file's recorded decisions in the Pillar-1 pre-flight *before* an
@@ -135,6 +135,11 @@ them in tomte's own idiom.
 ## 8. Roadmap — staged by risk and timing
 
 **Hard rule: nothing touches the core before 0.0.2 (ships 2026-06-08). Stability first.**
+
+> **Status (0.0.2, 2026-06-06):** the staging was compressed — Pillars 1, 2, 4 and the Pillar-3
+> spine voice, plus Pillar 5's A1 (Drift Watch) and A2 Tier 1, all shipped *in* 0.0.2 rather than
+> after it. The stages below are the original plan; the still-unshipped work is per-provider voice
+> calibration + cross-provider cost receipts (Stage 3) and Pillar 5's A2 Tier 2 + A3 (Stage 4).
 
 ### Stage 0 — Now → 0.0.2: direction only, zero core risk
 - [x] This document (v2) — the spec everything else implements.

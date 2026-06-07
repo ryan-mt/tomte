@@ -5,6 +5,13 @@
 > Pillars 1 and 4 — it depends on Pillar 1's pre-flight event and Pillar 4's end-of-turn summary
 > existing first. See `SOUL.md` §5 (Pillars 1–4) and `pillars-1-3-build-plan.md`.
 > **Hard rule unchanged:** no core changes before 0.0.2. This document is the spec, not a green light.
+>
+> **Status (0.0.2):** the lane partly landed early — **A1 (Drift Watch)** and **A2 Tier 1** (a
+> file's recorded decisions surfaced in the pre-flight) **shipped in 0.0.2**: `anchor` is on
+> `DecisionRecord`, `decisions::reconcile` / `for_file` exist, and the reconcile-then-inject path no
+> longer feeds a stale `loc`. **Still proposed:** A2 Tier 2 (the model self-check) and A3
+> (`supersedes` + the end-of-turn override line). The sections below are the original design — read
+> them against this status, not as pending work in full.
 
 ## The one move
 
