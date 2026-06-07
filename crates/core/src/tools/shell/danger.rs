@@ -181,6 +181,18 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
             return Some("eval/iex runs a dynamically-assembled command");
         }
     }
+    // A non-shell interpreter handed an inline program (`python -c …`, `node -e
+    // …`, `perl -e …`, `php -r …`, `awk 'BEGIN{system(…)}'`, PowerShell
+    // `-EncodedCommand`) runs code this classifier can't read: the payload is in
+    // the interpreter's own language, so a destructive `python -c
+    // 'shutil.rmtree("/")'` carries no shell token the scan above can match. Like
+    // `eval`, it's opaque at classify time, so it must clear the override prompt
+    // rather than auto-run under a `run_shell(python:*)` grant or bypass mode.
+    // Shell interpreters (`sh`/`bash -c "rm -rf /"`) are deliberately absent here:
+    // their argument *is* shell and was already flattened and scanned above.
+    if runs_inline_interpreter_code(&scan) {
+        return Some("interpreter runs inline code from the command line");
+    }
     // Windows cmd / PowerShell destructive verbs. The classifier runs on every
     // platform and the Unix vocabulary above never matches these; on Windows the
     // sandbox does not confine the filesystem, so this gate matters most there.
@@ -282,6 +294,88 @@ fn command_runs_keyword(scan: &str, keyword: &str) -> bool {
             .map(degroup)
             .find(|w| !w.is_empty() && !w.starts_with('-') && !is_env_assignment(w))
             .is_some_and(|w| shell_token_command_name(w) == keyword)
+    })
+}
+
+/// The inline-code flag(s) for a non-shell interpreter, or `None` if `name` is
+/// not one. Deliberately per-interpreter (not one shared set): `-r` is inline
+/// code for PHP but "require a library" for Ruby/Perl, and `-c` is inline code
+/// for Python but a syntax-check-only for Node — a shared set would over-flag
+/// those benign forms. PowerShell and awk are handled by their own arms in the
+/// caller because their flag/positional shapes don't fit this table.
+fn inline_code_flags(name: &str) -> Option<&'static [&'static str]> {
+    if is_versioned_name(name, "python") {
+        return Some(&["-c"]);
+    }
+    if is_versioned_name(name, "ruby") {
+        return Some(&["-e"]);
+    }
+    if is_versioned_name(name, "perl") {
+        return Some(&["-e", "-E"]);
+    }
+    if is_versioned_name(name, "php") {
+        return Some(&["-r"]);
+    }
+    if is_versioned_name(name, "node")
+        || is_versioned_name(name, "nodejs")
+        || is_versioned_name(name, "bun")
+    {
+        return Some(&["-e", "--eval", "-p", "--print"]);
+    }
+    if is_versioned_name(name, "deno") {
+        return Some(&["eval"]); // `deno eval "<code>"`
+    }
+    None
+}
+
+/// A PowerShell `-Command` / `-EncodedCommand` flag or any unambiguous
+/// abbreviation (`-c`, `-com…`, `-e`, `-en…`, `-ec`). The argument is an inline
+/// PowerShell program (often base64 for `-EncodedCommand`), opaque here.
+fn is_powershell_code_flag(tok: &str) -> bool {
+    matches!(tok, "-c" | "-e" | "-ec") || tok.starts_with("-com") || tok.starts_with("-enc")
+}
+
+/// True when a segment invokes a non-shell interpreter with an inline program.
+/// Mirrors [`command_runs_keyword`]'s segment/command-word logic so a benign
+/// interpreter-named *argument* (`time python`, `echo node`) isn't blamed.
+fn runs_inline_interpreter_code(scan: &str) -> bool {
+    scan.split([';', '&', '|', '\n']).any(|seg| {
+        let words: Vec<&str> = seg.split_whitespace().collect();
+        let Some(cmd) = words
+            .iter()
+            .copied()
+            .map(degroup)
+            .find(|w| !w.is_empty() && !w.starts_with('-') && !is_env_assignment(w))
+        else {
+            return false;
+        };
+        let name = shell_token_command_name(cmd);
+        if let Some(flags) = inline_code_flags(&name) {
+            if words
+                .iter()
+                .copied()
+                .map(degroup)
+                .any(|w| flags.contains(&w))
+            {
+                return true;
+            }
+        }
+        if (is_versioned_name(&name, "pwsh") || is_versioned_name(&name, "powershell"))
+            && words
+                .iter()
+                .copied()
+                .map(degroup)
+                .any(is_powershell_code_flag)
+        {
+            return true;
+        }
+        // awk's program is a positional arg, not a flag; `system("…")` is the only
+        // way it shells out, and after quote-stripping the inner words carry no
+        // clean shell token, so the scan above can't see it.
+        if matches!(name.as_str(), "awk" | "gawk" | "mawk" | "nawk") && seg.contains("system(") {
+            return true;
+        }
+        false
     })
 }
 
