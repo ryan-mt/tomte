@@ -139,6 +139,53 @@ async fn read_file_ipynb_with_limit_returns_raw_json() {
 }
 
 #[tokio::test]
+async fn read_file_attaches_image_as_media() {
+    let dir = tempfile::tempdir().unwrap();
+    // PNG magic bytes + payload; sniffed as image/png by execute_rich.
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend_from_slice(&[0u8; 32]);
+    std::fs::write(dir.path().join("pic.png"), &bytes).unwrap();
+    let out = ReadFile
+        .execute_rich(
+            read_args("pic.png", None, None),
+            &ctx(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.media.len(), 1, "expected one image attached");
+    assert_eq!(out.media[0].media_type, "image/png");
+    // base64 of the PNG signature begins with iVBORw0KGgo.
+    assert!(
+        out.media[0].data_base64.starts_with("iVBORw0KGgo"),
+        "got: {}",
+        out.media[0].data_base64
+    );
+    assert!(
+        out.text.contains("image"),
+        "text note should mention the image: {}",
+        out.text
+    );
+}
+
+#[tokio::test]
+async fn read_file_image_sliced_stays_text_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend_from_slice(&[0u8; 32]);
+    std::fs::write(dir.path().join("pic.png"), &bytes).unwrap();
+    // A sliced read (explicit limit) must NOT attach media — it defers to the
+    // text path (which describes the binary).
+    let out = ReadFile
+        .execute_rich(
+            read_args("pic.png", None, Some(10)),
+            &ctx(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+    assert!(out.media.is_empty(), "sliced read must not attach media");
+}
+
+#[tokio::test]
 async fn read_file_caps_at_default_limit_and_emits_continuation_notice() {
     let dir = tempfile::tempdir().unwrap();
     // 2500 lines: hits the 2000-line default cap, leaves 500 remaining.

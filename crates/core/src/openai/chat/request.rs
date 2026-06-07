@@ -209,6 +209,7 @@ mod tests {
                     call_id: "call_1".into(),
                     output: "contents".into(),
                     error: false,
+                    media: Vec::new(),
                 },
             ],
         )

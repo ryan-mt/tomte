@@ -13,6 +13,7 @@ fn tool_output(call_id: &str, output: &str) -> InputItem {
         call_id: call_id.into(),
         output: output.into(),
         error: false,
+        media: Vec::new(),
     }
 }
 

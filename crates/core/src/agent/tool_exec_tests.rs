@@ -229,6 +229,7 @@ async fn try_recover_overflow_sheds_and_retries_only_for_overflow() {
         call_id: id.into(),
         output: big.clone(),
         error: false,
+        media: Vec::new(),
     };
     agent.history = vec![out("c1"), out("c2"), out("c3"), out("c4")];
 
@@ -289,6 +290,7 @@ fn known_tool_result_history_keeps_canonical_function_call_pair() {
         "Read",
         "ok".to_string(),
         false,
+        Vec::new(),
         Some(r#"{"path":"Cargo.toml","offset":null,"limit":null}"#.to_string()),
     );
 
@@ -313,6 +315,7 @@ fn known_tool_result_history_keeps_canonical_function_call_pair() {
             call_id,
             output,
             error,
+            ..
         } => {
             assert_eq!(call_id, "call_read");
             assert_eq!(output, "ok");
@@ -334,6 +337,7 @@ fn known_tool_result_history_preserves_error_flag() {
         "read_file",
         "Error: missing file".to_string(),
         true,
+        Vec::new(),
         Some(r#"{"path":"missing.txt","offset":null,"limit":null}"#.to_string()),
     );
 
@@ -433,7 +437,7 @@ async fn parallel_tool_batch_is_bounded() {
     assert_eq!(results.len(), MAX_PARALLEL_TOOL_CALLS + 3);
     assert!(results
         .iter()
-        .all(|(_, output, is_error)| { output == "ok" && !is_error }));
+        .all(|(_, output, is_error, _)| { output == "ok" && !is_error }));
     assert!(
         max_seen.load(Ordering::SeqCst) <= MAX_PARALLEL_TOOL_CALLS,
         "parallel tool batch exceeded concurrency cap"

@@ -76,7 +76,7 @@ pub(super) async fn execute_parallel_tool_batch(
     ctx: ToolContext,
     tx: mpsc::Sender<AgentEvent>,
     hooks: Arc<crate::hooks::HookSet>,
-) -> Vec<(String, String, bool)> {
+) -> Vec<(String, String, bool, Vec<crate::openai::ToolMedia>)> {
     let mut results = Vec::with_capacity(batch.len());
     let mut iter = batch.into_iter();
     loop {
@@ -99,7 +99,7 @@ pub(super) async fn execute_builtin_tool_call(
     ctx: ToolContext,
     tx: mpsc::Sender<AgentEvent>,
     hooks: Arc<crate::hooks::HookSet>,
-) -> (String, String, bool) {
+) -> (String, String, bool, Vec<crate::openai::ToolMedia>) {
     let started = std::time::Instant::now();
     let tool_name = tool.name().to_string();
     tracing::info!(
@@ -109,9 +109,11 @@ pub(super) async fn execute_builtin_tool_call(
     );
     let post_args = args.clone();
     let timeout = tool.timeout(&args);
-    let res = tokio::time::timeout(timeout, tool.execute(args, &ctx)).await;
-    let (output, is_err) = match res {
-        Ok(Ok(s)) => (s, false),
+    // The agent loop uses `execute_rich` so a tool can attach media (images,
+    // PDFs) alongside its text; the default just wraps `execute`.
+    let res = tokio::time::timeout(timeout, tool.execute_rich(args, &ctx)).await;
+    let (output, media, is_err) = match res {
+        Ok(Ok(out)) => (out.text, out.media, false),
         Ok(Err(e)) => {
             // An argument-schema mismatch gets a compact summary of the tool's
             // expected arguments appended, so the model can fix the shape and
@@ -127,13 +129,14 @@ pub(super) async fn execute_builtin_tool_call(
             } else {
                 format!("Error: {e}")
             };
-            (msg, true)
+            (msg, Vec::new(), true)
         }
         Err(_) => (
             format!(
                 "Error: tool `{tool_name}` exceeded the {}s hard timeout and was aborted",
                 timeout.as_secs()
             ),
+            Vec::new(),
             true,
         ),
     };
@@ -170,7 +173,7 @@ pub(super) async fn execute_builtin_tool_call(
     hooks
         .fire_post(&tool_name, &post_args, &output, is_err)
         .await;
-    (call_id, output, is_err)
+    (call_id, output, is_err, media)
 }
 
 pub(super) fn cap_tool_output(output: String) -> (String, bool) {

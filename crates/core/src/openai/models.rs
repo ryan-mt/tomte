@@ -71,6 +71,14 @@ pub enum InputItem {
         /// an `error` field.
         #[serde(default, skip_serializing)]
         error: bool,
+        /// Media (images, PDFs) a tool attached for the model to SEE, kept
+        /// in-memory for the Anthropic translator to emit as `image`/`document`
+        /// blocks in the `tool_result`. Internal-only (`skip_serializing`, like
+        /// `error`): the OpenAI Responses wire rejects extra fields and doesn't
+        /// take media in a function_call_output, and a resumed session falls
+        /// back to the text alone.
+        #[serde(default, skip_serializing)]
+        media: Vec<ToolMedia>,
     },
     /// Provider-specific, opaque continuity item. A reasoning block can only be
     /// replayed to the provider that produced it. Because history is a shared IR
@@ -127,6 +135,16 @@ impl MessageContent {
     pub fn text(s: impl Into<String>) -> Self {
         Self::InputText { text: s.into() }
     }
+}
+
+/// A media attachment (image or PDF) a tool result carries for the model to
+/// SEE. `media_type` is a MIME type (`image/png`, `application/pdf`);
+/// `data_base64` is the standard-base64-encoded bytes. The Anthropic translator
+/// turns these into `image`/`document` content blocks inside a `tool_result`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolMedia {
+    pub media_type: String,
+    pub data_base64: String,
 }
 
 /// Full Responses API request body.
@@ -217,6 +235,7 @@ mod tests {
                 call_id: "call_1".into(),
                 output: "Error: failed".into(),
                 error: true,
+                media: Vec::new(),
             }],
         );
         let wire = serde_json::to_value(&req).unwrap();
@@ -224,6 +243,8 @@ mod tests {
         assert_eq!(wire["input"][0]["call_id"], "call_1");
         assert_eq!(wire["input"][0]["output"], "Error: failed");
         assert!(wire["input"][0].get("error").is_none());
+        // Media is internal-only and must never reach the OpenAI wire.
+        assert!(wire["input"][0].get("media").is_none());
     }
 
     #[test]

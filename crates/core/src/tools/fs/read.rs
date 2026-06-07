@@ -3,10 +3,12 @@
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
+use base64::Engine;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::io::AsyncReadExt;
 
-use crate::tools::{BuiltinTool, ToolContext};
+use crate::tools::{BuiltinTool, ToolContext, ToolOutput};
 
 use super::common::resolve;
 
@@ -153,6 +155,76 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         };
         record_successful_read(ctx, &path, &meta, fully_read).await;
         Ok(out)
+    }
+
+    /// Whole-file read of an image (PNG/JPEG/GIF/WebP) or PDF attaches the bytes
+    /// as media so a vision model can SEE it, instead of the text "binary file"
+    /// note. A sliced read (offset/limit) or any other file defers to the
+    /// text-only `execute`. Mirrors Claude Code's Read.
+    async fn execute_rich(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        let a: ReadArgs = crate::tools::parse_args("read_file", args.clone())?;
+        if a.offset.is_none() && a.limit.is_none() {
+            if let Ok(path) = resolve(&ctx.cwd, &a.path) {
+                if let Some(media_type) = displayable_media_type(&path).await {
+                    // Cap on the bytes we inline (base64 inflates ~33%); above
+                    // it, fall through to the text path's `describe_binary`.
+                    const MAX_MEDIA_BYTES: u64 = 5_000_000;
+                    if let Ok(meta) = tokio::fs::metadata(&path).await {
+                        let size = meta.len();
+                        if size > 0 && size <= MAX_MEDIA_BYTES {
+                            let bytes = tokio::fs::read(&path)
+                                .await
+                                .with_context(|| format!("read {}", path.display()))?;
+                            let data_base64 =
+                                base64::engine::general_purpose::STANDARD.encode(&bytes);
+                            // Whole binary read: recorded as fully read so
+                            // write_file may overwrite it (matches execute()).
+                            record_successful_read(ctx, &path, &meta, true).await;
+                            let kind = if media_type == "application/pdf" {
+                                "a PDF"
+                            } else {
+                                "an image"
+                            };
+                            let text = format!(
+                                "<system-reminder>`{}` is {} ({} bytes), attached as {} for vision-capable models to view.</system-reminder>",
+                                a.path, kind, size, media_type
+                            );
+                            return Ok(ToolOutput {
+                                text,
+                                media: vec![crate::openai::ToolMedia {
+                                    media_type: media_type.to_string(),
+                                    data_base64,
+                                }],
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(ToolOutput::text(self.execute(args, ctx).await?))
+    }
+}
+
+/// MIME type for a file `read_file` can show to a vision model (images + PDF),
+/// sniffed from leading magic bytes; `None` for anything else. Sniffing beats
+/// the extension and avoids reading the whole file just to classify it.
+async fn displayable_media_type(path: &std::path::Path) -> Option<&'static str> {
+    let mut buf = [0u8; 16];
+    let mut f = tokio::fs::File::open(path).await.ok()?;
+    let n = f.read(&mut buf).await.ok()?;
+    let head = &buf[..n];
+    if head.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if head.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if head.len() >= 12 && &head[0..4] == b"RIFF" && &head[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if head.starts_with(b"%PDF-") {
+        Some("application/pdf")
+    } else {
+        None
     }
 }
 

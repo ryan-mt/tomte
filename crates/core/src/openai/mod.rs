@@ -7,6 +7,6 @@ pub mod stream;
 pub use client::OpenAiClient;
 pub use models::{
     InputItem, MessageContent, ReasoningConfig, ResponsesRequest, ResponsesResponse, Tool,
-    ToolChoice, ToolFunctionDef,
+    ToolChoice, ToolFunctionDef, ToolMedia,
 };
 pub use stream::{ResponseStreamEvent, StreamHandle};

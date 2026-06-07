@@ -505,7 +505,7 @@ impl Agent {
         // order. This keeps fast multi-read turns fast without allowing
         // `run_shell`, writes, approvals, or control tools to race each
         // other.
-        let mut results: Vec<(String, String, bool)> = Vec::new();
+        let mut results: Vec<(String, String, bool, Vec<crate::openai::ToolMedia>)> = Vec::new();
         let mut parallel_batch: Vec<RunnableToolCall<'_>> = Vec::new();
         for (call_id, args, tool) in runnable {
             if is_parallel_safe_tool_call(tool, &args) {
@@ -549,7 +549,13 @@ impl Agent {
             self.refresh_system_context();
         }
 
-        results.extend(precomputed);
+        // Precomputed (gate refusals / errors) carry no media; widen to the
+        // 4-tuple so they join `results` from the executed calls.
+        results.extend(
+            precomputed
+                .into_iter()
+                .map(|(id, out, err)| (id, out, err, Vec::new())),
+        );
 
         // Note, for end-of-turn auto-capture (Pillar 2): did this phase land a
         // real file edit, and did the model already record a decision itself? A
@@ -558,7 +564,7 @@ impl Agent {
         for pc in &pending_calls {
             let landed = results
                 .iter()
-                .any(|(id, _, is_err)| id == &pc.call_id && !*is_err);
+                .any(|(id, _, is_err, _)| id == &pc.call_id && !*is_err);
             if !landed {
                 continue;
             }
@@ -578,7 +584,7 @@ impl Agent {
                 .is_some_and(|t| matches!(t.name(), "ask_user_question" | "exit_plan_mode"))
                 && results
                     .iter()
-                    .any(|(id, _, is_err)| id == &pc.call_id && !*is_err)
+                    .any(|(id, _, is_err, _)| id == &pc.call_id && !*is_err)
         });
         let should_enter_plan_mode = pending_calls.iter().any(|pc| {
             self.registry
@@ -586,14 +592,17 @@ impl Agent {
                 .is_some_and(|t| t.name() == "enter_plan_mode")
                 && results
                     .iter()
-                    .any(|(id, _, is_err)| id == &pc.call_id && !*is_err)
+                    .any(|(id, _, is_err, _)| id == &pc.call_id && !*is_err)
         });
         if should_enter_plan_mode {
             self.approval = ApprovalMode::Plan;
         }
-        let mut by_id: std::collections::HashMap<String, (String, bool)> = results
+        let mut by_id: std::collections::HashMap<
+            String,
+            (String, bool, Vec<crate::openai::ToolMedia>),
+        > = results
             .into_iter()
-            .map(|(id, out, is_err)| (id, (out, is_err)))
+            .map(|(id, out, is_err, media)| (id, (out, is_err, media)))
             .collect();
         // Record the assistant's narration that preceded the tool calls
         // BEFORE the function-call items, so the transcript (and the next
@@ -620,7 +629,7 @@ impl Agent {
             });
         }
         for pc in &pending_calls {
-            if let Some((output, is_error)) = by_id.remove(&pc.call_id) {
+            if let Some((output, is_error, media)) = by_id.remove(&pc.call_id) {
                 append_tool_result_history(
                     &mut self.history,
                     &self.registry,
@@ -628,6 +637,7 @@ impl Agent {
                     &pc.name,
                     output,
                     is_error,
+                    media,
                     history_args_by_call_id.remove(&pc.call_id),
                 );
             }

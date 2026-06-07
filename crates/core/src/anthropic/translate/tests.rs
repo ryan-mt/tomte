@@ -142,6 +142,7 @@ fn function_call_output_becomes_user_tool_result() {
             call_id: "call_1".into(),
             output: "42".into(),
             error: false,
+            media: Vec::new(),
         }],
     );
     let out = to_messages_request(&req);
@@ -170,6 +171,7 @@ fn errored_function_call_output_marks_anthropic_tool_result_error() {
             call_id: "call_1".into(),
             output: "Error: missing file".into(),
             error: true,
+            media: Vec::new(),
         }],
     );
     let out = to_messages_request(&req);
@@ -183,6 +185,41 @@ fn errored_function_call_output_marks_anthropic_tool_result_error() {
             assert_eq!(tool_use_id, "call_1");
             assert_eq!(content, &Value::String("Error: missing file".into()));
             assert_eq!(is_error, &Some(true));
+        }
+        _ => panic!("expected ToolResult"),
+    }
+}
+
+#[test]
+fn function_call_output_with_media_emits_image_block() {
+    let req = ResponsesRequest::new(
+        "claude-opus-4-5",
+        vec![InputItem::FunctionCallOutput {
+            call_id: "call_1".into(),
+            output: "see image".into(),
+            error: false,
+            media: vec![crate::openai::ToolMedia {
+                media_type: "image/png".into(),
+                data_base64: "iVBORw0KGgo=".into(),
+            }],
+        }],
+    );
+    let out = to_messages_request(&req);
+    match &out.messages[0].content[0] {
+        ContentBlock::ToolResult { content, .. } => {
+            let arr = content.as_array().expect("media → content array");
+            assert!(
+                arr.iter()
+                    .any(|b| b["type"] == "text" && b["text"] == "see image"),
+                "expected a text block: {arr:?}"
+            );
+            let img = arr
+                .iter()
+                .find(|b| b["type"] == "image")
+                .expect("expected an image block");
+            assert_eq!(img["source"]["type"], "base64");
+            assert_eq!(img["source"]["media_type"], "image/png");
+            assert_eq!(img["source"]["data"], "iVBORw0KGgo=");
         }
         _ => panic!("expected ToolResult"),
     }

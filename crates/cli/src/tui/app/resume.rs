@@ -170,6 +170,7 @@ pub fn rebuild_blocks_from_history(history: &[tomte_core::openai::InputItem]) ->
             call_id,
             output,
             error,
+            ..
         } = item
         {
             outputs.insert(call_id.clone(), (output.clone(), *error));

@@ -71,7 +71,7 @@ fn cap_precomputed_outputs_preserves_error_flags() {
 async fn execute_builtin_tool_call_caps_event_and_history_output() {
     let (tx, mut rx) = mpsc::channel(4);
     let ctx = ToolContext::new(std::env::current_dir().unwrap(), ApprovalMode::OnRequest);
-    let (_, returned, is_err) = execute_builtin_tool_call(
+    let (_, returned, is_err, _) = execute_builtin_tool_call(
         "call_large".to_string(),
         json!({}),
         &LargeTool,
@@ -148,7 +148,7 @@ async fn execute_builtin_tool_call_appends_schema_hint_on_arg_error() {
     // sees on the event channel, so it can self-correct within the turn.
     let (tx, mut rx) = mpsc::channel(4);
     let ctx = ToolContext::new(std::env::current_dir().unwrap(), ApprovalMode::OnRequest);
-    let (_, output, is_err) = execute_builtin_tool_call(
+    let (_, output, is_err, _) = execute_builtin_tool_call(
         "call_bad".to_string(),
         json!({"path": 5}), // wrong type → ArgSchemaError
         &SchemaTool,
@@ -187,7 +187,7 @@ async fn execute_builtin_tool_call_leaves_runtime_error_unchanged() {
     // schema hint there would be noise and could mislead the model.
     let (tx, _rx) = mpsc::channel(4);
     let ctx = ToolContext::new(std::env::current_dir().unwrap(), ApprovalMode::OnRequest);
-    let (_, output, is_err) = execute_builtin_tool_call(
+    let (_, output, is_err, _) = execute_builtin_tool_call(
         "call_rt".to_string(),
         json!({}),
         &RuntimeErrTool,

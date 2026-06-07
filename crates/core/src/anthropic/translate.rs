@@ -6,7 +6,7 @@
 //! mapped onto Anthropic's adaptive-thinking `effort`; `verbosity` is
 //! dropped (no Anthropic equivalent).
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::openai::models::{InputItem, MessageContent, ResponsesRequest, Tool};
 
@@ -182,14 +182,42 @@ pub fn to_messages_request(req: &ResponsesRequest) -> MessagesRequest {
                 call_id,
                 output,
                 error,
+                media,
             } => {
                 if pending_role.as_deref() != Some("user") {
                     flush(&mut pending_role, &mut pending_blocks, &mut messages);
                     pending_role = Some("user".to_string());
                 }
+                // With attached media the tool_result content becomes an array of
+                // blocks (text + image/document) so the model can SEE the image
+                // or PDF; without media it stays a plain string (unchanged wire).
+                let content = if media.is_empty() {
+                    Value::String(output.clone())
+                } else {
+                    let mut blocks: Vec<Value> = Vec::new();
+                    if !output.is_empty() {
+                        blocks.push(json!({"type": "text", "text": output}));
+                    }
+                    for m in media {
+                        let block_type = if m.media_type == "application/pdf" {
+                            "document"
+                        } else {
+                            "image"
+                        };
+                        blocks.push(json!({
+                            "type": block_type,
+                            "source": {
+                                "type": "base64",
+                                "media_type": m.media_type,
+                                "data": m.data_base64,
+                            }
+                        }));
+                    }
+                    Value::Array(blocks)
+                };
                 pending_blocks.push(ContentBlock::ToolResult {
                     tool_use_id: call_id.clone(),
-                    content: Value::String(output.clone()),
+                    content,
                     is_error: if *error { Some(true) } else { None },
                     cache_control: None,
                 });

@@ -315,9 +315,12 @@ pub(super) fn clear_stale_tool_outputs(
     let clearable = positions.len().saturating_sub(keep_recent);
     let mut cleared = 0;
     for &idx in positions.iter().take(clearable) {
-        if let InputItem::FunctionCallOutput { output, .. } = &mut history[idx] {
+        if let InputItem::FunctionCallOutput { output, media, .. } = &mut history[idx] {
             if output.len() > min_bytes && output != CLEARED_TOOL_OUTPUT_MARKER {
                 *output = CLEARED_TOOL_OUTPUT_MARKER.to_string();
+                // Drop any attached media too — the marker replaces the whole
+                // result, and a stale image only burns context/tokens.
+                media.clear();
                 cleared += 1;
             }
         }
@@ -325,6 +328,9 @@ pub(super) fn clear_stale_tool_outputs(
     cleared
 }
 
+// Plumbing helper: threads one tool call's identity, text, error flag, media,
+// and canonical args into the two history items it produces.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn append_tool_result_history(
     history: &mut Vec<InputItem>,
     registry: &crate::tools::Registry,
@@ -332,6 +338,7 @@ pub(super) fn append_tool_result_history(
     raw_name: &str,
     output: String,
     is_error: bool,
+    media: Vec<crate::openai::ToolMedia>,
     canonical_args: Option<String>,
 ) {
     if let Some(arguments) = canonical_args {
@@ -344,6 +351,7 @@ pub(super) fn append_tool_result_history(
             call_id: call_id.to_string(),
             output,
             error: is_error,
+            media,
         });
         return;
     }

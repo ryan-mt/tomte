@@ -44,6 +44,30 @@ use crate::openai::{Tool, ToolFunctionDef};
 
 use schema::strict_parameters_schema;
 
+/// A tool result that may carry media (images, PDFs) for the model to SEE, not
+/// just text. Most tools return plain text via `execute`; a tool that returns
+/// media (e.g. `read_file` on an image) overrides `execute_rich`. `From<String>`
+/// and [`ToolOutput::text`] keep the text-only path ergonomic.
+pub struct ToolOutput {
+    pub text: String,
+    pub media: Vec<crate::openai::ToolMedia>,
+}
+
+impl ToolOutput {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            media: Vec::new(),
+        }
+    }
+}
+
+impl From<String> for ToolOutput {
+    fn from(text: String) -> Self {
+        Self::text(text)
+    }
+}
+
 /// A built-in tool the agent can call.
 #[async_trait]
 pub trait BuiltinTool: Send + Sync {
@@ -74,6 +98,15 @@ pub trait BuiltinTool: Send + Sync {
         None
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String>;
+
+    /// Rich variant of [`execute`](BuiltinTool::execute) that may attach media
+    /// (images, PDFs) for the model to SEE, not just text. Defaults to the text
+    /// from `execute`; override ONLY when a tool returns media (e.g. `read_file`
+    /// on an image). The agent loop calls this; `execute` stays the text
+    /// contract used by direct callers and tests.
+    async fn execute_rich(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput> {
+        Ok(ToolOutput::text(self.execute(args, ctx).await?))
+    }
 
     fn definition(&self) -> Tool {
         Tool::Function(ToolFunctionDef {

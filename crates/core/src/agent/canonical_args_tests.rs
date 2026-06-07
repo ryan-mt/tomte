@@ -369,6 +369,7 @@ fn unsupported_tool_result_history_becomes_safe_user_message() {
         "Sleep",
         "Error: unknown tool: Sleep".to_string(),
         true,
+        Vec::new(),
         None,
     );
 

@@ -359,6 +359,7 @@ mod tests {
                 call_id: "call_1".into(),
                 output: "ok".into(),
                 error: false,
+                media: Vec::new(),
             },
         ];
 
