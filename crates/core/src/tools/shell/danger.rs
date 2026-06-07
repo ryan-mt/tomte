@@ -160,17 +160,43 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
     {
         return Some("git worktree remove --force discards a worktree with changes");
     }
-    const PIPE_INTERPRETERS: &[&str] = &["sh", "bash", "zsh", "dash", "python", "perl"];
-    // Any pipeline stage after the first that feeds bytes into a shell
-    // interpreter runs attacker-controlled output as code. Gating this on a
-    // curl/wget *source* missed every other producer (`cat x | sh`, `base64 -d
-    // | bash`, `xargs sh`), so the source is no longer required.
+    const PIPE_INTERPRETERS: &[&str] = &[
+        // POSIX shells.
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+        // Script interpreters that execute bytes read from stdin just as readily
+        // as a shell does (`curl … | node`, `… | ruby`, `… | pwsh -c -`). Leaving
+        // these off let the curl-pipe-shell guard be sidestepped by any non-shell
+        // interpreter; `is_versioned_name` covers `python3`, `ruby3.2`, etc.
+        "python",
+        "perl",
+        "node",
+        "nodejs",
+        "ruby",
+        "php",
+        "pwsh",
+        "powershell",
+        "deno",
+        "bun",
+        "osascript",
+        "rscript",
+        "lua",
+        "tclsh",
+    ];
+    // Any pipeline stage after the first that feeds bytes into an interpreter
+    // runs attacker-controlled output as code. Gating this on a curl/wget
+    // *source* missed every other producer (`cat x | sh`, `base64 -d | bash`,
+    // `xargs sh`), so the source is no longer required.
     let pipes_into_interpreter = lower
         .split('|')
         .skip(1)
         .any(|stage| pipe_stage_runs_interpreter(stage, PIPE_INTERPRETERS));
     if pipes_into_interpreter {
-        return Some("piping output into a shell interpreter");
+        return Some("piping output into a command interpreter");
     }
     // `eval`/`iex` assemble and run a command at runtime, so no literal
     // destructive token is present at classify time. Only a command word (the
