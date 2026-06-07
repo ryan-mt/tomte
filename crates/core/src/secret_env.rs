@@ -49,6 +49,17 @@ const ENV_DENYLIST_SUBSTRINGS: &[&str] = &[
     "TWILIO",     // Twilio auth token / SID
     "SENDGRID",   // SendGrid API credentials
     "DOPPLER",    // Doppler secrets-manager token
+    // Secret-store / provider names whose auth material does not always follow
+    // the *_TOKEN / *_KEY / *_SECRET convention the catch-alls cover (e.g.
+    // VAULT_ROLE_ID). Each is chosen to avoid benign collisions (DEFAULT has no
+    // "VAULT"; "_PAT" was rejected because it is a substring of "_PATH").
+    "VAULT",        // HashiCorp Vault (VAULT_ROLE_ID / VAULT_SECRET_ID / token)
+    "GITLAB",       // GitLab CI job/deploy credentials
+    "CLOUDFLARE",   // Cloudflare API credentials
+    "HEROKU",       // Heroku platform API auth
+    "DIGITALOCEAN", // DigitalOcean API auth
+    "SLACK",        // Slack bot/app credentials
+    "DISCORD",      // Discord bot credentials
 ];
 
 /// Whether an env var name looks secret enough to scrub before spawning a child
@@ -113,6 +124,14 @@ mod tests {
             "TWILIO_AUTH",
             "SENDGRID",
             "DOPPLER",
+            "VAULT_ROLE_ID",
+            "VAULT_ADDR",
+            "GITLAB_DEPLOY_TOKEN",
+            "CLOUDFLARE_API_TOKEN",
+            "HEROKU_API_KEY",
+            "DIGITALOCEAN_ACCESS_TOKEN",
+            "SLACK_BOT_TOKEN",
+            "DISCORD_BOT_TOKEN",
         ] {
             assert!(is_secret_env_name(name), "should scrub {name}");
         }
@@ -128,6 +147,10 @@ mod tests {
             "TERM",
             "SSH_CONNECTION",
             "SSH_CLIENT",
+            // Must survive the newly added provider substrings (collision guard):
+            // DEFAULT/FAULT contain no "VAULT".
+            "DEFAULT_TIMEOUT",
+            "FAULT_TOLERANCE",
         ] {
             assert!(!is_secret_env_name(name), "should NOT scrub {name}");
         }
