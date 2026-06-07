@@ -388,6 +388,21 @@ pub(super) const COMPACT_PROMPT: &str =
                               where we left off. Keep it under 30 lines. After this, treat the \
                               summary as the canonical context — earlier messages are gone.";
 
+/// Appended after a file-changing turn to elicit an auto-captured decision. The
+/// model answers as itself (provider-agnostic); the harness parses the reply
+/// with [`crate::decisions::parse_captured`]. It asks for ONE JSON object or the
+/// literal `NONE`, nothing else, so a routine edit records nothing. Pillar 2 —
+/// auto-capture.
+pub(super) const CAPTURE_PROMPT: &str =
+    "You just finished a turn that changed files in this project. If — and only if — you made a \
+     NON-OBVIOUS decision worth preserving for whoever (or whichever model) works here next — a \
+     real trade-off, a constraint you honored, or a design choice with genuine rejected \
+     alternatives — record it. Output exactly ONE JSON object on a single line and nothing else: \
+     {\"loc\":\"path/file.ext:line\",\"decision\":\"the choice in one line\",\"why\":\"the reasoning\",\
+     \"rejected\":[\"alternative -> consequence\"]}. Use a real file:line you just touched. If the \
+     change was routine, mechanical, or self-evident, output exactly NONE. No prose, no markdown — \
+     only the JSON object or NONE.";
+
 /// Whether an Anthropic model is eligible for the `context-1m-2025-08-07` beta
 /// header. Thin delegator to the model catalogue (the single source of truth);
 /// see [`crate::catalog`].
@@ -436,6 +451,47 @@ pub(super) fn compacted_history(summary: &str) -> Vec<InputItem> {
 /// threshold is unit-testable without constructing an Agent or a network call.
 pub(super) fn should_compact(history_len: usize) -> bool {
     history_len > COMPACT_MIN_ITEMS
+}
+
+/// The auto-capture signal a landed tool call carries (Pillar 2). A file edit
+/// marks a turn as worth a capture self-check; `record_decision` marks that the
+/// model already captured the why itself, so the self-check is skipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CaptureKind {
+    Mutated,
+    Recorded,
+}
+
+/// Classify a landed tool call for auto-capture (Pillar 2). Returns `None` for
+/// tools that neither edit files nor record a decision, so they never trigger
+/// the end-of-turn self-check. Mirrors the file-mutation set the
+/// pre-flight/house-rules path keys on, deliberately excluding `undo_last_edit`
+/// and `notebook_edit` (an undo or a notebook tweak rarely embodies a decision).
+pub(super) fn capture_kind(tool_name: &str) -> Option<CaptureKind> {
+    match tool_name {
+        "edit_file" | "write_file" | "multi_edit" => Some(CaptureKind::Mutated),
+        "record_decision" => Some(CaptureKind::Recorded),
+        _ => None,
+    }
+}
+
+/// Whether the end-of-turn auto-capture self-check should run (Pillar 2). True
+/// only when auto-capture is on, a real edit landed, and the model didn't
+/// already record a decision itself — and never in an unattended headless run,
+/// where the replayed trail is a prompt-injection vector (the same gate the
+/// `record_decision` tool enforces). Pure, so the guard is unit-testable apart
+/// from the network self-check it gates.
+pub(super) fn should_auto_capture(
+    auto_capture: bool,
+    non_interactive: bool,
+    require_approval: bool,
+    turn_mutated: bool,
+    turn_recorded: bool,
+) -> bool {
+    if !auto_capture || !turn_mutated || turn_recorded {
+        return false;
+    }
+    !(non_interactive && require_approval)
 }
 
 pub struct Agent {
@@ -487,4 +543,51 @@ pub struct Agent {
     /// `/cost` survives a `/resume`. Keyed by model so a mid-session `/model`
     /// switch bills each model at its own rate.
     pub cost_usage: Vec<crate::session::ModelUsage>,
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+
+    #[test]
+    fn capture_kind_maps_edits_and_record_decision() {
+        assert_eq!(capture_kind("edit_file"), Some(CaptureKind::Mutated));
+        assert_eq!(capture_kind("write_file"), Some(CaptureKind::Mutated));
+        assert_eq!(capture_kind("multi_edit"), Some(CaptureKind::Mutated));
+        assert_eq!(capture_kind("record_decision"), Some(CaptureKind::Recorded));
+        // Reads, shell, undo, and session-only tools don't signal a captured edit.
+        for t in [
+            "read_file",
+            "grep",
+            "run_shell",
+            "undo_last_edit",
+            "notebook_edit",
+            "memory",
+            "todo_write",
+        ] {
+            assert_eq!(capture_kind(t), None, "{t} should not signal capture");
+        }
+    }
+
+    #[test]
+    fn should_auto_capture_requires_an_edit_and_no_self_record() {
+        // Happy path: edited, model didn't record, enabled, interactive.
+        assert!(should_auto_capture(true, false, false, true, false));
+        // Disabled by config.
+        assert!(!should_auto_capture(false, false, false, true, false));
+        // No edit landed this turn.
+        assert!(!should_auto_capture(true, false, false, false, false));
+        // The model already recorded a decision itself — don't double up.
+        assert!(!should_auto_capture(true, false, false, true, true));
+    }
+
+    #[test]
+    fn should_auto_capture_respects_the_unattended_headless_gate() {
+        // non_interactive + require_approval = unattended headless: the replayed
+        // trail is an injection vector, so stay off even on a real edit.
+        assert!(!should_auto_capture(true, true, true, true, false));
+        // A non-interactive run that cleared require_approval (e.g. skip-perms)
+        // is allowed, mirroring the `record_decision` tool's own gate.
+        assert!(should_auto_capture(true, true, false, true, false));
+    }
 }

@@ -158,7 +158,7 @@ tomte config --set-model gpt-5.5-pro --set-reasoning high
 
 **Project overrides:** drop a `.tomte/config.json` in a repo to override settings for that
 project on top of the global config. Because that file ships in cloned repos, only behavioral
-fields are honored — `model`, `reasoning_effort`, `verbosity`, `auto_compact`, `fallback_models`.
+fields are honored — `model`, `reasoning_effort`, `verbosity`, `auto_compact`, `auto_capture`, `fallback_models`.
 Security-sensitive keys (`default_permission_mode`, `auto_approve_read` / `auto_approve_write`,
 `providers`) are ignored in a project file and stay global-only, so a cloned repo can't disable
 approval prompts or redirect the model endpoint.

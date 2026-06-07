@@ -9,6 +9,11 @@ impl Agent {
         mut final_text: String,
         mut thinking_blocks: Vec<InputItem>,
         tx: &mpsc::Sender<AgentEvent>,
+        // Auto-capture accumulators (Pillar 2), set across the turn's phases via
+        // the caller's `&mut`: did a real file edit land, and did the model
+        // already record a decision itself? The end-of-turn self-check reads them.
+        turn_mutated: &mut bool,
+        turn_recorded: &mut bool,
     ) -> TurnFlow {
         // Append any function calls + their outputs to history, then loop again.
         if pending_calls.is_empty() {
@@ -331,6 +336,24 @@ impl Agent {
         }
 
         results.extend(precomputed);
+
+        // Note, for end-of-turn auto-capture (Pillar 2): did this phase land a
+        // real file edit, and did the model already record a decision itself? A
+        // tool counts only when its result is non-error. The flags accumulate
+        // across the turn via the caller's `&mut`.
+        for pc in &pending_calls {
+            let landed = results
+                .iter()
+                .any(|(id, _, is_err)| id == &pc.call_id && !*is_err);
+            if !landed {
+                continue;
+            }
+            match capture_kind(pc.name.trim()) {
+                Some(CaptureKind::Mutated) => *turn_mutated = true,
+                Some(CaptureKind::Recorded) => *turn_recorded = true,
+                None => {}
+            }
+        }
 
         // Append outputs to history in the original call order so the
         // model sees a deterministic transcript even when completion

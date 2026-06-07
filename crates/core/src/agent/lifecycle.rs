@@ -156,6 +156,15 @@ impl Agent {
     /// call it right after that so their blocks stay in a stable order. No-ops
     /// when the trail is empty.
     pub fn apply_decision_trail(&mut self) {
+        // Reconcile the trail against the working tree before injecting it, so a
+        // decision whose line drifted self-heals and the model inherits the
+        // current `file:line` rather than a stale citation presented as authority
+        // (the shipped defect this closes). The manual `tomte why --reconcile`
+        // path is unchanged; this makes the custodian keep the trail tidy on its
+        // own. The report is intentionally dropped here — the heal is the
+        // side-effect we want; surfacing it is the CLI's job. Pillar 5 — Drift
+        // Watch (A1).
+        crate::decisions::reconcile(&self.cwd);
         crate::decisions::apply_trail_to_prompt(&mut self.system_prompt, &self.cwd);
     }
 

@@ -233,4 +233,62 @@ impl Agent {
         }
         Ok(text)
     }
+
+    /// After a turn that changed files, ask the model — provider-agnostically —
+    /// whether it made a non-obvious decision worth preserving, and if so append
+    /// it to the trail. This makes the decision trail self-populating: the *why*
+    /// survives without the model having to remember to call `record_decision`
+    /// (Pillar 2 — auto-capture).
+    ///
+    /// Cheap and unobtrusive by construction — it returns early unless every
+    /// guard passes:
+    /// - a real file edit landed this turn (`turn_mutated`),
+    /// - the model did NOT already record a decision itself (`turn_recorded`),
+    /// - `auto_capture` is on,
+    /// - the run is not unattended-headless, where the replayed trail is a
+    ///   prompt-injection vector (the same gate `record_decision` enforces).
+    ///
+    /// Provider-agnostic: the self-check routes through the active model/client
+    /// like any other turn, with no per-model special-casing, so a model added
+    /// later works automatically. Fail-open: a self-check error or a `NONE`
+    /// answer records nothing and never disturbs the finished turn.
+    pub(super) async fn maybe_capture_decision(&self, turn_mutated: bool, turn_recorded: bool) {
+        if !should_auto_capture(
+            self.config.auto_capture,
+            self.non_interactive,
+            self.require_approval,
+            turn_mutated,
+            turn_recorded,
+        ) {
+            return;
+        }
+        let mut input = self.history.clone();
+        input.push(InputItem::Message {
+            role: "user".to_string(),
+            content: vec![MessageContent::text(CAPTURE_PROMPT)],
+        });
+        // Tool-free and low-effort: a cheap classification, not a work turn — it
+        // must never start editing, and a routine edit shouldn't pay for deep
+        // reasoning. Built like `compact_history` so it streams through the same
+        // provider-agnostic path.
+        let request = ResponsesRequest::new(self.config.model.clone(), input)
+            .with_instructions(self.system_prompt.clone())
+            .with_reasoning("low")
+            .with_verbosity("low");
+        let Ok(answer) = self.collect_text(request).await else {
+            return;
+        };
+        let Some(captured) = crate::decisions::parse_captured(&answer) else {
+            return;
+        };
+        let record = captured.into_record(&self.cwd, &self.config.model);
+        match crate::decisions::append(&self.cwd, &record) {
+            Ok(()) => tracing::info!(
+                loc = %record.loc,
+                model = %record.model,
+                "auto-captured a decision into the trail"
+            ),
+            Err(e) => tracing::warn!(error = %e, "auto-capture: failed to append decision"),
+        }
+    }
 }

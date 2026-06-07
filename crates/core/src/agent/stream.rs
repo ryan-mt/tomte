@@ -11,6 +11,12 @@ impl Agent {
         // Seeded with the active model so a fallback list that names the current
         // model can't fail over to itself.
         let mut fallback_tried: Vec<String> = vec![self.config.model.clone()];
+        // Auto-capture (Pillar 2): accumulate across the turn whether a real file
+        // edit landed and whether the model already recorded a decision itself, so
+        // the end-of-turn self-check fires only when an edit happened and the why
+        // wasn't already captured.
+        let mut turn_mutated = false;
+        let mut turn_recorded = false;
         'turn: loop {
             steps += 1;
             if steps > MAX_AGENT_STEPS {
@@ -254,10 +260,21 @@ impl Agent {
             }
 
             match self
-                .run_tool_phase(pending_calls, final_text, thinking_blocks, &tx)
+                .run_tool_phase(
+                    pending_calls,
+                    final_text,
+                    thinking_blocks,
+                    &tx,
+                    &mut turn_mutated,
+                    &mut turn_recorded,
+                )
                 .await
             {
-                TurnFlow::Done => return Ok(()),
+                TurnFlow::Done => {
+                    self.maybe_capture_decision(turn_mutated, turn_recorded)
+                        .await;
+                    return Ok(());
+                }
                 TurnFlow::Continue => {}
             }
         }

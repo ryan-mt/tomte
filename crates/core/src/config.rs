@@ -39,6 +39,14 @@ pub struct Config {
     /// long sessions don't overflow or re-bill the full transcript each turn.
     #[serde(default = "default_auto_compact")]
     pub auto_compact: bool,
+    /// After a turn that changed files, ask the model (provider-agnostically)
+    /// whether it made a non-obvious decision worth keeping, and if so append it
+    /// to the decision trail — so the *why* is preserved without the model having
+    /// to remember to call `record_decision`. On by default; the capture
+    /// self-check is skipped on turns with no edits and in unattended headless
+    /// runs. Pillar 2 — auto-capture.
+    #[serde(default = "default_auto_capture")]
+    pub auto_capture: bool,
     #[serde(default)]
     pub auto_approve_read: bool,
     #[serde(default)]
@@ -174,6 +182,9 @@ fn default_verbosity() -> String {
 fn default_auto_compact() -> bool {
     true
 }
+fn default_auto_capture() -> bool {
+    true
+}
 fn default_permission_mode() -> String {
     "default".to_string()
 }
@@ -215,6 +226,7 @@ impl Default for Config {
             reasoning_effort: default_reasoning_effort(),
             verbosity: default_verbosity(),
             auto_compact: true,
+            auto_capture: true,
             auto_approve_read: true,
             auto_approve_write: false,
             default_permission_mode: default_permission_mode(),
@@ -338,6 +350,8 @@ struct ProjectOverlay {
     #[serde(default)]
     auto_compact: Option<bool>,
     #[serde(default)]
+    auto_capture: Option<bool>,
+    #[serde(default)]
     fallback_models: Option<Vec<String>>,
 }
 
@@ -441,6 +455,9 @@ fn apply_project_overlay(cfg: &mut Config, overlay: ProjectOverlay) {
     }
     if let Some(auto_compact) = overlay.auto_compact {
         cfg.auto_compact = auto_compact;
+    }
+    if let Some(auto_capture) = overlay.auto_capture {
+        cfg.auto_capture = auto_capture;
     }
     if let Some(fallbacks) = overlay.fallback_models {
         cfg.fallback_models = fallbacks;

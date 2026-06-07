@@ -193,6 +193,89 @@ pub fn capture_anchor(cwd: &Path, loc: &str) -> Option<String> {
     }
 }
 
+// ---- auto-capture: parse a self-check answer into a decision (Pillar 2) ------
+// After a turn that changed files, the agent asks the active model whether it
+// made a non-obvious decision worth keeping (provider-agnostic — see
+// `Agent::maybe_capture_decision`). The model's reply is parsed here, so the
+// trail populates itself without the model having to call `record_decision`.
+
+/// A decision parsed from the auto-capture self-check, before the harness stamps
+/// the model, timestamp, and drift anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedDecision {
+    pub loc: String,
+    pub decision: String,
+    pub why: String,
+    pub rejected: Vec<String>,
+}
+
+/// Parse the self-check answer into a decision, or `None` when the model said
+/// NONE or returned nothing usable. Lenient by design — models vary, so we take
+/// the first `{ … }` span and parse that, tolerating surrounding prose or a
+/// markdown fence. Returns `None` on any parse failure or a record missing
+/// `loc`/`decision`/`why`, so a malformed answer never writes trail litter. Pure
+/// and provider-agnostic (no model is special-cased), hence unit-testable.
+pub fn parse_captured(answer: &str) -> Option<CapturedDecision> {
+    let start = answer.find('{')?;
+    let end = answer.rfind('}')?;
+    if end < start {
+        return None;
+    }
+    #[derive(Deserialize)]
+    struct Raw {
+        loc: String,
+        decision: String,
+        why: String,
+        #[serde(default, alias = "rejected_alternatives", alias = "alternatives")]
+        rejected: Vec<String>,
+    }
+    let raw: Raw = serde_json::from_str(answer.get(start..=end)?).ok()?;
+    let loc = raw.loc.trim().to_string();
+    let decision = raw.decision.trim().to_string();
+    let why = raw.why.trim().to_string();
+    if loc.is_empty() || decision.is_empty() || why.is_empty() {
+        return None;
+    }
+    let rejected = raw
+        .rejected
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    Some(CapturedDecision {
+        loc,
+        decision,
+        why,
+        rejected,
+    })
+}
+
+impl CapturedDecision {
+    /// Stamp the live model, a timestamp, and a drift anchor onto a parsed
+    /// decision, yielding the record to append — so an auto-captured decision is
+    /// indistinguishable from one the `record_decision` tool wrote by hand
+    /// (including the `anchor` that lets Drift Watch re-locate it later).
+    pub fn into_record(self, cwd: &Path, model: &str) -> DecisionRecord {
+        DecisionRecord {
+            anchor: capture_anchor(cwd, &self.loc),
+            loc: self.loc,
+            decision: self.decision,
+            why: self.why,
+            rejected: self.rejected,
+            model: model.to_string(),
+            ts: now_ms(),
+        }
+    }
+}
+
+/// Wall-clock epoch milliseconds, for stamping a freshly captured decision.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// What `reconcile` found, for the `tomte why --reconcile` summary.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ReconcileReport {
@@ -707,6 +790,97 @@ mod tests {
         assert_eq!(report.skipped, 1);
         assert!(!report.changed());
         let _ = std::fs::remove_dir_all(store.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reconcile_then_inject_feeds_the_healed_loc_not_the_stale_one() {
+        // The agent's `apply_decision_trail` now reconciles before injecting.
+        // Prove that chain (reconcile_at -> apply_trail_at) feeds the model the
+        // CURRENT line, not the drifted one it used to cite as authority — the
+        // shipped stale-citation defect this closes.
+        let store = tmp("auto_rec");
+        let root = src_root("auto_rec");
+        // Recorded at line 1; the anchored line has since drifted to line 3.
+        std::fs::write(
+            root.join("src/a.rs"),
+            "// added\n// added\nlet token = mint();\n",
+        )
+        .unwrap();
+        append_at(&store, &anchored("src/a.rs:1", "let token = mint();")).unwrap();
+
+        reconcile_at(&store, &root);
+        let mut prompt = String::from("BASE");
+        apply_trail_at(&mut prompt, &store);
+
+        assert!(
+            prompt.contains("src/a.rs:3"),
+            "injects the healed loc: {prompt}"
+        );
+        assert!(
+            !prompt.contains("src/a.rs:1"),
+            "never the stale loc: {prompt}"
+        );
+        let _ = std::fs::remove_dir_all(store.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- auto-capture parsing (Pillar 2) ----
+
+    #[test]
+    fn parse_captured_reads_a_bare_json_object() {
+        let a = r#"{"loc":"src/a.rs:10","decision":"return Err on empty","why":"validate at the boundary","rejected":["panic!() -> crashes callers"]}"#;
+        let c = parse_captured(a).unwrap();
+        assert_eq!(c.loc, "src/a.rs:10");
+        assert_eq!(c.decision, "return Err on empty");
+        assert_eq!(c.why, "validate at the boundary");
+        assert_eq!(c.rejected, vec!["panic!() -> crashes callers".to_string()]);
+    }
+
+    #[test]
+    fn parse_captured_tolerates_prose_and_a_markdown_fence() {
+        // A model may wrap the object in prose or a ```json fence; we still find it.
+        let a = "Sure — here is the decision:\n```json\n{\"loc\":\"src/a.rs:1\",\"decision\":\"d\",\"why\":\"w\"}\n```\n";
+        let c = parse_captured(a).unwrap();
+        assert_eq!(c.loc, "src/a.rs:1");
+        assert!(c.rejected.is_empty(), "rejected defaults to empty");
+    }
+
+    #[test]
+    fn parse_captured_is_none_on_none_garbage_or_missing_fields() {
+        assert!(parse_captured("NONE").is_none());
+        assert!(parse_captured("").is_none());
+        assert!(parse_captured("no json here at all").is_none());
+        // A missing required field records nothing (no trail litter).
+        assert!(parse_captured(r#"{"loc":"a:1","decision":"d"}"#).is_none());
+        // A whitespace-only required field is treated as empty → rejected.
+        assert!(parse_captured(r#"{"loc":"  ","decision":"d","why":"w"}"#).is_none());
+    }
+
+    #[test]
+    fn parse_captured_accepts_rejected_aliases() {
+        let a = r#"{"loc":"a:1","decision":"d","why":"w","alternatives":["x -> y"]}"#;
+        assert_eq!(
+            parse_captured(a).unwrap().rejected,
+            vec!["x -> y".to_string()]
+        );
+    }
+
+    #[test]
+    fn into_record_stamps_the_live_model_and_a_drift_anchor() {
+        let root = src_root("into_rec");
+        std::fs::write(root.join("src/a.rs"), "fn a() {}\nlet z = 1;\n").unwrap();
+        let record = CapturedDecision {
+            loc: "src/a.rs:2".into(),
+            decision: "d".into(),
+            why: "w".into(),
+            rejected: vec![],
+        }
+        .into_record(&root, "gpt-5.5");
+        assert_eq!(record.model, "gpt-5.5");
+        assert_eq!(record.loc, "src/a.rs:2");
+        // The anchor snapshots the line so Drift Watch can re-locate it later.
+        assert_eq!(record.anchor.as_deref(), Some("let z = 1;"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

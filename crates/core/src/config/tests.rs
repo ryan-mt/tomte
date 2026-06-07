@@ -155,6 +155,14 @@ fn auto_compact_defaults_on() {
 }
 
 #[test]
+fn auto_capture_defaults_on() {
+    assert!(Config::default().auto_capture);
+    // A config.json predating the flag still deserializes with it enabled.
+    let cfg: Config = serde_json::from_str(r#"{"model":"gpt-5.5"}"#).unwrap();
+    assert!(cfg.auto_capture);
+}
+
+#[test]
 fn save_temp_paths_are_unique() {
     let path = PathBuf::from("config.json");
     assert_ne!(unique_tmp_path(&path), unique_tmp_path(&path));
