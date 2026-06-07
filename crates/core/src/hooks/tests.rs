@@ -141,6 +141,7 @@ async fn run_hook_drains_noisy_stderr_without_blocking() {
 // stdin used to deadlock — we blocked writing the payload while the hook
 // blocked writing output. With readers spawned first and stdin written on
 // its own task, this completes well within the timeout.
+#[cfg(unix)]
 #[tokio::test]
 async fn run_hook_does_not_deadlock_when_output_precedes_stdin_read() {
     // Payload larger than a pipe buffer (~64 KiB), like a real PostToolUse
