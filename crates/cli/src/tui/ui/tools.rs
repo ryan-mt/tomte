@@ -31,16 +31,16 @@ pub(super) fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
     let pet_lines = crate::tui::buddy::mini_lines(pet_idx);
     let pet_w = pet_lines.iter().map(Line::width).max().unwrap_or(0);
 
-    // Live onboarding signal, mirroring how Claude Code checks for a CLAUDE.md:
-    // is there a project house-rules file in cwd? (See `core::memory` for the
-    // discovery order — we test the same candidates here.) Its presence flips the
-    // first getting-started step to a done ✓ instead of a to-do ○.
+    // Live onboarding signal: is there a project house-rules file in cwd? (See
+    // `core::memory` for the discovery order — we test the same candidates here.)
+    // Its presence flips the first getting-started step to a done ✓ instead of a
+    // to-do ○.
     let has_rules = ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"]
         .iter()
         .any(|f| app.cwd.join(f).exists());
 
     let greeting = "hi, i'm tomte!";
-    let tagline = "your cozy coding companion ⊹";
+    let tagline = "i keep your codebase tidy — and remember why";
     let model_summary = format!(
         "{} · effort {} · {}",
         app.config.model, app.config.reasoning_effort, auth_label

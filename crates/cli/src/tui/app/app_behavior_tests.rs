@@ -508,7 +508,7 @@ fn welcome_panel_is_complete_with_setup_and_getting_started() {
     // The welcome is a complete panel, not just a greeting: it carries the
     // tagline, the active setup (model/workspace), and a live getting-started
     // signal — all welcome-only strings, so they can't match the status line.
-    for needle in ["your cozy coding companion", "workspace", "house rules"] {
+    for needle in ["keep your codebase tidy", "workspace", "house rules"] {
         assert!(dump.contains(needle), "welcome panel missing {needle:?}");
     }
 }
