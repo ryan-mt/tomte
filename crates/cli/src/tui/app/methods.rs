@@ -255,7 +255,7 @@ impl App {
 
     pub fn open_overlay(&mut self, kind: OverlayKind) {
         let picker = match kind {
-            OverlayKind::SlashMenu => Picker::new("commands", picker::slash_commands()),
+            OverlayKind::SlashMenu => Picker::new("commands", picker::slash_commands(&self.cwd)),
             OverlayKind::FilePicker => {
                 Picker::new("attach file (@)", composer::file_candidates(&self.cwd))
             }

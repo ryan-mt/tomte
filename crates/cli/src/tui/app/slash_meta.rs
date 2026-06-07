@@ -161,6 +161,21 @@ Type /<name> [args] to expand and send.",
                     "Expanded /{} into input — press Enter to send.",
                     cmd.name
                 )));
+            } else if let Ok((_dir, body)) = tomte_core::skill::load_body(&app.cwd, other) {
+                // Manually trigger a skill: drop its instructions into the input
+                // so the user can review (and append args) before sending — the
+                // same flow as a custom command. Works for any installed skill,
+                // while the `/` menu surfaces the project-local ones.
+                let mut text = body.trim().to_string();
+                if !arg.is_empty() {
+                    text.push_str("\n\n");
+                    text.push_str(arg);
+                }
+                app.input.buffer = text;
+                app.input.cursor = app.input.buffer.len();
+                app.blocks.push(Block::System(format!(
+                    "Loaded skill /{other} into input — press Enter to send."
+                )));
             } else {
                 app.blocks.push(Block::System(format!(
                     "Unknown command /{other}. Try /help, /commands, /agents, or /skills."

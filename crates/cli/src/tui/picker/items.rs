@@ -2,8 +2,9 @@
 //! session / verbosity catalogues rendered by the generic [`super::Picker`].
 
 use super::PickerItem;
+use std::path::Path;
 
-pub fn slash_commands() -> Vec<PickerItem> {
+pub fn slash_commands(cwd: &Path) -> Vec<PickerItem> {
     fn item(key: &str, title: &str, desc: &str) -> PickerItem {
         PickerItem {
             key: key.into(),
@@ -11,7 +12,7 @@ pub fn slash_commands() -> Vec<PickerItem> {
             description: desc.into(),
         }
     }
-    vec![
+    let mut items = vec![
         item("help", "/help", "list all commands"),
         item("model", "/model", "change the model"),
         item("thinking", "/thinking", "change reasoning effort"),
@@ -103,7 +104,59 @@ pub fn slash_commands() -> Vec<PickerItem> {
         ),
         item("undo", "/undo", "revert the most recent file edit"),
         item("quit", "/quit", "exit tomte"),
-    ]
+    ];
+    let mut seen: std::collections::HashSet<String> = items.iter().map(|i| i.key.clone()).collect();
+    // Custom commands (commands/*.md) — user-defined, manually triggerable.
+    for c in tomte_core::command::load_all(cwd) {
+        if !seen.insert(c.name.clone()) {
+            continue;
+        }
+        let desc = first_line(&c.description);
+        items.push(PickerItem {
+            key: c.name.clone(),
+            title: format!("/{}", c.name),
+            description: if desc.is_empty() {
+                "custom command".into()
+            } else {
+                format!("command · {desc}")
+            },
+        });
+    }
+    // Project-local skills (.tomte/.claude/.codex skills) — surfaced so the user
+    // can manually trigger them with `/<name>`, like a custom command. Global
+    // skills are left out so the quick `/` menu stays uncluttered (the model
+    // still loads any skill on demand via the `skill` tool).
+    for s in tomte_core::skill::discover(cwd) {
+        let Some(scope) = project_skill_scope(&s.path, cwd) else {
+            continue;
+        };
+        if !seen.insert(s.name.clone()) {
+            continue;
+        }
+        let desc = first_line(&s.description);
+        items.push(PickerItem {
+            key: s.name.clone(),
+            title: format!("/{}", s.name),
+            description: if desc.is_empty() {
+                format!("skill ({scope})")
+            } else {
+                format!("skill ({scope}) · {desc}")
+            },
+        });
+    }
+    items
+}
+
+fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or("").trim().to_string()
+}
+
+/// `Some(".tomte"|".claude"|".codex")` when the skill's `SKILL.md` lives under
+/// that project skills dir of `cwd`; `None` for a global skill.
+fn project_skill_scope(path: &Path, cwd: &Path) -> Option<&'static str> {
+    [".tomte", ".claude", ".codex"]
+        .into_iter()
+        .find(|sub| path.starts_with(cwd.join(sub).join("skills")))
 }
 
 /// Build the model picker dynamically from the providers the user is
@@ -351,5 +404,46 @@ mod effort_tests {
         let sonnet = keys("claude-sonnet-4-6");
         assert!(!sonnet.iter().any(|s| s == "xhigh"));
         assert!(sonnet.iter().any(|s| s == "max"));
+    }
+}
+
+#[cfg(test)]
+mod slash_menu_tests {
+    use super::slash_commands;
+    use std::fs;
+
+    #[test]
+    fn project_skills_and_commands_appear_with_builtins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path();
+        // A project-local skill under .tomte/skills.
+        let skill_dir = cwd.join(".tomte").join("skills").join("zzz-demo-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: zzz-demo-skill\ndescription: a demo project skill\n---\nbody\n",
+        )
+        .unwrap();
+        // A project-local custom command under .tomte/commands.
+        let cmd_dir = cwd.join(".tomte").join("commands");
+        fs::create_dir_all(&cmd_dir).unwrap();
+        fs::write(cmd_dir.join("zzz-demo-cmd.md"), "do the thing\n").unwrap();
+
+        let items = slash_commands(cwd);
+        // The project skill shows with a clear scope tag and is triggerable.
+        assert!(
+            items
+                .iter()
+                .any(|i| i.title == "/zzz-demo-skill" && i.description.contains("skill (.tomte)")),
+            "project skill should appear in the slash menu with a scope tag"
+        );
+        // The project custom command shows too.
+        assert!(
+            items.iter().any(|i| i.title == "/zzz-demo-cmd"),
+            "project custom command should appear in the slash menu"
+        );
+        // Built-ins are still present and come first.
+        assert!(items.iter().any(|i| i.key == "model"));
+        assert!(items.first().is_some_and(|i| i.key == "help"));
     }
 }
