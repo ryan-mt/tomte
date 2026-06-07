@@ -186,6 +186,41 @@ async fn read_file_image_sliced_stays_text_only() {
 }
 
 #[tokio::test]
+async fn read_file_on_directory_errors_clearly() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("subdir")).unwrap();
+    let err = ReadFile
+        .execute(
+            read_args("subdir", None, None),
+            &ctx(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("is a directory"), "got: {err}");
+    assert!(
+        err.contains("list_dir"),
+        "should point to the right tool: {err}"
+    );
+}
+
+#[tokio::test]
+async fn list_dir_on_file_errors_clearly() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+    let err = ListDir
+        .execute(json!({"path": "a.txt"}), &ctx(dir.path().to_path_buf()))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("is a file"), "got: {err}");
+    assert!(
+        err.contains("read_file"),
+        "should point to the right tool: {err}"
+    );
+}
+
+#[tokio::test]
 async fn read_file_caps_at_default_limit_and_emits_continuation_notice() {
     let dir = tempfile::tempdir().unwrap();
     // 2500 lines: hits the 2000-line default cap, leaves 500 remaining.

@@ -1,6 +1,6 @@
 //! The `list_dir` tool. Split out of `fs`; logic unchanged.
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -58,6 +58,21 @@ Parameters:\n\
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<String> {
         let a: ListArgs = crate::tools::parse_args("list_dir", args)?;
         let path = resolve(&ctx.cwd, &a.path)?;
+        // Distinguish "not found" and "it's a file" from a raw read_dir OS error
+        // so the model can self-correct (e.g. reach for read_file on a file).
+        match tokio::fs::metadata(&path).await {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                return Err(anyhow!(
+                    "{} is a file, not a directory — use read_file to read it",
+                    a.path
+                ))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(anyhow!("directory not found: {}", a.path))
+            }
+            Err(e) => return Err(e).with_context(|| format!("list_dir {}", a.path)),
+        }
         let mut entries = tokio::fs::read_dir(&path).await?;
         let mut items: Vec<String> = Vec::new();
         while let Some(e) = entries.next_entry().await? {

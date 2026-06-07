@@ -98,6 +98,14 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
             }
             Err(e) => return Err(e).with_context(|| format!("read {}", a.path)),
         };
+        // A directory read otherwise fails with a raw OS error ("Is a directory"
+        // / "Access is denied"); name the mistake and the right tool instead.
+        if meta.is_dir() {
+            return Err(anyhow!(
+                "{} is a directory, not a file — use list_dir or glob to see its contents",
+                a.path
+            ));
+        }
         if a.limit == Some(0) {
             return Err(anyhow!("limit must be greater than 0"));
         }
