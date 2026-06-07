@@ -158,6 +158,22 @@ async fn run_hook_does_not_deadlock_when_output_precedes_stdin_read() {
     assert_eq!(code, 0);
 }
 
+#[tokio::test]
+async fn probe_command_runs_cross_platform_and_reports_exit_code() {
+    // `echo hi` and `exit N` behave identically under `sh -c` and `cmd /C`, so
+    // this test is meaningful on Linux, macOS, and Windows alike.
+    let (code, out) = probe_command("echo hi", Duration::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(code, 0);
+    assert!(out.contains("hi"), "got: {out:?}");
+
+    let (code, _out) = probe_command("exit 3", Duration::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(code, 3);
+}
+
 #[test]
 fn shell_invocation_is_cross_platform() {
     // Unix always runs hooks via `sh -c`. Windows uses `sh -c` when Git Bash is

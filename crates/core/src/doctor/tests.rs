@@ -157,6 +157,18 @@ fn binary_on_path_finds_a_file_in_a_synthetic_path_dir() {
 }
 
 #[test]
+fn hook_program_extracts_first_program_skipping_env() {
+    assert_eq!(hook_program("cargo fmt"), Some("cargo"));
+    assert_eq!(
+        hook_program("npx --no-install prettier --write ."),
+        Some("npx")
+    );
+    assert_eq!(hook_program("RUST_LOG=info cargo fmt"), Some("cargo"));
+    assert_eq!(hook_program("  gofmt -w .  "), Some("gofmt"));
+    assert_eq!(hook_program(""), None);
+}
+
+#[test]
 fn diagnose_runs_without_panicking_and_is_structured() {
     // Reads the real environment read-only; assert structure, not values,
     // so it's stable across machines.

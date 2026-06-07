@@ -36,7 +36,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -111,6 +111,41 @@ fn build_shell_command(command: &str) -> Command {
     let mut cmd = Command::new(program);
     cmd.arg(flag).arg(command);
     cmd
+}
+
+/// Human label of the shell that runs hooks on this OS (`sh -c` or `cmd /C`),
+/// for `tomte doctor`. Uses the same selection as the real runner.
+pub fn hook_shell_label() -> String {
+    let (program, flag) = shell_invocation(cfg!(windows) && sh_on_path());
+    format!("{program} {flag}")
+}
+
+/// Run `command` through the OS-appropriate shell exactly as a hook would (same
+/// shell selection and secret-env scrub), returning the exit code and captured
+/// stdout+stderr. Backs `tomte hooks run`, so a user can confirm a hook actually
+/// works on their machine. No stdin payload is fed (stdin is closed).
+pub async fn probe_command(command: &str, timeout: Duration) -> Result<(i32, String)> {
+    let mut cmd = build_shell_command(command);
+    cmd.kill_on_drop(true);
+    // The probe's output is shown to the user, so strip secrets just like the
+    // real hook runner does.
+    crate::secret_env::scrub_secret_env(&mut cmd);
+    isolate_process_group(&mut cmd);
+    let output = match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(result) => result?,
+        Err(_) => return Err(anyhow!("timed out after {}s", timeout.as_secs())),
+    };
+    let code = output.status.code().unwrap_or(-1);
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim_end();
+    if !stderr.is_empty() {
+        if !combined.is_empty() && !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        combined.push_str(stderr);
+    }
+    Ok((code, combined))
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

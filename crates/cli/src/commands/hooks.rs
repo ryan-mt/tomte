@@ -1,4 +1,6 @@
-use anyhow::Result;
+use std::time::Duration;
+
+use anyhow::{anyhow, Result};
 use tomte_core::hooks::{self, presets};
 
 /// `tomte hooks <action>` — manage built-in lifecycle-hook presets.
@@ -13,6 +15,11 @@ pub enum HooksAction {
     },
     /// Disable a preset by id, removing it from settings.json.
     Disable {
+        /// Preset id, e.g. `rustfmt`.
+        id: String,
+    },
+    /// Run a preset's command once to confirm it works on this machine.
+    Run {
         /// Preset id, e.g. `rustfmt`.
         id: String,
     },
@@ -36,6 +43,7 @@ pub async fn run(action: Option<HooksAction>) -> Result<()> {
             }
             Ok(())
         }
+        HooksAction::Run { id } => run_preset(&id).await,
     }
 }
 
@@ -61,5 +69,43 @@ fn list() -> Result<()> {
         if total == 1 { "" } else { "s" },
         hooks::settings_path().display()
     );
+    Ok(())
+}
+
+async fn run_preset(id: &str) -> Result<()> {
+    let preset = presets::get(id).ok_or_else(|| {
+        anyhow!(
+            "unknown preset `{id}` — available: {}",
+            presets::all()
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
+    println!(
+        "Probing preset `{}` — runs the real command (may modify files, exactly as the hook does):",
+        preset.id
+    );
+    println!("  $ {}\n", preset.command);
+
+    let (code, output) = hooks::probe_command(preset.command, Duration::from_secs(120)).await?;
+    let shown = if output.chars().count() > 8000 {
+        let head: String = output.chars().take(8000).collect();
+        format!("{head}\n… (output truncated)")
+    } else {
+        output
+    };
+    if !shown.trim().is_empty() {
+        println!("{shown}\n");
+    }
+
+    if code == 0 {
+        println!("✓ exit 0 — this preset runs here");
+    } else {
+        println!(
+            "✗ exit {code} — failed here; a real hook would log this and continue (it never blocks the turn)"
+        );
+    }
     Ok(())
 }

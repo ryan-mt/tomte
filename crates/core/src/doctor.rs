@@ -167,6 +167,7 @@ pub fn diagnose(cwd: &Path) -> Report {
             model_routing_section(cwd),
             mcp_section(),
             discovery_section(cwd),
+            hooks_section(),
             tools_section(),
         ],
     }
@@ -386,6 +387,84 @@ fn discovery_section(cwd: &Path) -> Section {
             Check::info(format!("{hooks} hook{} configured", plural(hooks))),
         ],
     }
+}
+
+/// Per-hook health: which shell runs hooks on this OS, and for each configured
+/// hook whether its command's program resolves on PATH — so a missing tool
+/// shows up here instead of silently failing the first time the hook fires.
+fn hooks_section() -> Section {
+    let cfg = crate::hooks::load().config;
+    let mut checks = vec![Check::info(format!(
+        "hook shell on this OS: {}",
+        crate::hooks::hook_shell_label()
+    ))];
+
+    let mut entries: Vec<(&str, &crate::hooks::HookEntry)> = Vec::new();
+    for h in &cfg.pre_tool_use {
+        entries.push(("PreToolUse", h));
+    }
+    for h in &cfg.post_tool_use {
+        entries.push(("PostToolUse", h));
+    }
+    for h in &cfg.user_prompt_submit {
+        entries.push(("UserPromptSubmit", h));
+    }
+    for h in &cfg.session_start {
+        entries.push(("SessionStart", h));
+    }
+    for h in &cfg.stop {
+        entries.push(("Stop", h));
+    }
+
+    if entries.is_empty() {
+        checks.push(Check::info(
+            "no hooks configured — enable a preset with `tomte hooks enable <id>`",
+        ));
+    } else {
+        for (event, entry) in entries {
+            checks.push(hook_check(event, entry));
+        }
+    }
+
+    Section {
+        title: "Hooks".to_string(),
+        checks,
+    }
+}
+
+/// Validate one configured hook: does its command's program resolve on PATH? A
+/// missing program is a warning (the hook would fail at runtime), softened
+/// because it may legitimately be a shell builtin or alias.
+fn hook_check(event: &str, entry: &crate::hooks::HookEntry) -> Check {
+    match hook_program(&entry.command) {
+        Some(prog) if !binary_on_path(prog) => Check::warn(format!(
+            "{event} {} → `{prog}` not found on PATH (ok if a shell builtin or alias)",
+            entry.matcher
+        )),
+        _ => Check::ok(format!("{event} {} → {}", entry.matcher, entry.command)),
+    }
+}
+
+/// The program a hook command would execute: the first whitespace token,
+/// skipping leading `VAR=value` environment assignments. Good enough to flag a
+/// missing binary; deliberately not a full shell parser.
+fn hook_program(command: &str) -> Option<&str> {
+    for tok in command.split_whitespace() {
+        if is_env_assignment(tok) {
+            continue;
+        }
+        return Some(tok.trim_matches(|c| c == '"' || c == '\''));
+    }
+    None
+}
+
+/// Is `tok` a leading `KEY=value` env assignment (so the program is the next
+/// token)? Requires a non-empty, identifier-like key before the first `=`.
+fn is_env_assignment(tok: &str) -> bool {
+    let Some((key, _)) = tok.split_once('=') else {
+        return false;
+    };
+    !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn tools_section() -> Section {
