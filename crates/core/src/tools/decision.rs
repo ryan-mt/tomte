@@ -105,6 +105,7 @@ The model in play and a timestamp are stamped automatically — do not pass them
                 .collect(),
             model: ctx.config.model.clone(),
             ts: now_ms(),
+            supersedes: None,
         };
         decisions::append(&ctx.cwd, &record)?;
         Ok(format!(

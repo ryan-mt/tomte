@@ -38,6 +38,12 @@ pub struct DecisionRecord {
     /// records and for file-only locations (no `:line`). Pillar 5 — Drift Watch.
     #[serde(default)]
     pub anchor: Option<String>,
+    /// When this decision overturns an earlier one, the `ts` of the decision it
+    /// supersedes — so the trail becomes an audit log of promises kept and
+    /// deliberately broken. `None` for an ordinary, non-superseding decision.
+    /// Pillar 5 — On the Record (A3).
+    #[serde(default)]
+    pub supersedes: Option<u64>,
 }
 
 /// `<config>/projects/<key>/decisions.jsonl` — sibling of the memory store,
@@ -264,6 +270,7 @@ impl CapturedDecision {
             rejected: self.rejected,
             model: model.to_string(),
             ts: now_ms(),
+            supersedes: None,
         }
     }
 }
@@ -412,6 +419,9 @@ fn render_one(d: &DecisionRecord) -> String {
     s.push_str(&format!("  because   {}\n", d.why));
     for r in &d.rejected {
         s.push_str(&format!("  rejected  {r}\n"));
+    }
+    if let Some(ts) = d.supersedes {
+        s.push_str(&format!("  supersedes decision #{ts}\n"));
     }
     s
 }
@@ -568,6 +578,7 @@ mod tests {
             model: model.into(),
             ts: 1,
             anchor: None,
+            supersedes: None,
         }
     }
 
@@ -632,6 +643,17 @@ mod tests {
         assert!(all.contains("src/a.rs:1"));
         assert!(render_for_loc(&[], "x:1").contains("no decision"));
         assert!(render_all(&[]).contains("empty"));
+    }
+
+    #[test]
+    fn render_shows_supersede_link_only_when_present() {
+        let mut d = rec("src/auth.rs:10", "claude-opus-4-8");
+        d.supersedes = Some(1_736_000_000_000);
+        let out = render_for_loc(&[d], "src/auth.rs:10");
+        assert!(out.contains("supersedes decision #1736000000000"), "{out}");
+        // An ordinary, non-superseding decision shows no supersede line.
+        let plain = render_for_loc(&[rec("src/a.rs:1", "gpt-5.5")], "src/a.rs:1");
+        assert!(!plain.contains("supersedes"));
     }
 
     #[test]

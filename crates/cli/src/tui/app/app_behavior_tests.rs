@@ -768,6 +768,7 @@ async fn model_switch_announces_the_trail_follows_only_when_non_empty() {
         model: "gpt-5.5".into(),
         ts: 1,
         anchor: None,
+        supersedes: None,
     };
     tomte_core::decisions::append(&app.cwd, &rec).unwrap();
     app.note_trail_follows_model("claude-opus-4-8");
