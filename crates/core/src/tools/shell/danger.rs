@@ -499,11 +499,13 @@ fn inline_code_flags(name: &str) -> Option<&'static [&'static str]> {
     None
 }
 
-/// A PowerShell `-Command` / `-EncodedCommand` flag or any unambiguous
-/// abbreviation (`-c`, `-com…`, `-e`, `-en…`, `-ec`). The argument is an inline
-/// PowerShell program (often base64 for `-EncodedCommand`), opaque here.
+/// A PowerShell `-EncodedCommand` flag or an abbreviation (`-e`, `-en…`, `-ec`).
+/// Its base64 argument is opaque to the token scan. Deliberately NOT `-Command`:
+/// that argument is plain PowerShell, which `normalize_shell_scan` exposes
+/// (quotes stripped) to the destructive-token rules, so flagging every
+/// `-Command` would refuse benign invocations like `-Command "Start-Sleep 30"`.
 fn is_powershell_code_flag(tok: &str) -> bool {
-    matches!(tok, "-c" | "-e" | "-ec") || tok.starts_with("-com") || tok.starts_with("-enc")
+    matches!(tok, "-e" | "-ec") || tok.starts_with("-enc")
 }
 
 /// True when a segment invokes a non-shell interpreter with an inline program.

