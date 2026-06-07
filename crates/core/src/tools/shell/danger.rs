@@ -73,6 +73,35 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
             }
         }
     }
+    // Partition editors and low-level disk writers that destroy a disk when
+    // handed a raw block device (`blkdiscard /dev/sda`, `sgdisk --zap-all
+    // /dev/sda`, `parted /dev/sda mklabel gpt`, `mke2fs /dev/sda1`, `tar cf
+    // /dev/sda .`). Each needs a `/dev/sd*`-style target to do harm, so requiring
+    // one keeps read-only forms without a device (`fdisk -l`) unflagged.
+    const BLOCK_DEVICE_MUTATORS: &[&str] = &[
+        "blkdiscard",
+        "sgdisk",
+        "gdisk",
+        "sfdisk",
+        "fdisk",
+        "parted",
+        "mke2fs",
+        "mkntfs",
+        "newfs",
+        "tar",
+        "cpio",
+    ];
+    if command_names
+        .iter()
+        .any(|n| BLOCK_DEVICE_MUTATORS.contains(&n.as_str()))
+        && tokens.iter().any(|t| is_raw_block_device(t))
+    {
+        return Some("repartitions or overwrites a raw block device");
+    }
+    // ATA secure-erase wipes the whole drive irrecoverably.
+    if has("hdparm") && tokens.iter().any(|t| t.starts_with("--security-erase")) {
+        return Some("hdparm --security-erase wipes a drive");
+    }
     // `find … -delete` / `-exec rm` recursively deletes everything it matches;
     // under a `find:*` allow-rule or bypass mode it would otherwise run unseen.
     if has("find")
