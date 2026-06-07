@@ -139,6 +139,37 @@ mod todo_tool_render_tests {
 
         assert!(text(&lines).contains("Running tests"));
     }
+
+    #[test]
+    fn todo_write_body_uses_panel_glyphs_with_distinct_in_progress() {
+        // The inline checklist must use the same glyph set as the pinned todo
+        // panel (✓ done, ▪ in-progress, □ pending) and give the in-progress item
+        // its own filled ▪ — not the hollow box it used to share with pending,
+        // where the two were told apart by colour alone. Guards against a
+        // regression to the old ☒/☐ set.
+        let lines = friendly_body(
+            "todo_write",
+            &json!({
+                "todos": [
+                    {"content": "Done one", "activeForm": "Doing one", "status": "completed"},
+                    {"content": "Active one", "activeForm": "Doing two", "status": "in_progress"},
+                    {"content": "Pending one", "activeForm": "Doing three", "status": "pending"},
+                ]
+            }),
+            Some("stored"),
+            false,
+            80,
+            false,
+        );
+        let rendered = text(&lines);
+        assert!(rendered.contains('✓'), "completed glyph: {rendered}");
+        assert!(rendered.contains('▪'), "in-progress glyph: {rendered}");
+        assert!(rendered.contains('□'), "pending glyph: {rendered}");
+        assert!(
+            !rendered.contains('☐') && !rendered.contains('☒'),
+            "must not use the old checkbox glyphs: {rendered}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -690,5 +721,32 @@ mod edit_diff_render_tests {
         // The real change is the only -/+ pair.
         assert_eq!(rendered.matches("let x = 1;").count(), 1, "got: {rendered}");
         assert_eq!(rendered.matches("let x = 2;").count(), 1, "got: {rendered}");
+    }
+
+    #[test]
+    fn edit_diff_truncation_offers_ctrl_o_hint() {
+        // A diff longer than the compact 8-row budget must end with the shared
+        // "(Ctrl+O for more)" hint, like the shell/grep/list previews — so every
+        // truncated tool body offers the same way to see the rest (the diff and
+        // error paths used to omit it).
+        let old: String = (1..=10).map(|i| format!("old line {i}\n")).collect();
+        let new: String = (1..=10).map(|i| format!("new line {i}\n")).collect();
+        let lines = friendly_body(
+            "edit_file",
+            &json!({
+                "path": "this_file_does_not_exist_in_tests.rs",
+                "old_string": old,
+                "new_string": new,
+            }),
+            Some("ok"),
+            false,
+            80,
+            false, // compact: the 8-row budget truncates the 20-row diff
+        );
+        let rendered = text(&lines);
+        assert!(
+            rendered.contains("(Ctrl+O for more)"),
+            "truncated diff must offer the expand hint: {rendered}"
+        );
     }
 }

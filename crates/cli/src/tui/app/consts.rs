@@ -87,6 +87,9 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Sprucing",
     "Neatening",
     "Squaring",
+    "Airing",
+    "Plumping",
+    "Freshening",
     // Woodcraft & mending
     "Whittling",
     "Carving",
@@ -114,6 +117,14 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Notching",
     "Fitting",
     "Truing",
+    "Turning",
+    "Rasping",
+    "Scraping",
+    "Beveling",
+    "Mortising",
+    "Pegging",
+    "Doweling",
+    "Wedging",
     // Textiles & handiwork
     "Stitching",
     "Sewing",
@@ -133,6 +144,13 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Lacing",
     "Darning",
     "Looming",
+    "Spinning",
+    "Winding",
+    "Skeining",
+    "Twining",
+    "Basting",
+    "Spooling",
+    "Tatting",
     // Hearth & kitchen
     "Whisking",
     "Kneading",
@@ -156,6 +174,15 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Toasting",
     "Glazing",
     "Whipping",
+    "Churning",
+    "Roasting",
+    "Baking",
+    "Skimming",
+    "Frothing",
+    "Reducing",
+    "Rendering",
+    "Sieving",
+    "Shelling",
     // Garden & growing
     "Planting",
     "Sowing",
@@ -175,6 +202,13 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Deadheading",
     "Sprigging",
     "Tending",
+    "Thinning",
+    "Staking",
+    "Edging",
+    "Tilling",
+    "Furrowing",
+    "Scything",
+    "Layering",
     // Woodland & roaming
     "Foraging",
     "Gleaning",
@@ -192,6 +226,12 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Tracking",
     "Trailing",
     "Pootling",
+    "Padding",
+    "Prowling",
+    "Loping",
+    "Sauntering",
+    "Plodding",
+    "Toddling",
     // By the hearthfire
     "Kindling",
     "Stoking",
@@ -201,6 +241,8 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Warming",
     "Glowing",
     "Flickering",
+    "Blazing",
+    "Fanning",
     // Quiet thought
     "Pondering",
     "Musing",
@@ -226,6 +268,9 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Mapping",
     "Charting",
     "Plumbing",
+    "Surmising",
+    "Tallying",
+    "Noting",
     // Forge & metal
     "Hammering",
     "Smithing",
@@ -239,6 +284,11 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Sharpening",
     "Polishing",
     "Burnishing",
+    "Forging",
+    "Casting",
+    "Welding",
+    "Stropping",
+    "Swaging",
     // Cozy busyness
     "Humming",
     "Whistling",
@@ -253,6 +303,10 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Bumbling",
     "Scuttling",
     "Bobbing",
+    "Nattering",
+    "Ferreting",
+    "Toiling",
+    "Plying",
     // Truing & fine-tuning
     "Drifting",
     "Settling",
@@ -268,7 +322,12 @@ pub const SPINNER_WORDS: &[&str] = &[
     "Tweaking",
 ];
 
-pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// The turn spinner's animated glyph: a flickering hearthfire rendered with
+/// rising block heights, not the usual braille dots. One column wide and of
+/// even width so it never shifts the layout, and — like the word drift — driven
+/// purely by wall-clock elapsed (see `render_spinner`), so it animates smoothly
+/// and never flickers under a heavy event stream. The tomte's fire, tended.
+pub const SPINNER_FRAMES: &[&str] = &["▁", "▂", "▄", "▃", "▅", "▇", "█", "▆", "▇", "▅", "▃", "▂"];
 
 /// Calm drift cadence: the spinner word advances to the next one every this many
 /// seconds. Long enough that a typical short turn shows a single steady word

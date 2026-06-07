@@ -35,7 +35,7 @@ pub(super) fn friendly_body<'a>(
         }
         if total > max_err {
             out.push(Line::from(Span::styled(
-                format!("… +{} lines", total - max_err),
+                format!("… +{} lines (Ctrl+O for more)", total - max_err),
                 Style::default().fg(palette::TEXT_MUTED),
             )));
         }
@@ -109,7 +109,7 @@ pub(super) fn friendly_body<'a>(
             );
             if rows.len() > max_diff {
                 out.push(Line::from(Span::styled(
-                    format!("… +{} lines", rows.len() - max_diff),
+                    format!("… +{} lines (Ctrl+O for more)", rows.len() - max_diff),
                     style_meta,
                 )));
             }
@@ -178,7 +178,7 @@ pub(super) fn friendly_body<'a>(
             let total_lines: usize = hunks.iter().map(|(_, r)| r.len()).sum();
             if total_lines > max_diff {
                 out.push(Line::from(Span::styled(
-                    format!("… +{} lines", total_lines - max_diff),
+                    format!("… +{} lines (Ctrl+O for more)", total_lines - max_diff),
                     style_meta,
                 )));
             }
@@ -317,10 +317,14 @@ pub(super) fn friendly_body<'a>(
                     .get("status")
                     .and_then(|v| v.as_str())
                     .unwrap_or("pending");
+                // Same glyph set as the persistent todo panel (`render_todo_line`)
+                // so the inline tool-call checklist and the pinned panel read
+                // identically: a filled ▪ marks the one in-progress item (was a
+                // hollow ☐ indistinguishable from pending), ✓ done, □ pending.
                 let (symbol, sym_style, body_style, label) = match status {
-                    "completed" => ("☒", check_done, done_text, content),
-                    "in_progress" => ("☐", check_active, active_text, active),
-                    _ => ("☐", check_pending, pending_text, content),
+                    "completed" => ("✓", check_done, done_text, content),
+                    "in_progress" => ("▪", check_active, active_text, active),
+                    _ => ("□", check_pending, pending_text, content),
                 };
                 let label_wrapped = wrap(label, avail.saturating_sub(2));
                 let mut first = true;
