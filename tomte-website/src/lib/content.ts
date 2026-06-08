@@ -80,7 +80,7 @@ export const capabilities: Capability[] = [
   {
     tag: "tool belt",
     title: "A real tool belt, not a toy",
-    body: "Twenty-five tools across files, shell, search, web, notebooks, sub-agents, todos, and plan mode. Streamed, schema-validated, and run in parallel where it is safe.",
+    body: "Twenty-seven tools across files, shell, search, web, notebooks, sub-agents, memory, todos, and plan mode. Streamed, schema-validated, and run in parallel where it is safe.",
   },
   {
     tag: "lsp",
@@ -168,14 +168,14 @@ export const trailModels: { id: string; accent: "oai" | "ant" }[] = [
   { id: "claude-opus-4-8", accent: "ant" },
 ];
 
-/** The tool belt, grouped exactly as the agent exposes it. 25 tools total. */
+/** The tool belt, grouped exactly as the agent exposes it. 27 tools total. */
 export type ToolGroup = { group: string; blurb: string; tools: string[] };
 
 export const toolBelt: ToolGroup[] = [
   {
     group: "Files",
-    blurb: "Read and edit with stale-file guards that refuse a write when a file changed since it was last read.",
-    tools: ["read_file", "write_file", "edit_file", "multi_edit", "list_dir"],
+    blurb: "Read and edit with stale-file guards that refuse a write when a file changed since it was last read, plus a one-step undo.",
+    tools: ["read_file", "write_file", "edit_file", "multi_edit", "undo_last_edit", "list_dir"],
   },
   {
     group: "Search",
@@ -199,8 +199,13 @@ export const toolBelt: ToolGroup[] = [
   },
   {
     group: "Agents",
-    blurb: "Dispatch sub-agents, ask the user, invoke skills, and disclose tools progressively.",
-    tools: ["dispatch_agent", "ask_user_question", "skill", "tool_search"],
+    blurb: "Dispatch sub-agents, ask the user, and invoke skills.",
+    tools: ["dispatch_agent", "ask_user_question", "skill"],
+  },
+  {
+    group: "Memory",
+    blurb: "Record why a non-obvious change was made, then read it back across sessions and model switches, plus project-scoped notes that persist.",
+    tools: ["memory", "record_decision"],
   },
   {
     group: "Git worktrees",
@@ -280,10 +285,13 @@ export const models: ModelRow[] = [
 
 /** Reasoning effort levels the agent understands. */
 export const reasoningLevels = [
+  "none",
+  "minimal",
   "low",
   "medium",
   "high",
   "xhigh",
+  "max",
 ] as const;
 
 /** Curated slash commands worth knowing. Grouped for a card-per-group layout. */
@@ -373,8 +381,8 @@ export const headlessExamples: string[] = [
 /** Security model. Honest about the no-sandbox tradeoff. */
 export const security: { title: string; body: string }[] = [
   {
-    title: "Destructive commands are flagged",
-    body: "run_shell executes directly on your machine. There is no sandbox yet, so tomte flags obvious destructive commands like rm -rf on home or system paths, curl piped to a shell, mkfs, and force-pushes, and refuses them until you explicitly override.",
+    title: "Commands run in an OS sandbox",
+    body: "run_shell runs inside an OS-level sandbox: Landlock and seccomp on Linux, sandbox-exec on macOS, confining writes to the workspace with outbound network off by default. On Windows it is best-effort process-tree cleanup only, so review destructive prompts there. On top of that, tomte flags obvious destructive commands like rm -rf on home or system paths, curl piped to a shell, mkfs, and force-pushes, and refuses them until you explicitly override.",
   },
   {
     title: "Secrets stay out of the shell",
@@ -393,7 +401,7 @@ export const security: { title: string; body: string }[] = [
 /** Configuration summary. */
 export const configFields: { key: string; desc: string }[] = [
   { key: "model", desc: "Default model, for example gpt-5.5 or claude-opus-4-8." },
-  { key: "reasoning_effort", desc: "low, medium, high, or xhigh." },
+  { key: "reasoning_effort", desc: "none, minimal, low, medium, high, xhigh, or max." },
   { key: "verbosity", desc: "low, medium, or high." },
   { key: "auto_approve_read", desc: "Auto-approve read-only tools." },
   { key: "auto_approve_write", desc: "Auto-approve write tools. False by default." },
@@ -415,7 +423,7 @@ export const faq: { q: string; a: string }[] = [
   },
   {
     q: "Is my code sent anywhere, and is it sandboxed?",
-    a: "Your prompts and the files the agent reads go to the provider you choose, the same as any coding assistant. run_shell runs directly on your machine with no sandbox yet, so review destructive commands. tomte flags the obvious ones.",
+    a: "Your prompts and the files the agent reads go to the provider you choose, the same as any coding assistant. run_shell runs inside an OS-level sandbox (Landlock and seccomp on Linux, sandbox-exec on macOS; default workspace-write with outbound network off), and tomte flags obvious destructive commands on top. On Windows the sandbox is best-effort process cleanup only, so review destructive commands there.",
   },
   {
     q: "What platforms run it?",

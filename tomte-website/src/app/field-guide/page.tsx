@@ -171,7 +171,7 @@ export default function FieldGuide() {
             The security model, stated plainly
           </h2>
           <p className="mt-4 max-w-2xl text-[1.0625rem] leading-relaxed text-ink-2">
-            run_shell executes directly on your machine. There is no sandbox yet, so review destructive prompts. Here is what tomte does guard.
+            run_shell runs inside an OS-level sandbox, confined to the workspace with the network off by default. On Windows that confinement is best-effort, so review destructive prompts there. Here is the rest of what tomte guards.
           </p>
           <div className="mt-9 grid gap-x-14 gap-y-8 sm:grid-cols-2">
             {security.map((s) => (
