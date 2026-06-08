@@ -298,8 +298,9 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// What `reconcile` found, for the `tomte why --reconcile` summary.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// What `reconcile` found, for the `tomte why --reconcile` summary. Derives
+/// `Serialize` so `tomte why --reconcile --json` can emit it for a CI drift-gate.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct ReconcileReport {
     /// Records whose anchored line is still where the `loc` says — left as is.
     pub present: usize,

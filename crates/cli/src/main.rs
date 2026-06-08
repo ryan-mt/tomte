@@ -112,6 +112,10 @@ enum Command {
         /// line drifted, and flag any whose code is gone. Pillar 5 — Drift Watch.
         #[arg(long)]
         reconcile: bool,
+        /// Emit the trail (or the --reconcile report) as JSON instead of the
+        /// rendered text — for scripting, piping, and CI drift-gates.
+        #[arg(long)]
+        json: bool,
         /// Working directory (defaults to the current directory).
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
@@ -124,6 +128,10 @@ enum Command {
         /// File whose decisions to list, e.g. `src/parser.rs`. A `file:line` is
         /// accepted too — the line is ignored and the whole file is shown.
         file: String,
+        /// Emit the file's decisions as a JSON array instead of the rendered,
+        /// one-per-line text — for scripting and piping.
+        #[arg(long)]
+        json: bool,
         /// Working directory (defaults to the current directory).
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
@@ -278,9 +286,10 @@ async fn async_main() -> Result<()> {
             loc,
             all,
             reconcile,
+            json,
             cwd,
-        }) => commands::why::run(loc, all, reconcile, cwd).await,
-        Some(Command::Blame { file, cwd }) => commands::blame::run(file, cwd).await,
+        }) => commands::why::run(loc, all, reconcile, json, cwd).await,
+        Some(Command::Blame { file, json, cwd }) => commands::blame::run(file, json, cwd).await,
         Some(Command::Cost { session, cwd }) => commands::cost::run(session, cwd).await,
         Some(Command::Hooks { action }) => commands::hooks::run(action).await,
         Some(Command::Mcp { action }) => commands::mcp::run(action).await,
@@ -387,10 +396,38 @@ mod tests {
     fn blame_parses_file_and_cwd() {
         let cli = Cli::try_parse_from(["tomte", "blame", "--cwd", "/p", "src/auth.rs"]).unwrap();
         match cli.command {
-            Some(Command::Blame { file, cwd }) => {
+            Some(Command::Blame { file, json, cwd }) => {
                 assert_eq!(file, "src/auth.rs");
+                assert!(!json, "blame defaults to rendered text, not JSON");
                 assert_eq!(cwd, Some(std::path::PathBuf::from("/p")));
             }
+            other => panic!("expected blame command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn why_json_flag_parses_and_defaults_off() {
+        let on = Cli::try_parse_from(["tomte", "why", "--all", "--json"]).unwrap();
+        match on.command {
+            Some(Command::Why { all, json, .. }) => {
+                assert!(all);
+                assert!(json, "--json must enable JSON output");
+            }
+            other => panic!("expected why command, got {other:?}"),
+        }
+
+        let off = Cli::try_parse_from(["tomte", "why", "src/x.rs:1"]).unwrap();
+        match off.command {
+            Some(Command::Why { json, .. }) => assert!(!json, "why defaults to rendered text"),
+            other => panic!("expected why command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blame_json_flag_parses() {
+        let cli = Cli::try_parse_from(["tomte", "blame", "--json", "src/auth.rs"]).unwrap();
+        match cli.command {
+            Some(Command::Blame { json, .. }) => assert!(json),
             other => panic!("expected blame command, got {other:?}"),
         }
     }

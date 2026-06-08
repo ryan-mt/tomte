@@ -150,7 +150,7 @@ Inside the TUI:
 | `/context` (`/ctx`) | context-window usage and where tokens are going |
 | `/worktree create [name]` · `/worktree exit keep\|remove [--discard]` | isolated git worktrees |
 | `/commit` · `/commit-push-pr` | Conventional-Commit generation, push, and PR via `gh` |
-| `/why` | read back the decision trail — *why* past changes were made (`tomte why <loc>` / `tomte blame <file>` from the CLI) |
+| `/why` | read back the decision trail — *why* past changes were made (`tomte why <loc>` / `tomte blame <file>` from the CLI; add `--json` for machine-readable output) |
 | `/buddy` | hatch a pixel companion — a rarity-weighted species seeded from your account, so it's stable for you and only re-rolls on an account switch (`/buddy off`, `/buddy reset`) |
 
 **Composer prefixes** — typed right in the chat input: `@<path>` attaches a file via gitignore-aware

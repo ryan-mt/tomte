@@ -7,6 +7,7 @@
 - Surfaced a file's recorded decisions as house rules in the pre-flight — an edit to a file with recorded decisions lists them first, so the agent re-reads its own constraints before it could break one.
 - Added a cross-model decision trail — `record_decision` logs *why* a non-obvious change was made to an append-only `decisions.jsonl`, re-injected each session so a later session or a different model inherits the reasoning.
 - Added `tomte why <loc>` / `tomte why --all` / `/why` to read the decision trail back, and `tomte blame <file>` for the greppable, one-decision-per-line file view.
+- Added `--json` to `tomte why` and `tomte blame` (and `tomte why --reconcile --json`) — the decision trail and the drift report emit machine-readable JSON alongside the rendered text, so a script or CI drift-gate can read the trail (and assert no stale/ambiguous decisions) instead of parsing prose.
 - Added an end-of-turn receipt — a turn that changes something closes with one line: files touched, tests run (pass/fail), and the *why* it recorded.
 - Added an agent-writable `memory` tool — project-scoped notes that persist across sessions, with a `MEMORY.md` index re-injected each session.
 - Added an OS-level sandbox for `run_shell` — Landlock + seccomp (Linux) / `sandbox-exec` (macOS) confine writes to the workspace and block outbound network by default (`read-only` / `workspace-write` / `danger-full-access`).
