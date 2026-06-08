@@ -500,7 +500,7 @@ fn tools_section() -> Section {
         Check::ok("ripgrep (rg)")
     } else {
         Check::warn(
-            "ripgrep (rg) not found — search falls back to grep, then a built-in walk (slower, ignores .gitignore)",
+            "ripgrep (rg) not found — optional; search uses grep, then a built-in gitignore-aware walk (skips node_modules/target, a bit slower than rg)",
         )
     });
     // grep is the middle search backend; below it, glob/grep use a native,
@@ -513,7 +513,7 @@ fn tools_section() -> Section {
         Check::info("grep not found (ripgrep present, so search still works)")
     } else {
         Check::warn(
-            "neither ripgrep (rg) nor grep found — grep/glob use a built-in fallback (slower, ignores .gitignore)",
+            "neither ripgrep (rg) nor grep found — grep/glob use a built-in gitignore-aware fallback (skips node_modules/target, a bit slower than rg)",
         )
     });
     Section {
@@ -548,7 +548,7 @@ fn auth_file_permission_check(_path: &Path) -> Option<Check> {
 /// Best-effort `which`: is `name` runnable? A bare name is searched on `$PATH`
 /// (honouring `EXE_EXTENSION` on Windows); a name that already contains a path
 /// separator is checked directly. Avoids spawning anything, so it can't hang.
-fn binary_on_path(name: &str) -> bool {
+pub(crate) fn binary_on_path(name: &str) -> bool {
     let p = Path::new(name);
     if p.is_absolute() || p.components().count() > 1 {
         return p.is_file();

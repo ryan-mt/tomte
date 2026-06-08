@@ -32,6 +32,11 @@ pub async fn main_loop(
     if start_with_resume_picker && app.screen == Screen::Chat {
         app.start_with_resume_picker = true;
     }
+    // First-run setup card: if an important external tool (git) is missing, drop
+    // a one-time block with the OS-specific install command. We only show the
+    // command — never run an installer. A no-op on a ready machine (the usual
+    // case), so it never nags.
+    seed_setup_card(&mut app);
     let mut events = EventStream::new();
     let (agent_tx, mut agent_rx) = mpsc::channel::<AgentEvent>(256);
     // Background `!`-command output flows back here so it lands on the UI thread
@@ -460,6 +465,25 @@ pub async fn main_loop(
         }
     }
     Ok(())
+}
+
+/// Seed a one-time setup card when an important external tool is missing,
+/// showing the OS-specific install command (read-only — we never run it). The
+/// list is empty on a ready machine, so this is a no-op in the common case.
+fn seed_setup_card(app: &mut App) {
+    let missing = tomte_core::setup::missing_important_tools();
+    if missing.is_empty() {
+        return;
+    }
+    let mut lines = vec![
+        "⚠ Setup — install these, then restart tomte (tomte shows the command, never runs it):"
+            .to_string(),
+    ];
+    for item in missing {
+        lines.push(format!("  • {} — {}", item.tool, item.why));
+        lines.push(format!("      {}", item.install));
+    }
+    app.blocks.push(Block::System(lines.join("\n")));
 }
 
 /// Finish the hatch animation: adopt the pet (locked to the account) and let

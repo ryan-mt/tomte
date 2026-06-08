@@ -405,7 +405,12 @@ pub(super) fn render_window(
 /// the visible window" — is unit-tested directly. `max_scroll` uses
 /// `viewport - 2` (a 2-row breathing gap at the bottom), the long-standing
 /// alt-screen behavior.
-fn resolve_scroll(total: usize, viewport: usize, auto_scroll: bool, cur_scroll: u16) -> (u16, bool) {
+fn resolve_scroll(
+    total: usize,
+    viewport: usize,
+    auto_scroll: bool,
+    cur_scroll: u16,
+) -> (u16, bool) {
     let inner_height = viewport.saturating_sub(2);
     let max_scroll = total.saturating_sub(inner_height) as u16;
     // Scrolling back to (or past) the bottom resumes auto-follow — how
