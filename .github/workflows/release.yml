@@ -95,11 +95,22 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Extract this version's notes from CHANGELOG
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          awk -v h="## $version" '$0==h{f=1;print;next} /^## /{f=0} f' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "no '## $version' section in CHANGELOG.md; falling back to tag name" >&2
+            printf '%s\n' "$tag" > RELEASE_NOTES.md
+          fi
+          echo "--- release notes ---"; cat RELEASE_NOTES.md
       - name: Publish release
         uses: softprops/action-gh-release@v3.0.0
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           prerelease: false
           make_latest: true
-          body_path: CHANGELOG.md
+          body_path: RELEASE_NOTES.md
           files: dist/*
