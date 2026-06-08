@@ -1,7 +1,7 @@
 # Contributing to tomte
 
-Thanks for wanting to make `tomte` better. It's a young project (beta line
-`0.0.1-beta.*`) and patches, bug reports, and ideas are all welcome.
+Thanks for wanting to make `tomte` better. It's a young project and patches,
+bug reports, and ideas are all welcome.
 
 This guide is short on purpose. The golden rule: **make the change you'd want to
 review** — small, focused, and green.
@@ -108,10 +108,13 @@ through GitHub Security Advisories
 ([Security → Report a vulnerability](https://github.com/ryan-mt/tomte/security/advisories/new))
 so it can be fixed before disclosure.
 
-`run_shell` executes directly on your machine with no sandbox yet, so the agent's
-ability to run arbitrary commands is by design — focus reports on ways the
-guardrails can be bypassed (secret exfiltration, sandbox/path escapes, the
-destructive-command classifier missing a real case).
+`run_shell` runs inside an OS-level sandbox (Landlock + seccomp on Linux,
+`sandbox-exec` on macOS, best-effort process-tree cleanup on Windows; default
+`workspace-write` with outbound network off), and a separate classifier flags
+destructive commands before they run. The agent's ability to run commands is by
+design — focus reports on ways those guardrails can be bypassed: sandbox or path
+escapes, secret exfiltration, and the destructive-command classifier missing a
+real case.
 
 ## License
 

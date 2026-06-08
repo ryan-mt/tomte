@@ -69,7 +69,7 @@ Prefer a prebuilt binary? Grab the archive for your platform from the
 Four doors in — use a subscription or an API key, OpenAI or Anthropic:
 
 ```bash
-tomte login                                   # OpenAI OAuth (ChatGPT Plus/Pro/Team/Enterprise)
+tomte login                                   # interactive picker (OpenAI/Anthropic · OAuth or API key)
 tomte login --api-key --provider openai       # paste an OpenAI API key
 tomte login --api-key --provider anthropic    # paste an Anthropic API key
 tomte status                                   # who am I, and on what plan?
@@ -111,15 +111,18 @@ when read-only:
 
 | Group | Tools |
 | --- | --- |
-| **Files** | `read_file` · `write_file` · `edit_file` · `multi_edit` · `list_dir` |
+| **Files** | `read_file` · `write_file` · `edit_file` · `multi_edit` · `undo_last_edit` · `list_dir` |
 | **Search** | `grep` · `glob` · `lsp` |
 | **Shell** | `run_shell` · `bash_output` · `kill_shell` |
 | **Web** | `web_fetch` · `web_search` |
 | **Flow** | `todo_write` · `goal_update` · `enter_plan_mode` · `exit_plan_mode` · `wait` |
-| **Agents** | `dispatch_agent` · `ask_user_question` · `skill` · `tool_search` |
+| **Agents** | `dispatch_agent` · `ask_user_question` · `skill` |
 | **Memory** | `memory` · `record_decision` |
 | **Git worktrees** | `enter_worktree` · `exit_worktree` |
 | **Notebooks** | `notebook_edit` |
+
+One more — `tool_search` — appears automatically when many MCP tools are connected, so their
+schemas load on demand instead of bloating every request.
 
 Stale-file guards refuse a write when a file changed since the model last read it, destructive
 shell commands are flagged for confirmation, and incomplete streamed tool calls are dropped
@@ -157,7 +160,7 @@ tomte config --set-model gpt-5.5-pro --set-reasoning high
 
 ```json
 {
-  "model": "gpt-5",
+  "model": "gpt-5.5",
   "reasoning_effort": "medium",
   "verbosity": "medium",
   "auto_approve_read": true,
@@ -165,7 +168,7 @@ tomte config --set-model gpt-5.5-pro --set-reasoning high
 }
 ```
 
-**Reasoning effort:** `low` · `medium` · `high` · `xhigh` — **Verbosity:** `low` · `medium` · `high`
+**Reasoning effort:** `none` · `minimal` · `low` · `medium` · `high` · `xhigh` · `max` — **Verbosity:** `low` · `medium` · `high`
 
 **Project overrides:** drop a `.tomte/config.json` in a repo to override settings for that
 project on top of the global config. Because that file ships in cloned repos, only behavioral

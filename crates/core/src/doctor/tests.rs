@@ -109,6 +109,21 @@ fn custom_provider_without_key_warns() {
 }
 
 #[test]
+fn builtin_local_preset_routes_to_preset_not_openai() {
+    // A built-in preset id with no `providers` entry must route through the
+    // preset (mirroring LlmClient::for_config), not the OpenAI credential check.
+    // Ollama is a keyless local server, so it's OK with no key and no creds —
+    // deterministic, no env var needed. Before the builtin_provider fallback,
+    // this misrouted to OpenAI and reported a false Error.
+    let c = model_routing_check(
+        "ollama/llama3",
+        &coverage(MISS, MISS, MISS, MISS),
+        &HashMap::new(),
+    );
+    assert_eq!(c.status, Status::Ok);
+}
+
+#[test]
 fn counts_ignore_info_and_tally_the_rest() {
     let report = Report {
         sections: vec![Section {

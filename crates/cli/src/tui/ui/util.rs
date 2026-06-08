@@ -341,9 +341,11 @@ pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
 /// CR / other C0 / DEL controls. Newlines are preserved so multi-line callers
 /// can still split on them.
 pub(super) fn sanitize_display(s: &str) -> Cow<'_, str> {
-    // Fast path: ESC, tab, CR, and other C0/DEL bytes are exactly the ones
-    // `< 0x20` (minus newline) or `0x7f`. Clean text borrows with no allocation.
-    if !s.bytes().any(|b| (b < 0x20 && b != b'\n') || b == 0x7f) {
+    // Fast path: flag every control char except newline — C0 (incl. ESC, tab,
+    // CR), DEL, AND the 8-bit C1 controls (U+0080..=U+009F) that many terminals
+    // treat as CSI/OSC/DCS introducers, so a pure-C1 escape can't slip through
+    // (matching the headless `sanitize_terminal_text`). Clean text borrows.
+    if !s.chars().any(|c| c.is_control() && c != '\n') {
         return Cow::Borrowed(s);
     }
     let mut out = String::with_capacity(s.len());
@@ -402,7 +404,10 @@ pub(super) fn sanitize_display(s: &str) -> Cow<'_, str> {
                 out.push('\n');
                 col = 0;
             }
-            c if (c as u32) < 0x20 || c == '\u{7f}' => {}
+            // Drop every remaining control char: C0 (minus the ESC/tab/newline
+            // handled above), DEL, and the C1 range U+0080..=U+009F. Dropping a
+            // C1 CSI/OSC introducer leaves its payload as harmless plain text.
+            c if c.is_control() => {}
             c => {
                 out.push(c);
                 col += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);

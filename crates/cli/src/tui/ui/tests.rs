@@ -371,6 +371,20 @@ mod sanitize_tests {
             std::borrow::Cow::Borrowed(_)
         ));
     }
+
+    #[test]
+    fn strips_8bit_c1_control_introducers() {
+        // Pure-C1 controls (U+0080..=U+009F) carry no 7-bit ESC, so a byte-level
+        // fast path let them through; a terminal honoring 8-bit controls reads
+        // U+009B/U+009D as CSI/OSC. They must be dropped, like the headless path.
+        let input = "\u{9b}2Jwiped \u{9d}52;c;clip\u{9c} ok";
+        let out = sanitize_display(input);
+        for c in ['\u{9b}', '\u{9d}', '\u{9c}', '\u{80}'] {
+            assert!(!out.contains(c), "C1 control {c:?} survived: {out:?}");
+        }
+        // Payload demoted to plain text, surrounding text intact.
+        assert!(out.contains("wiped") && out.contains("ok"), "{out:?}");
+    }
 }
 
 #[cfg(test)]

@@ -298,20 +298,20 @@ fn model_routing_check(
     coverage: &CredentialCoverage,
     providers: &HashMap<String, ProviderConfig>,
 ) -> Check {
-    // A `<id>/<model>` spec whose prefix names a configured custom provider
-    // routes through that endpoint, not the built-in OpenAI/Anthropic paths.
+    // A `<id>/<model>` spec routes through a custom provider entry OR a built-in
+    // preset (groq, openrouter, …, plus the keyless local ollama/lmstudio), not
+    // the built-in OpenAI/Anthropic paths. Mirror the real routing in
+    // `LlmClient::for_config` / `Config::effective_context_limit`, which both
+    // fall back to `builtin_provider`; without that fallback the check misroutes
+    // a valid preset model to the OpenAI/Anthropic credential check and reports a
+    // false Error (or a false OK), exactly when a user runs `doctor` to confirm
+    // their setup.
     if let Some((prefix, _rest)) = model.split_once('/') {
         if let Some(pc) = providers.get(prefix) {
-            return if pc.resolve_api_key().is_empty() {
-                Check::warn(format!(
-                    "{model} → custom provider '{prefix}' has no API key (set providers.{prefix}.api_key or api_key_env)"
-                ))
-            } else {
-                Check::ok(format!(
-                    "{model} → custom provider '{prefix}' ({})",
-                    pc.base_url
-                ))
-            };
+            return provider_routing_check(model, prefix, pc, false);
+        }
+        if let Some(pc) = crate::config::builtin_provider(prefix) {
+            return provider_routing_check(model, prefix, &pc, true);
         }
     }
 
@@ -335,6 +335,26 @@ fn model_routing_check(
         Check::error(format!(
             "{model} → {name}, but no {name} credentials are configured — run `tomte login`"
         ))
+    }
+}
+
+/// Verdict for a `<id>/<model>` routed through a custom or built-in provider.
+/// `keyless_ok` lets a built-in *local* preset (Ollama / LM Studio, which declare
+/// no key env and need none) pass without a key; any other provider with an
+/// empty resolved key still warns.
+fn provider_routing_check(
+    model: &str,
+    prefix: &str,
+    pc: &ProviderConfig,
+    keyless_ok: bool,
+) -> Check {
+    let keyless = keyless_ok && pc.api_key.is_none() && pc.api_key_env.is_none();
+    if !keyless && pc.resolve_api_key().is_empty() {
+        Check::warn(format!(
+            "{model} → provider '{prefix}' has no API key — set its API-key env var or providers.{prefix}.api_key"
+        ))
+    } else {
+        Check::ok(format!("{model} → provider '{prefix}' ({})", pc.base_url))
     }
 }
 
