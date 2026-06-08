@@ -115,6 +115,9 @@
 - Fixed project custom-command files being read unbounded — they now go through the capped, symlink-rejecting loader the rest of the codebase uses, so a planted `.tomte/commands/*.md` symlink to a huge or non-regular file can't be slurped when the slash menu enumerates commands.
 - Fixed the pasted Anthropic authorization code showing in cleartext on the login screen — it is now masked like the API-key field, so the secret isn't exposed to a shoulder-surfer or a screen-share / recording.
 - Fixed a latent SSRF / credential-leak surface — removed an unused OpenAI `raw_post` helper that joined a caller-supplied path onto the API base with the live bearer attached.
+- Added built-in provider presets for well-known OpenAI-compatible endpoints — `<id>/<model>` now works out of the box for Groq, OpenRouter, DeepSeek, xAI, Together, Fireworks, Cerebras, Mistral, Ollama, and LM Studio, reading the key from the conventional `<ID>_API_KEY` env var (local servers need none) without hand-writing a `providers` entry; a user's own `config.providers[<id>]` still overrides the preset, and the routing and context-limit lookups share one fallback.
+- Made `tomte why <file:line>` drift-resilient — the CLI lookup now heals a decision whose anchored line has moved (in memory, without rewriting the trail) before matching, so it finds the decision even after the code shifted, matching the reconcile the injected trail already runs; a drifted line no longer reports "no decision recorded".
+- Rewrote internal source comments and one effort-picker label to describe behavior directly in tomte's own voice — comment/documentation cleanup only, no functional change.
 
 ## 0.0.1-beta.4
 

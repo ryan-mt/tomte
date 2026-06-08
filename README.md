@@ -188,6 +188,12 @@ approval prompts or redirect the model endpoint.
 Retired ids (`gpt-5.1`, `gpt-5.3`, `gpt-5-pro`, `gpt-5-mini`, `gpt-5-nano`) auto-migrate to
 their current equivalent on startup, so an existing `config.json` keeps working.
 
+**Other providers.** Any OpenAI-compatible endpoint works via a `<id>/<model>` spec. The common
+ones are built in — `groq`, `openrouter`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`,
+`mistral`, plus local `ollama` and `lmstudio` — so `tomte config --set-model groq/llama-3.3-70b`,
+set `GROQ_API_KEY` (each preset reads `<ID>_API_KEY`; local servers need no key), and you're
+running. Anything else: add a `providers` entry to `config.json` with its `base_url`.
+
 ## How it's built
 
 ```
