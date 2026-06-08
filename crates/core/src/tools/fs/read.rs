@@ -106,6 +106,17 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
                 a.path
             ));
         }
+        // Reject non-regular files (FIFO, socket, char/block device). A FIFO
+        // reports len()==0, so it takes the eager-read path below and
+        // `tokio::fs::read` blocks forever waiting for a writer — hanging the
+        // tool. `metadata()` follows symlinks, so a symlink to a regular file is
+        // still accepted.
+        if !meta.is_file() {
+            return Err(anyhow!(
+                "{} is not a regular file (it is a FIFO, socket, or device) and cannot be read",
+                a.path
+            ));
+        }
         if a.limit == Some(0) {
             return Err(anyhow!("limit must be greater than 0"));
         }
