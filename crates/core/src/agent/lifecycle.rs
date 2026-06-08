@@ -98,7 +98,14 @@ impl Agent {
         }
         let message = match entry.original_content {
             Some(content) => {
-                tokio::fs::write(&entry.path, content)
+                // Atomic restore (temp + rename, preserving permissions), matching
+                // the undo_last_edit tool and the edit/write tools, so a crash
+                // mid-restore can't leave a half-written file and the restored file
+                // keeps its original permissions instead of the umask default.
+                let tmp = entry
+                    .path
+                    .with_extension(format!("undo-{}.tmp", crate::tools::fs::rand_suffix()));
+                crate::tools::fs::atomic_write_preserving_permissions(&entry.path, &tmp, &content)
                     .await
                     .with_context(|| format!("restore {}", entry.path.display()))?;
                 format!("Restored {}", entry.path.display())

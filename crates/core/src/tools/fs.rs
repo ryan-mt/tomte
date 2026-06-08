@@ -25,5 +25,5 @@ pub use undo::UndoLastEdit;
 pub use write::WriteFile;
 
 pub(crate) use common::{
-    atomic_write_preserving_permissions, ensure_not_stale, resolve, snapshot_meta,
+    atomic_write_preserving_permissions, ensure_not_stale, rand_suffix, resolve, snapshot_meta,
 };

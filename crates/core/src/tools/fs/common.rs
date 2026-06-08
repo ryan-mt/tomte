@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 
-pub(super) fn rand_suffix() -> String {
+pub(crate) fn rand_suffix() -> String {
     use rand::RngCore;
     let mut b = [0u8; 6];
     rand::thread_rng().fill_bytes(&mut b);
