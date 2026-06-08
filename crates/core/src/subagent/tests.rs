@@ -210,3 +210,33 @@ fn resolve_model_alias_maps_claude_aliases() {
     assert_eq!(resolve_model_alias("claude-opus-4-8"), "claude-opus-4-8");
     assert_eq!(resolve_model_alias("gpt-5.5"), "gpt-5.5");
 }
+
+#[test]
+fn general_purpose_is_a_builtin_resolvable_without_a_file() {
+    // The built-in itself: all tools, inherited prompt + model.
+    let defs = builtin_subagents();
+    let gp = defs
+        .iter()
+        .find(|d| d.name == "general-purpose")
+        .expect("general-purpose is a built-in");
+    assert!(
+        gp.tools.is_empty(),
+        "general-purpose gets all built-in tools"
+    );
+    assert!(
+        gp.system_prompt.is_empty(),
+        "empty prompt → dispatcher keeps the parent's system prompt"
+    );
+    assert!(gp.model.is_none(), "inherits the parent's model");
+
+    // With no agent files under cwd, it still resolves (a fresh install must not
+    // fail every dispatch_agent call) and appears in the discoverable list.
+    let tmp = tempfile::tempdir().unwrap();
+    assert_eq!(
+        load_by_name(tmp.path(), "general-purpose").unwrap().name,
+        "general-purpose"
+    );
+    assert!(load_all(tmp.path())
+        .iter()
+        .any(|d| d.name == "general-purpose"));
+}

@@ -143,6 +143,25 @@ fn push_unique(roots: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
+/// Built-in subagent definitions that need no file on disk. `general-purpose`
+/// mirrors Claude Code's default agent: every built-in tool and the parent's own
+/// system prompt (an empty `system_prompt` tells the dispatcher to keep the
+/// parent prompt). Models trained on Claude Code dispatch `subagent_type:
+/// "general-purpose"` by default, so without this a fresh install — with no
+/// agent files yet — would fail every `dispatch_agent` call. A file of the same
+/// name in any agents root overrides the built-in.
+pub fn builtin_subagents() -> Vec<SubagentDefinition> {
+    vec![SubagentDefinition {
+        name: "general-purpose".to_string(),
+        description: "General-purpose agent for researching complex questions and executing \
+                      multi-step tasks; has access to all tools."
+            .to_string(),
+        tools: Vec::new(),            // empty = all built-ins
+        model: None,                  // inherit the parent's model
+        system_prompt: String::new(), // empty = keep the parent agent's system prompt
+    }]
+}
+
 /// Load every `*.md` sub-agent across all roots, deduplicated by `name`
 /// (first root in precedence order wins) and sorted by name. Files that fail
 /// to parse are logged and skipped — never abort the host process.
@@ -172,6 +191,11 @@ pub fn load_all(cwd: &Path) -> Vec<SubagentDefinition> {
                 }
             }
         }
+    }
+    // Built-in subagents (e.g. general-purpose) need no file; a same-named file
+    // loaded above keeps precedence via `or_insert`.
+    for def in builtin_subagents() {
+        by_name.entry(def.name.clone()).or_insert(def);
     }
     by_name.into_values().collect()
 }
