@@ -60,6 +60,9 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
             // so the next turn actually starts fresh (same deferred-agent-op
             // pattern as `pending_undo`).
             app.pending_clear = true;
+            // Re-baseline the window title: the segment is over, so drop back to
+            // `tomte` and let the next prompt re-title the window.
+            app.reset_window_title();
         }
         "resume" => {
             app.open_overlay(OverlayKind::ResumePicker);

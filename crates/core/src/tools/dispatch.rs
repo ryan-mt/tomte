@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::{ApprovalMode, BuiltinTool, Registry, ToolContext};
 use crate::agent::{Agent, AgentEvent};
 use crate::client::LlmClient;
-use crate::subagent::{load_all, load_by_name, resolve_model_alias};
+use crate::subagent::{builtin_subagents, load_all, load_by_name, resolve_model_alias};
 
 /// Process-wide sequence for unique sub-agent ids in the live fleet view.
 static SUBAGENT_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -261,22 +261,31 @@ Behaviour:\n\
         let a: DispatchArgs = super::parse_args("dispatch_agent", args)?;
         let subagent_type = a.subagent_type().to_string();
         let child_cwd = a.child_cwd(&ctx.cwd)?;
-        let def = load_by_name(&ctx.cwd, &subagent_type).map_err(|e| {
-            let available = load_all(&ctx.cwd)
-                .into_iter()
-                .map(|d| d.name)
-                .collect::<Vec<_>>();
-            if available.is_empty() {
-                anyhow!(
-                    "{e}. No subagents installed yet — create one at ~/.config/tomte/agents/<name>.md or install Claude/Codex agents under ~/.claude/agents or ~/.codex/agents"
-                )
-            } else {
-                anyhow!(
-                    "{e}. Available subagents: {}",
+        // Resolve the requested subagent. An unknown `subagent_type` must not
+        // strand the parent: rather than fail the whole dispatch, fall back to
+        // the `general-purpose` built-in and tell the model what happened (a
+        // note prepended to the result) so it corrects future calls. Exact and
+        // alias resolution already happen inside `load_by_name`; this is the
+        // last-resort net for a name that matches nothing at all.
+        let (def, fallback_note) = match load_by_name(&ctx.cwd, &subagent_type) {
+            Ok(def) => (def, None),
+            Err(e) => {
+                let available = load_all(&ctx.cwd)
+                    .into_iter()
+                    .map(|d| d.name)
+                    .collect::<Vec<_>>();
+                let gp = builtin_subagents()
+                    .into_iter()
+                    .find(|d| d.name == DEFAULT_SUBAGENT_TYPE)
+                    .expect("general-purpose is always a built-in");
+                let note = format!(
+                    "[dispatch_agent] requested subagent_type `{subagent_type}` not found ({e}); ran `{DEFAULT_SUBAGENT_TYPE}` instead. Available types: {}.",
                     available.join(", ")
-                )
+                );
+                tracing::warn!(requested = %subagent_type, "unknown subagent_type; falling back to general-purpose");
+                (gp, Some(note))
             }
-        })?;
+        };
 
         let mut cfg = ctx.config.clone();
         if let Some(m) = a.model.as_ref().or(def.model.as_ref()) {
@@ -343,18 +352,34 @@ Behaviour:\n\
         let mut final_text = String::new();
         let mut error_msgs: Vec<String> = Vec::new();
         let mut tool_errors: Vec<String> = Vec::new();
+        // Running total of tokens this sub-agent's model has generated, summed
+        // across the turn's responses and forwarded to the fleet view.
+        let mut sub_output_tokens = 0u64;
         while let Some(ev) = rx.recv().await {
-            // Forward discrete progress to the parent fleet view. Only tool
-            // starts (not every text/reasoning delta) so the channel isn't
-            // flooded by a fast token stream.
+            // Forward discrete progress to the parent fleet view: tool starts
+            // (as an activity label) and cumulative output-token usage. Not
+            // every text/reasoning delta, so the channel isn't flooded by a fast
+            // token stream.
             if let Some(up) = &up {
-                if let AgentEvent::ToolCallStarted { name, .. } = &ev {
-                    let _ = up
-                        .send(AgentEvent::SubagentActivity {
-                            id: sub_id.clone(),
-                            summary: activity_label(name).to_string(),
-                        })
-                        .await;
+                match &ev {
+                    AgentEvent::ToolCallStarted { name, .. } => {
+                        let _ = up
+                            .send(AgentEvent::SubagentActivity {
+                                id: sub_id.clone(),
+                                summary: activity_label(name).to_string(),
+                            })
+                            .await;
+                    }
+                    AgentEvent::Usage { output_tokens, .. } => {
+                        sub_output_tokens = sub_output_tokens.saturating_add(*output_tokens);
+                        let _ = up
+                            .send(AgentEvent::SubagentTokens {
+                                id: sub_id.clone(),
+                                output_tokens: sub_output_tokens,
+                            })
+                            .await;
+                    }
+                    _ => {}
                 }
             }
             match ev {
@@ -411,6 +436,10 @@ Behaviour:\n\
             ));
         }
 
+        // Surface the fallback (if any) so the model learns the correct name.
+        if let Some(note) = fallback_note {
+            return Ok(format!("{note}\n\n{final_text}"));
+        }
         Ok(final_text)
     }
 }

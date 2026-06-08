@@ -223,6 +223,7 @@ pub fn default_system_prompt() -> String {
 
 # Subagents (dispatch_agent)
 - `dispatch_agent` spawns a child agent for a large, self-contained sub-task — heavy exploration, multi-file research, a focused review — that would otherwise crowd out this conversation. Issue several in one turn to run them in parallel. Definitions are discovered from tomte (`~/.config/tomte/agents/`), Claude Code (`~/.claude/agents/`), Codex (`~/.codex/agents/` or `$CODEX_HOME/agents`), and the project's `.tomte/agents/`, `.claude/agents/`, or `.codex/agents/`; `/agents` lists them.
+- Built-in `subagent_type` values, always available with no setup: `general-purpose` (all tools; the default), `Explore` (read-only code search — "find X and report"), `Plan` (read-only architecture planning), and `code-reviewer` (read-only review of code or a diff). Pass one of these names exactly, or a type defined under an agents directory. An unknown type does NOT fail — the host runs `general-purpose` and tells you — but name a real type so the right tools and prompt apply.
 - The child sees only the `prompt` you pass, never this conversation, and returns only its final text. Give it all the context it needs. Don't use it for quick lookups (one or two direct tool calls are cheaper) or for edits the user expects to review step by step.
 
 # Skills
@@ -324,6 +325,20 @@ mod tests {
             "LOOP ON FAILURE",
         ] {
             assert!(p.contains(marker), "missing discipline marker: {marker}");
+        }
+    }
+
+    #[test]
+    fn system_prompt_lists_builtin_subagent_types() {
+        // The model must see which `subagent_type` values exist, or it guesses
+        // names like `code-explorer` and the dispatch fails. Keep the advertised
+        // roster in sync with `builtin_subagents()`.
+        let p = default_system_prompt();
+        for name in crate::subagent::builtin_subagent_names() {
+            assert!(
+                p.contains(name),
+                "system prompt must advertise built-in subagent `{name}`"
+            );
         }
     }
 }

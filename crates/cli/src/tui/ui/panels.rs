@@ -215,7 +215,7 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
             }
         };
         // While running, show the live activity; once finished, show a settled
-        // past-tense verb so a done row reads "Forged · 4 steps · 1m 12s"
+        // past-tense verb so a done row reads "Forged · 1.2k tokens · 1m 12s"
         // instead of a stale in-flight phrase.
         let activity_label = match s.done {
             None => s.activity.clone(),
@@ -228,9 +228,9 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
             Span::styled(truncate_chars(&s.prompt, prompt_max), dim),
             Span::styled(
                 format!(
-                    "  · {} · {} steps · {}",
+                    "  · {} · {} tokens · {}",
                     activity_label,
-                    s.steps,
+                    format_tokens(s.tokens),
                     format_elapsed(s.started_at.elapsed())
                 ),
                 dim,

@@ -18,6 +18,11 @@ pub async fn launch_turn(
             .push(Block::System(format!("⛔ prompt blocked: {reason}")));
         return;
     }
+    // Name the OS terminal window after the first prompt of the segment so a
+    // user juggling several tomte windows can tell them apart. Uses the raw
+    // prompt (before the @file/!shell enrichment below). No-op once titled,
+    // until `/clear` re-baselines it.
+    app.set_window_title_for_prompt(&text);
     // Fold in any composer-prefix context the user staged before this prompt:
     // `!` shell output (prepended) and `@file` references (file contents appended).
     // The hook above and the visible Block::User both see only the raw prompt;

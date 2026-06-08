@@ -240,3 +240,88 @@ fn general_purpose_is_a_builtin_resolvable_without_a_file() {
         .iter()
         .any(|d| d.name == "general-purpose"));
 }
+
+#[test]
+fn builtin_subagents_include_explore_plan_reviewer() {
+    let defs = builtin_subagents();
+    let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+    for expected in ["general-purpose", "Explore", "Plan", "code-reviewer"] {
+        assert!(names.contains(&expected), "missing built-in: {expected}");
+    }
+    // The read-only built-ins carry only search/read tools (no write/edit), so
+    // they cannot mutate even outside enforced plan mode.
+    let explore = defs.iter().find(|d| d.name == "Explore").unwrap();
+    assert_eq!(explore.tools, vec!["read_file", "grep", "glob", "list_dir"]);
+    assert!(
+        !explore.system_prompt.is_empty(),
+        "a read-only built-in ships its own prompt"
+    );
+}
+
+#[test]
+fn builtin_subagent_names_match_definitions() {
+    // The advertised roster (system-prompt list) must never drift from the
+    // actual definitions, or the prompt promises a type that does not resolve.
+    let mut names: Vec<String> = builtin_subagent_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    names.sort();
+    let mut defs: Vec<String> = builtin_subagents().into_iter().map(|d| d.name).collect();
+    defs.sort();
+    assert_eq!(names, defs);
+}
+
+#[test]
+fn builtin_alias_folds_common_synonyms() {
+    assert_eq!(builtin_alias("code-explorer"), Some("Explore"));
+    assert_eq!(builtin_alias("Code_Explorer"), Some("Explore"));
+    assert_eq!(builtin_alias("explorer"), Some("Explore"));
+    assert_eq!(builtin_alias("planner"), Some("Plan"));
+    assert_eq!(builtin_alias("security-reviewer"), Some("code-reviewer"));
+    assert_eq!(builtin_alias("researcher"), Some("general-purpose"));
+    assert_eq!(builtin_alias("totally-unknown-xyz"), None);
+}
+
+#[test]
+fn load_by_name_resolves_alias_to_builtin() {
+    let tmp = tempfile::tempdir().unwrap();
+    // The exact failing call from the field: `code-explorer` is not a real agent
+    // anywhere, but it must resolve to the Explore built-in, not error.
+    assert_eq!(
+        load_by_name(tmp.path(), "code-explorer").unwrap().name,
+        "Explore"
+    );
+    assert_eq!(load_by_name(tmp.path(), "planner").unwrap().name, "Plan");
+    assert_eq!(
+        load_by_name(tmp.path(), "security-reviewer").unwrap().name,
+        "code-reviewer"
+    );
+}
+
+#[test]
+fn load_by_name_prefers_a_user_file_over_an_alias_target() {
+    // A user file named after the alias target wins (load_all precedence), so a
+    // customized Explore is honored even when reached via the `code-explorer`
+    // synonym.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join(".tomte").join("agents");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Explore.md"),
+        "---\nname: Explore\ndescription: custom\ntools: read_file\n---\ncustom prompt\n",
+    )
+    .unwrap();
+    let def = load_by_name(tmp.path(), "code-explorer").unwrap();
+    assert_eq!(def.name, "Explore");
+    assert_eq!(def.system_prompt, "custom prompt\n");
+}
+
+#[test]
+fn load_by_name_still_errors_on_a_truly_unknown_name() {
+    // No exact file, no built-in, no alias → a real error (the dispatcher turns
+    // this into a general-purpose fallback, but load_by_name itself stays honest).
+    let tmp = tempfile::tempdir().unwrap();
+    let err = load_by_name(tmp.path(), "zzz-no-such-agent").unwrap_err();
+    assert!(err.to_string().contains("not found"));
+}

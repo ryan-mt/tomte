@@ -50,6 +50,10 @@ pub async fn run_with(start_with_resume_picker: bool, plan_mode_required: bool) 
 pub fn setup_terminal(mode: RenderMode) -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     let mut out = io::stdout();
+    // Own the window title from the first frame so it reads `tomte` instead of a
+    // stale shell/launcher title (e.g. "Windows PowerShell"); the first prompt
+    // upgrades it to `tomte — <task>`. See `window_title_from_prompt`.
+    set_terminal_title(BASE_WINDOW_TITLE);
     // EnableBracketedPaste makes the terminal wrap pasted text in escape
     // markers and deliver it as one `Event::Paste(String)` instead of a stream
     // of individual key presses. Without it, a multi-line paste arrives as

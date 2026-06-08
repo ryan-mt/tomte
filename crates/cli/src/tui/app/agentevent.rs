@@ -457,7 +457,7 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                 kind: subagent_type,
                 prompt,
                 activity: "starting".into(),
-                steps: 0,
+                tokens: 0,
                 started_at: std::time::Instant::now(),
                 done: None,
                 expanded: false,
@@ -466,7 +466,11 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
         AgentEvent::SubagentActivity { id, summary } => {
             if let Some(s) = app.subagents.iter_mut().find(|s| s.id == id) {
                 s.activity = summary;
-                s.steps = s.steps.saturating_add(1);
+            }
+        }
+        AgentEvent::SubagentTokens { id, output_tokens } => {
+            if let Some(s) = app.subagents.iter_mut().find(|s| s.id == id) {
+                s.tokens = output_tokens;
             }
         }
         AgentEvent::SubagentDone { id, ok } => {

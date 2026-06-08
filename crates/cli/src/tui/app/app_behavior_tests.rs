@@ -20,6 +20,52 @@ fn deferred_agent_ops_blocked_while_busy_or_compacting() {
 }
 
 #[test]
+fn subagent_fleet_row_tracks_tokens_not_steps() {
+    let mut app = App::new();
+    apply_agent_event(
+        &mut app,
+        AgentEvent::SubagentStarted {
+            id: "sub-1".into(),
+            subagent_type: "Explore".into(),
+            prompt: "find the bug".into(),
+        },
+    );
+    assert_eq!(app.subagents.len(), 1);
+    assert_eq!(app.subagents[0].tokens, 0);
+    // Activity updates the label without bumping any step counter.
+    apply_agent_event(
+        &mut app,
+        AgentEvent::SubagentActivity {
+            id: "sub-1".into(),
+            summary: "searching".into(),
+        },
+    );
+    assert_eq!(app.subagents[0].activity, "searching");
+    // Cumulative output tokens are mirrored onto the row.
+    apply_agent_event(
+        &mut app,
+        AgentEvent::SubagentTokens {
+            id: "sub-1".into(),
+            output_tokens: 1234,
+        },
+    );
+    assert_eq!(app.subagents[0].tokens, 1234);
+}
+
+#[test]
+fn clear_rebaselines_window_title_flag() {
+    let mut app = App::new();
+    app.set_window_title_for_prompt("fix the auth bug");
+    assert!(app.window_titled, "first prompt titles the window");
+    // A second prompt is a no-op while still titled.
+    app.set_window_title_for_prompt("another task");
+    assert!(app.window_titled);
+    // /clear re-baselines so the next prompt can re-title.
+    app.reset_window_title();
+    assert!(!app.window_titled);
+}
+
+#[test]
 fn goal_word_count_and_limit_boundary() {
     assert_eq!(goal_word_count("  fix   the   build  "), 3);
     assert_eq!(goal_word_count(""), 0);

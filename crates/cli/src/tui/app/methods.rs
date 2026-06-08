@@ -95,6 +95,7 @@ impl App {
             pending_goal_replacement: None,
             pending_plan_exit: None,
             pending_session_save: false,
+            window_titled: false,
         };
         // Restore the last-persisted permission mode. Overrides the literal
         // defaults above for the three approval fields via the canonical setter.
@@ -117,6 +118,24 @@ impl App {
         self.blocks.push(Block::System(format!(
             "📓 {n} recorded {plural} follow you to {to} — tomte carries the reasoning across the switch, not a summary."
         )));
+    }
+
+    /// Name the OS terminal window/tab after the first prompt of the segment
+    /// (`tomte — <task>`). No-op once titled, until `/clear` calls
+    /// [`Self::reset_window_title`]. See [`super::window_title_from_prompt`].
+    pub fn set_window_title_for_prompt(&mut self, prompt: &str) {
+        if self.window_titled {
+            return;
+        }
+        super::set_terminal_title(&super::window_title_from_prompt(prompt));
+        self.window_titled = true;
+    }
+
+    /// Re-baseline the window title to `tomte` (called by `/clear`) so the next
+    /// prompt re-titles the window after the context reset.
+    pub fn reset_window_title(&mut self) {
+        super::set_terminal_title(super::BASE_WINDOW_TITLE);
+        self.window_titled = false;
     }
 
     /// Record a submitted prompt in the input history (skipping a consecutive

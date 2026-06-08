@@ -162,7 +162,10 @@ pub struct SubagentView {
     pub kind: String,
     pub prompt: String,
     pub activity: String,
-    pub steps: u64,
+    /// Running total of tokens the sub-agent's model has generated, mirrored
+    /// from `AgentEvent::SubagentTokens`. Shown in the fleet view instead of a
+    /// raw step count.
+    pub tokens: u64,
     pub started_at: std::time::Instant,
     /// None while running; `Some(ok)` once the sub-agent finishes.
     pub done: Option<bool>,
@@ -363,6 +366,12 @@ pub struct App {
     /// Set whenever host-owned session state (currently `/goal`) changes and
     /// should be merged into the persisted session record once the agent is idle.
     pub pending_session_save: bool,
+    /// Whether the OS terminal window/tab title has been set for the current
+    /// segment. The title is named after the first prompt of the session
+    /// (`tomte — <task>`); `/clear` re-baselines it to `tomte` and flips this
+    /// back to `false` so the next prompt re-titles the window. See
+    /// [`super::window_title_from_prompt`].
+    pub window_titled: bool,
 }
 
 /// Snapshot of the last `render_chat` output along with the inputs that

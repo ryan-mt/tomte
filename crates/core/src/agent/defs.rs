@@ -381,6 +381,14 @@ pub enum AgentEvent {
         id: String,
         summary: String,
     },
+    /// A sub-agent reported updated token usage. `output_tokens` is the running
+    /// total of tokens the sub-agent's model has generated so far (summed across
+    /// the turn's responses); the fleet view shows it in place of a raw step
+    /// count, which better reflects how much work a child has actually done.
+    SubagentTokens {
+        id: String,
+        output_tokens: u64,
+    },
     /// A sub-agent finished. `ok` is false when it errored or produced no answer.
     SubagentDone {
         id: String,
