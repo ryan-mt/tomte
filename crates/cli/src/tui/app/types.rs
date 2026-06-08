@@ -68,15 +68,14 @@ pub enum Screen {
 
 /// How the TUI occupies the terminal.
 ///
-/// - `Inline` (default): an inline viewport (SOUL.md Pillar 4 — the calm, tidy
-///   terminal) that leaves finished turns in the terminal's own scrollback (via
-///   `Terminal::insert_before`) and never enters the alternate screen or
-///   captures the mouse, so the terminal's native scrollback and click-drag
-///   selection/copy keep working (the opencode-style "select with the mouse"
-///   experience).
-/// - `AltScreen`: a full-screen alternate-buffer renderer with the input pinned
-///   to the bottom edge and in-app scroll / selection. Opt in with
-///   `TOMTE_INLINE=0` (or `false`/`no`/`off`).
+/// - `AltScreen` (default): a full-screen alternate-buffer renderer with the
+///   input pinned to the bottom edge and in-app scroll + drag-selection — the
+///   conventional "transcript on top, prompt at the bottom" layout.
+/// - `Inline`: an inline viewport (SOUL.md Pillar 4 — the calm, tidy terminal)
+///   that leaves finished turns in the terminal's own native scrollback (via
+///   `Terminal::insert_before`) and never captures the mouse, so native
+///   scrollback + selection/copy keep working. Opt in with `TOMTE_INLINE=1` (or
+///   `true`/`yes`/`on`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
     AltScreen,
@@ -84,21 +83,20 @@ pub enum RenderMode {
 }
 
 impl RenderMode {
-    /// Resolve from the environment. The inline viewport (Pillar 4) is the
-    /// default — it keeps the terminal's native scrollback and selection/copy;
-    /// `TOMTE_INLINE=0` (or `false`/`no`/`off`) opts into the full-screen
-    /// alternate screen.
+    /// Resolve from the environment. The full-screen alternate screen is the
+    /// default; `TOMTE_INLINE=1` (or `true`/`yes`/`on`) opts into the inline
+    /// viewport (Pillar 4 — native scrollback + selection/copy).
     pub fn from_env() -> Self {
         Self::from_env_value(std::env::var("TOMTE_INLINE").ok().as_deref())
     }
 
     /// Pure parse of the `TOMTE_INLINE` value, split out so it can be tested
-    /// without mutating process-global environment state. Inline is the default;
-    /// only an explicit falsy value selects the full-screen alternate screen.
+    /// without mutating process-global environment state. The alternate screen is
+    /// the default; only an explicit truthy value selects the inline viewport.
     pub fn from_env_value(v: Option<&str>) -> Self {
         match v {
-            Some(s) if matches!(s.trim(), "0" | "false" | "no" | "off") => Self::AltScreen,
-            _ => Self::Inline,
+            Some(s) if matches!(s.trim(), "1" | "true" | "yes" | "on") => Self::Inline,
+            _ => Self::AltScreen,
         }
     }
 }

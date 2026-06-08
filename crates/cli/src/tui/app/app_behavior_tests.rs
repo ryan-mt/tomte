@@ -307,17 +307,16 @@ fn streaming_assistant(text: &str, done: bool) -> Block {
 #[test]
 fn render_mode_parses_env_value() {
     use RenderMode::{AltScreen, Inline};
-    // The inline viewport (Pillar 4) is the default now — it keeps the
-    // terminal's native scrollback + selection/copy; only an explicit falsy
-    // value (TOMTE_INLINE=0 / false / no / off) opts into the full-screen
-    // alternate screen.
+    // The full-screen alternate screen is the default; only an explicit truthy
+    // value (TOMTE_INLINE=1 / true / yes / on) opts into the inline viewport
+    // (Pillar 4).
     let cases = [
-        (None, Inline),
+        (None, AltScreen),
         (Some("1"), Inline),
         (Some(" on "), Inline),
         (Some("true"), Inline),
         (Some("yes"), Inline),
-        (Some("nope"), Inline),
+        (Some("nope"), AltScreen),
         (Some("0"), AltScreen),
         (Some(" off "), AltScreen),
         (Some("false"), AltScreen),
@@ -686,29 +685,6 @@ fn spinner_prefers_the_active_task_then_a_pool_word() {
         render_to_string(&mut app).contains(first.as_str()),
         "spinner falls back to a pool word ({first})"
     );
-}
-
-#[test]
-fn shift_selection_rows_tracks_content_across_scroll() {
-    let mut app = App::new();
-    app.selection = Some(crate::tui::selection::Selection {
-        anchor: (4, 10),
-        cursor: (8, 12),
-    });
-    // Wheel up scrolls the view back, so content (and the highlight) shifts DOWN.
-    app.shift_selection_rows(3);
-    let sel = app
-        .selection
-        .expect("selection survives a scroll instead of vanishing");
-    assert_eq!((sel.anchor, sel.cursor), ((4, 13), (8, 15)));
-    // A large downward shift clamps rows at 0 rather than underflowing.
-    app.shift_selection_rows(-100);
-    let sel = app.selection.unwrap();
-    assert_eq!((sel.anchor.1, sel.cursor.1), (0, 0));
-    // No active selection → a no-op (must not panic).
-    app.selection = None;
-    app.shift_selection_rows(3);
-    assert!(app.selection.is_none());
 }
 
 // ---- decision trail surfaced inside the TUI (Pillar 2 parity with the CLI) ----

@@ -6,9 +6,19 @@ use super::*;
 /// batch per loop turn. A paste arrives as a burst the OS delivers at once;
 /// draining it together lets us tell a pasted newline from a deliberate Enter
 /// and insert the whole paste in a single redraw. The cap only bounds a
-/// pathological flood — `now_or_never` already ends the drain the instant input
-/// pauses.
+/// pathological flood — the drain otherwise ends the instant input pauses for
+/// longer than `PASTE_COALESCE_GAP`.
 const PASTE_BURST_MAX: usize = 200_000;
+
+/// Once a burst is in progress, how long to wait for the next event before
+/// declaring the paste over. The EventStream reader thread parses pasted bytes
+/// in chunks and briefly leaves the channel empty between them; a poll that
+/// gives up the instant the channel is empty (`now_or_never`) split one paste
+/// across loop turns, and a newline stranded in a resulting 1-event batch then
+/// submitted mid-paste — the "long paste fires off partial messages" bug.
+/// Waiting this long bridges those sub-millisecond gaps, yet stays well under a
+/// human inter-keystroke interval so deliberate typing never coalesces.
+const PASTE_COALESCE_GAP: Duration = Duration::from_millis(15);
 
 pub async fn main_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -290,19 +300,30 @@ pub async fn main_loop(
             biased;
             maybe_ev = events.next() => {
                 let Some(ev0) = maybe_ev else { break; };
-                // Coalesce a burst of already-buffered input events. The OS
-                // delivers a paste as one contiguous block, so every event is
-                // ready at once; a human keystroke arrives alone. `pasting` (a
-                // burst of >1 event) tells the Chat key handler to treat an Enter
-                // inside a paste as a newline, not a submit — the Windows fix for
-                // "long paste auto-sends" (crossterm emits no Event::Paste on
-                // Windows). Draining also collapses an N-keystroke paste into a
-                // single insert+redraw instead of N (the paste-lag fix).
+                // Coalesce a burst of input events. The OS delivers a paste as a
+                // contiguous block of events arriving back-to-back; a human
+                // keystroke arrives alone. `pasting` (a burst of >1 event) tells
+                // the Chat key handler to treat an Enter inside a paste as a
+                // newline, not a submit — the Windows fix for "long paste
+                // auto-sends" (crossterm emits no Event::Paste on Windows).
+                // Draining also collapses an N-keystroke paste into a single
+                // insert+redraw instead of N (the paste-lag fix).
                 let mut batch = vec![ev0];
-                while batch.len() < PASTE_BURST_MAX {
-                    match events.next().now_or_never() {
-                        Some(Some(ev)) => batch.push(ev),
-                        _ => break,
+                // Probe for a second event without blocking: a lone keystroke has
+                // nothing queued behind it, so this stays None and we fall through
+                // immediately — no added latency for ordinary typing. A paste
+                // delivers a burst, so the probe hits; from there we *wait* up to
+                // PASTE_COALESCE_GAP for each next event so the reader thread's
+                // chunked parsing can't split one paste across batches (which
+                // stranded a newline alone and submitted mid-paste).
+                if let Some(Some(ev)) = events.next().now_or_never() {
+                    batch.push(ev);
+                    while batch.len() < PASTE_BURST_MAX {
+                        match tokio::time::timeout(PASTE_COALESCE_GAP, events.next()).await {
+                            Ok(Some(ev)) => batch.push(ev),
+                            // Timed out (paste over) or stream closed → stop.
+                            _ => break,
+                        }
                     }
                 }
                 let pasting = batch.len() > 1;
@@ -365,17 +386,16 @@ pub async fn main_loop(
                                 MouseEventKind::ScrollUp => {
                                     app.scroll = app.scroll.saturating_sub(3);
                                     app.auto_scroll = false;
-                                    // The view scrolls back by 3 rows, so the content
-                                    // shifts DOWN on screen. Move any active selection
-                                    // with it (instead of dropping it) so the user can
-                                    // wheel up to read or extend what they're copying.
-                                    app.shift_selection_rows(3);
+                                    // Drop any active selection on scroll. Tracking
+                                    // it by screen row drifted the highlight onto
+                                    // unrelated text (the content moves but the cells
+                                    // don't line up), so clearing keeps copy accurate
+                                    // — select what's visible, then copy.
+                                    app.clear_selection();
                                 }
                                 MouseEventKind::ScrollDown => {
                                     app.scroll = app.scroll.saturating_add(3);
-                                    // Content shifts UP by 3 rows; move the selection
-                                    // with it so the highlight keeps tracking the text.
-                                    app.shift_selection_rows(-3);
+                                    app.clear_selection();
                                 }
                                 MouseEventKind::Down(MouseButton::Left) => {
                                     // Begin a selection. The click target (jump /

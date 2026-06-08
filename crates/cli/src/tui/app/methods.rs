@@ -174,21 +174,6 @@ impl App {
         self.copy_notice = None;
     }
 
-    /// Shift a live selection's rows by `delta` so the highlight follows the
-    /// content when the view scrolls (the selection is stored in screen
-    /// coordinates). This keeps the highlight on the *same* text across a
-    /// scroll instead of dropping it — the user can wheel up to read or extend a
-    /// selection without losing what they were copying. Rows clamp at 0; the
-    /// highlight renderer already ignores any row outside the visible area.
-    pub fn shift_selection_rows(&mut self, delta: i32) {
-        if let Some(sel) = self.selection.as_mut() {
-            let shift =
-                |r: u16| (i64::from(r) + i64::from(delta)).clamp(0, i64::from(u16::MAX)) as u16;
-            sel.anchor.1 = shift(sel.anchor.1);
-            sel.cursor.1 = shift(sel.cursor.1);
-        }
-    }
-
     /// Finalize a dragged selection: copy the highlighted text to the clipboard
     /// (read from the frame captured during the drag) and keep the highlight
     /// visible with a brief confirmation until the next action.

@@ -337,7 +337,13 @@ pub async fn handle_paste(app: &mut App) {
             let cleaned: String = t.chars().filter(|&c| c != '\r').collect();
             app.input.insert_str(&cleaned);
         }
-        Ok(PasteResult::Empty) => {}
+        Ok(PasteResult::Empty) => {
+            // Confirm the keypress landed even when there's nothing to paste —
+            // silence here is indistinguishable from the key never reaching us.
+            app.blocks.push(Block::System(
+                "nothing to paste — the clipboard holds no image or text".into(),
+            ));
+        }
         Err(e) => {
             app.blocks.push(Block::System(format!("paste failed: {e}")));
         }
