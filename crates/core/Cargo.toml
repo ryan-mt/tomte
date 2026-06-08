@@ -28,6 +28,7 @@ once_cell.workspace = true
 webbrowser.workspace = true
 axum.workspace = true
 regex = "1"
+ignore = "0.4"
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

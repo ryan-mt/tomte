@@ -119,32 +119,33 @@ pub(super) fn path_to_slash_string(path: &std::path::Path) -> String {
     normalize_path_separators(&path.to_string_lossy())
 }
 
-/// Recursively collect every file under `root` as a `/`-separated path relative
-/// to `root`, skipping any `.git` directory (mirroring ripgrep's `!.git`).
-/// Symlinked directories are not descended into, so the walk cannot loop. Used
-/// by the no-ripgrep fallbacks of both `glob` and `grep`; errors reading a
-/// directory are skipped so a single unreadable subtree never aborts the listing.
+/// Collect every file under `root` as a `/`-separated path relative to `root`,
+/// honoring `.gitignore` / `.ignore` (so heavy directories like `node_modules`,
+/// `target`, `.next`, `build`, `dist` are skipped) and never descending into
+/// `.git` — the same set ripgrep's `--files --hidden` would list. This is the
+/// no-ripgrep fallback for both `glob` and `grep`; WITHOUT the gitignore filter
+/// it crawled tens of thousands of dependency files on a box that lacks ripgrep
+/// (the common case on Windows), which made `glob`/`grep` hang for minutes.
+/// Dotfiles are included (like `rg --hidden`); symlinks are not followed, so the
+/// walk cannot loop; unreadable subtrees are skipped rather than aborting.
 pub(super) fn walk_files_relative(root: &std::path::Path, out: &mut Vec<String>) {
-    fn recurse(base: &std::path::Path, rel: &std::path::Path, out: &mut Vec<String>) {
-        let Ok(entries) = std::fs::read_dir(base.join(rel)) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if name == ".git" {
-                continue;
-            }
-            let child = rel.join(&name);
-            match entry.file_type() {
-                Ok(ft) if ft.is_dir() => recurse(base, &child, out),
-                Ok(ft) if ft.is_file() => {
-                    out.push(normalize_path_separators(&child.to_string_lossy()));
-                }
-                _ => {}
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(false) // include dotfiles, like `rg --hidden`…
+        .git_ignore(true) // …but still skip gitignored paths (node_modules, target, …)
+        .git_global(true)
+        .git_exclude(true)
+        .ignore(true)
+        .parents(true)
+        .require_git(false) // honor .gitignore even outside a git checkout
+        .filter_entry(|e| e.file_name() != std::ffi::OsStr::new(".git"))
+        .build();
+    for entry in walker.flatten() {
+        if entry.file_type().is_some_and(|ft| ft.is_file()) {
+            if let Ok(rel) = entry.path().strip_prefix(root) {
+                out.push(normalize_path_separators(&rel.to_string_lossy()));
             }
         }
     }
-    recurse(root, std::path::Path::new(""), out);
 }
 
 pub(super) fn normalize_path_separators(path: &str) -> String {
