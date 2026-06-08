@@ -297,6 +297,9 @@ impl Agent {
             manifest.push_str(name);
             let one_line = desc.split_whitespace().collect::<Vec<_>>().join(" ");
             let one_line: String = one_line.chars().take(200).collect();
+            // The description comes from an MCP server (untrusted); defang any
+            // framework block markers it embeds, as the skill/memory paths do.
+            let one_line = crate::memory::neutralize_block_markers(&one_line);
             if !one_line.is_empty() {
                 manifest.push_str(": ");
                 manifest.push_str(&one_line);

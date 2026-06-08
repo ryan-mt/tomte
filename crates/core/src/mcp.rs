@@ -318,9 +318,34 @@ impl McpClient {
         if is_error {
             Err(anyhow!(buf))
         } else {
-            Ok(buf)
+            Ok(fence_mcp_output(&self.name, tool_name, &buf))
         }
     }
+}
+
+/// Wrap an MCP tool's output in a labeled fence so the model treats it as data
+/// from an external server, not instructions. A malicious or compromised server
+/// can otherwise return text that reads as a directive (indirect prompt
+/// injection); the fence (plus the `# Available tools` guidance) marks the
+/// provenance. Framework block markers are neutralized, and the fence's own
+/// closing tag is broken in the body so the server can't forge an early close.
+/// Label values are stripped of structural characters so they can't break the
+/// tag. Containment is downstream — the approval gate still vets any tool the
+/// model is steered toward — but the fence removes the easy foothold.
+fn fence_mcp_output(server: &str, tool: &str, text: &str) -> String {
+    let label = |s: &str| -> String {
+        s.chars()
+            .filter(|c| !matches!(c, '"' | '<' | '>' | '\n' | '\r'))
+            .take(64)
+            .collect()
+    };
+    let safe = crate::memory::neutralize_block_markers(text)
+        .replace("</untrusted-mcp-output", "</untrusted-mcp-\u{200b}output");
+    format!(
+        "<untrusted-mcp-output server=\"{}\" tool=\"{}\">\n{safe}\n</untrusted-mcp-output>",
+        label(server),
+        label(tool),
+    )
 }
 
 /// Join an MCP `tools/call` result's `content` array into one string for the
