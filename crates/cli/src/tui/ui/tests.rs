@@ -517,6 +517,138 @@ mod input_wrap_tests {
 }
 
 #[cfg(test)]
+mod markdown_inline_tests {
+    use super::super::render_markdown_inline;
+    use ratatui::style::Modifier;
+
+    fn joined(line: &str) -> String {
+        render_markdown_inline(line)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    fn has_modifier(line: &str, m: Modifier) -> bool {
+        render_markdown_inline(line)
+            .iter()
+            .any(|s| s.style.add_modifier.contains(m))
+    }
+
+    #[test]
+    fn matched_markers_style_and_strip() {
+        // A real pair styles its content and drops the markers.
+        assert_eq!(joined("a *word* b"), "a word b");
+        assert!(has_modifier("a *word* b", Modifier::ITALIC));
+        assert_eq!(joined("a **strong** b"), "a strong b");
+        assert!(has_modifier("a **strong** b", Modifier::BOLD));
+        assert_eq!(joined("see `path/to/x` ok"), "see path/to/x ok");
+    }
+
+    #[test]
+    fn unmatched_markers_stay_literal() {
+        // The shipped bug: an unterminated marker swallowed the rest of the line.
+        // Now the marker is emitted verbatim and nothing is styled.
+        for s in [
+            "search *.rs files",
+            "match **/*.ts here",
+            "use 2 * 3 in code",
+            "an unterminated `code span",
+            "**bold never closed",
+            "*italic never closed",
+        ] {
+            assert_eq!(joined(s), s, "literal text must be preserved for {s:?}");
+            assert!(
+                !has_modifier(s, Modifier::ITALIC) && !has_modifier(s, Modifier::BOLD),
+                "no emphasis should apply to {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn space_flanked_asterisks_are_not_emphasis() {
+        // `2 * 3 * 4` has matched asterisks but both are space-flanked, so the
+        // flanking rule keeps them literal rather than italicizing " 3 ".
+        assert_eq!(joined("2 * 3 * 4"), "2 * 3 * 4");
+        assert!(!has_modifier("2 * 3 * 4", Modifier::ITALIC));
+    }
+
+    #[test]
+    fn emphasis_survives_inner_lone_asterisk() {
+        // Bold content may contain a stray `*`; the outer pair still matches.
+        assert_eq!(joined("**a*b** tail"), "a*b tail");
+        assert!(has_modifier("**a*b** tail", Modifier::BOLD));
+    }
+}
+
+#[cfg(test)]
+mod markdown_block_tests {
+    use super::super::render_assistant_md;
+
+    fn rows(md: &str, w: usize) -> Vec<String> {
+        render_assistant_md(md, w)
+            .iter()
+            .map(|r| r.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn heading_strips_hashes() {
+        let r = rows("## Setup steps", 40);
+        assert_eq!(r, vec!["Setup steps".to_string()]);
+    }
+
+    #[test]
+    fn hash_without_space_is_not_a_heading() {
+        // `#define`, `#!shebang`, `#1` issue refs must render verbatim.
+        assert_eq!(rows("#define FOO 1", 40), vec!["#define FOO 1".to_string()]);
+    }
+
+    #[test]
+    fn bullet_normalizes_to_dot_glyph() {
+        assert_eq!(rows("- first item", 40), vec!["• first item".to_string()]);
+        assert_eq!(
+            rows("* starred item", 40),
+            vec!["• starred item".to_string()]
+        );
+    }
+
+    #[test]
+    fn ordered_item_keeps_its_number() {
+        let r = rows("1. first\n2. second", 40);
+        assert_eq!(r, vec!["1. first".to_string(), "2. second".to_string()]);
+    }
+
+    #[test]
+    fn blockquote_gets_a_bar_prefix() {
+        assert_eq!(
+            rows("> a quoted note", 40),
+            vec!["│ a quoted note".to_string()]
+        );
+    }
+
+    #[test]
+    fn wrapped_list_item_hangs_under_its_text() {
+        // A narrow width forces a wrap; the continuation row must indent to align
+        // under the text, not restart at the bullet.
+        let r = rows("- alpha beta gamma delta", 12);
+        assert!(r.len() >= 2, "should wrap: {r:?}");
+        assert!(r[0].starts_with("• "), "{r:?}");
+        assert!(
+            r[1].starts_with("  ") && !r[1].trim_start().starts_with('•'),
+            "continuation must hang under the text: {r:?}"
+        );
+    }
+
+    #[test]
+    fn plain_paragraph_is_unchanged() {
+        assert_eq!(
+            rows("just a sentence", 40),
+            vec!["just a sentence".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
 mod preflight_render_tests {
     use super::super::render_tool;
     use crate::tui::app::PreFlight;

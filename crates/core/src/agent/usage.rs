@@ -50,72 +50,83 @@ pub(super) fn classify_input_tokens(usage: &Value) -> (u64, u64, u64) {
     }
 }
 
+/// Parse a response's `usage` block into a [`TurnUsage`], or `None` when there
+/// is no usable usage (no block, `"usage": null`, or a zero input count). Pure:
+/// it emits nothing. [`emit_usage`] wraps this with the live `Usage` event and
+/// the context-threshold banners; the `Failed` path calls it directly so a
+/// response that won't be billed refreshes occupancy WITHOUT firing display
+/// telemetry (which the live readout would otherwise double-count once the turn
+/// is retried).
+pub(super) fn parse_usage(response: &Value) -> Option<TurnUsage> {
+    let usage = response.get("usage")?;
+    let get = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+    // With prompt caching on, both providers report cached prompt tokens, but
+    // with different shapes (see `classify_input_tokens`). The true context
+    // occupancy (what the window limit applies to) is the sum of all three;
+    // folding them in keeps the /compact warning accurate. The classes are
+    // kept separate for `/cost` because they bill at very different rates.
+    let (uncached_input, cache_read, cache_write) = classify_input_tokens(usage);
+    let i = uncached_input
+        .saturating_add(cache_read)
+        .saturating_add(cache_write);
+    // A real request always reports a non-zero input count; `i == 0` means the
+    // block lacked input tokens (`"usage": null`), so the caller leaves the last
+    // good occupancy untouched instead of clobbering it with 0.
+    if i == 0 {
+        return None;
+    }
+    Some(TurnUsage {
+        occupancy: i,
+        uncached_input,
+        cache_read,
+        cache_write,
+        output: get("output_tokens"),
+    })
+}
+
 pub(super) async fn emit_usage(
     response: &Value,
     tx: &mpsc::Sender<AgentEvent>,
     limit: u64,
 ) -> Option<TurnUsage> {
-    if let Some(usage) = response.get("usage") {
-        if wire_debug_enabled() {
+    if wire_debug_enabled() {
+        if let Some(usage) = response.get("usage") {
             eprintln!("[tomte wire] ← usage={usage}");
         }
-        let get = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-        // With prompt caching on, both providers report cached prompt tokens, but
-        // with different shapes (see `classify_input_tokens`). The true context
-        // occupancy (what the window limit applies to) is the sum of all three;
-        // folding them in keeps the /compact warning accurate. The classes are
-        // kept separate for `/cost` because they bill at very different rates.
-        let (uncached_input, cache_read, cache_write) = classify_input_tokens(usage);
-        let i = uncached_input
-            .saturating_add(cache_read)
-            .saturating_add(cache_write);
-        let o = get("output_tokens");
-        let t = usage
-            .get("total_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(i.saturating_add(o));
-        let _ = tx
-            .send(AgentEvent::Usage {
-                input_tokens: i,
-                output_tokens: o,
-                total_tokens: t,
-            })
-            .await;
-        // 85% threshold escalates to a stronger AutoCompactSuggested so the
-        // TUI can show a sticky banner urging /compact before a hard 1xx
-        // context-window failure on the next turn. Checked first (narrower
-        // condition) so the stronger event replaces — not supplements — the
-        // 80% ContextWarning.
-        // Cast to u128 for the threshold math: `i` is an attacker-controlled
-        // token count, so `i * 100` would overflow u64 on a hostile `usage`
-        // (panic in debug, silent wrap in release that mis-fires the banners).
-        // Skip the threshold banners when the limit is unknown (`0`): the math
-        // would read every turn as ≥85% full and spam AutoCompactSuggested (and
-        // drive auto-/compact). Mirrors the `limit == 0` guard on the
-        // microcompaction path.
-        if limit > 0 && i as u128 * 100 >= limit as u128 * 85 {
-            let _ = tx
-                .send(AgentEvent::AutoCompactSuggested { used: i, limit })
-                .await;
-        } else if limit > 0 && i as u128 * 10 >= limit as u128 * 8 {
-            let _ = tx.send(AgentEvent::ContextWarning { used: i, limit }).await;
-        }
-        // A real request always reports a non-zero input count; `i == 0` means
-        // the block lacked input tokens (`"usage": null`), so don't overwrite a
-        // good prior reading with 0.
-        return if i > 0 {
-            Some(TurnUsage {
-                occupancy: i,
-                uncached_input,
-                cache_read,
-                cache_write,
-                output: o,
-            })
-        } else {
-            None
-        };
     }
-    None
+    let u = parse_usage(response)?;
+    let i = u.occupancy;
+    let o = u.output;
+    let t = response
+        .get("usage")
+        .and_then(|usage| usage.get("total_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(i.saturating_add(o));
+    let _ = tx
+        .send(AgentEvent::Usage {
+            input_tokens: i,
+            output_tokens: o,
+            total_tokens: t,
+        })
+        .await;
+    // 85% threshold escalates to a stronger AutoCompactSuggested so the TUI can
+    // show a sticky banner urging /compact before a hard 1xx context-window
+    // failure on the next turn. Checked first (narrower condition) so the
+    // stronger event replaces — not supplements — the 80% ContextWarning.
+    // Cast to u128 for the threshold math: `i` is an attacker-controlled token
+    // count, so `i * 100` would overflow u64 on a hostile `usage` (panic in
+    // debug, silent wrap in release that mis-fires the banners). Skip the
+    // threshold banners when the limit is unknown (`0`): the math would read
+    // every turn as ≥85% full and spam AutoCompactSuggested (and drive
+    // auto-/compact). Mirrors the `limit == 0` guard on the microcompaction path.
+    if limit > 0 && i as u128 * 100 >= limit as u128 * 85 {
+        let _ = tx
+            .send(AgentEvent::AutoCompactSuggested { used: i, limit })
+            .await;
+    } else if limit > 0 && i as u128 * 10 >= limit as u128 * 8 {
+        let _ = tx.send(AgentEvent::ContextWarning { used: i, limit }).await;
+    }
+    Some(u)
 }
 
 pub(super) fn guess_mime(p: &std::path::Path) -> &'static str {

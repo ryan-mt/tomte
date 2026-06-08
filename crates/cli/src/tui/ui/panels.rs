@@ -359,9 +359,13 @@ pub(super) fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
         // Current context window usage, not cumulative throughput — the
         // "X% context" readout.
         let limit = app.config.effective_context_limit();
-        let pct = app.tokens_used.saturating_mul(100) / limit.max(1);
+        // Lead with the same `{pct}% ctx` the status line shows so the one
+        // "context fullness" fact reads identically in both places; the raw
+        // token count rides behind it under its own `used` label, not a second
+        // thing also called "ctx".
+        let pct = (app.tokens_used.saturating_mul(100) / limit.max(1)).min(100);
         extras.push_str(&format!(
-            " · {} ctx ({pct}%)",
+            " · {pct}% ctx · {} used",
             format_tokens(app.tokens_used)
         ));
     }

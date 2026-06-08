@@ -166,10 +166,25 @@ pub(super) async fn append_capped(
     let mut c = cursor.lock().await;
     b.extend_from_slice(chunk);
     if b.len() > BG_BUFFER_MAX_BYTES {
-        let drop_n = b.len() - BG_BUFFER_MAX_BYTES;
+        // Trim from the front on a UTF-8 char boundary, not a raw byte index: a
+        // cut through the middle of a multi-byte char would leave the buffer
+        // starting on a continuation byte, which the next `drain_utf8` decodes
+        // lossily into a spurious U+FFFD. Walking forward never under-trims.
+        let drop_n = next_char_boundary(&b, b.len() - BG_BUFFER_MAX_BYTES);
         b.drain(..drop_n);
         *c = c.saturating_sub(drop_n);
     }
+}
+
+/// The smallest index `>= from` at which `bytes` starts a new UTF-8 character —
+/// i.e. the next byte that is not a `10xxxxxx` continuation byte — or
+/// `bytes.len()` if none remains. Lets the overflow trim land on a char boundary.
+fn next_char_boundary(bytes: &[u8], from: usize) -> usize {
+    let mut i = from.min(bytes.len());
+    while i < bytes.len() && (bytes[i] & 0xC0) == 0x80 {
+        i += 1;
+    }
+    i
 }
 
 /// Decode newly-appended bytes from `buf[*cursor..]` as UTF-8, advancing the
@@ -220,6 +235,19 @@ mod tests {
         buf.push(0xFF);
         assert_eq!(drain_utf8(&buf, &mut cursor), "\u{FFFD}");
         assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn next_char_boundary_advances_past_split_multibyte() {
+        // "a世b" = 61 E4 B8 96 62. A trim index landing inside 世 must advance to
+        // the byte after it, never leaving the buffer on a continuation byte.
+        let bytes = "a世b".as_bytes();
+        assert_eq!(next_char_boundary(bytes, 0), 0); // 'a' starts a char
+        assert_eq!(next_char_boundary(bytes, 1), 1); // 世 starts here
+        assert_eq!(next_char_boundary(bytes, 2), 4); // mid-世 → past it to 'b'
+        assert_eq!(next_char_boundary(bytes, 3), 4); // mid-世 → past it to 'b'
+        assert_eq!(next_char_boundary(bytes, 4), 4); // 'b' starts a char
+        assert_eq!(next_char_boundary(bytes, 99), 5); // clamps to len
     }
 
     #[test]

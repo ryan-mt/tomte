@@ -105,7 +105,10 @@ pub(crate) fn render_text_event<W: Write>(
             return TextEventOutcome::Done;
         }
         AgentEvent::Error { message } => {
-            return TextEventOutcome::Error(message);
+            // Sanitize before it propagates: this string is surfaced verbatim to
+            // the terminal (via `bail!` → process exit), and a provider/tool
+            // error can carry control sequences that would rewrite the screen.
+            return TextEventOutcome::Error(sanitize_terminal_text(&message).into_owned());
         }
         AgentEvent::FallbackSwitched { from, to, .. } => {
             let from = sanitize_terminal_text(&from);

@@ -19,22 +19,43 @@ pub(super) fn diff_line<'a>(
     width: usize,
 ) -> Line<'a> {
     let text = sanitize_display(text);
+    // The gutter is `{:>4} ` (5 cols) + `{sigil} ` (2 cols) = 7 cols.
     let body_width = width.saturating_sub(7);
-    let truncated: String = if body_width > 0 && text.chars().count() > body_width {
-        format!(
-            "{}…",
-            text.chars()
-                .take(body_width.saturating_sub(1))
-                .collect::<String>()
-        )
-    } else {
-        text.to_string()
-    };
+    let truncated = truncate_to_width(&text, body_width);
     Line::from(vec![
         Span::styled(format!("{:>4} ", n), no_style),
         Span::styled(format!("{sigil} "), body_style.add_modifier(Modifier::BOLD)),
         Span::styled(truncated, body_style),
     ])
+}
+
+/// Truncate `text` to at most `max_cols` terminal columns, appending `…` (itself
+/// one column) when it doesn't fit. Display-width aware: a wide CJK/emoji glyph
+/// costs two columns, so counting code points the way a `chars().take(n)` cut
+/// does would let a wide-character line overflow its budget and spill past the
+/// gutter. A `max_cols` of 0 means there is no room for text, so return nothing.
+pub(super) fn truncate_to_width(text: &str, max_cols: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if max_cols == 0 {
+        return String::new();
+    }
+    let total: usize = text.chars().map(|c| c.width().unwrap_or(0)).sum();
+    if total <= max_cols {
+        return text.to_string();
+    }
+    let budget = max_cols - 1; // reserve one column for the ellipsis
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push('…');
+    out
 }
 
 /// One row of a rendered diff: an unchanged context line, a removed line, or an

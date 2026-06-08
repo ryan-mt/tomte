@@ -13,8 +13,11 @@ pub(super) fn friendly_body<'a>(
     let mut out: Vec<Line> = Vec::new();
     let avail = width.saturating_sub(4); // minus branch "  │ "
     let Some(text) = output else {
+        // A word, not a bare `…`: the lone ellipsis was indistinguishable from
+        // the `…` truncation marker used elsewhere in this same column, so a
+        // glance couldn't tell "still running" from "output elided".
         out.push(Line::from(Span::styled(
-            "…",
+            "working…",
             Style::default().fg(palette::WARNING),
         )));
         return out;
@@ -248,10 +251,10 @@ pub(super) fn friendly_body<'a>(
                     // hint keeps things clean without losing the signal.
                     let n = stderr.lines().filter(|l| !l.trim().is_empty()).count();
                     out.push(Line::from(Span::styled(
-                        format!(
-                            "(+ {n} stderr line{} suppressed — Ctrl+O to view)",
-                            plural(n)
-                        ),
+                        // "suppressed" read like an error was hidden; on a
+                        // successful command stderr is almost always benign
+                        // warnings/progress, so name it plainly.
+                        format!("(+ {n} line{} on stderr — Ctrl+O to view)", plural(n)),
                         style_meta,
                     )));
                 }

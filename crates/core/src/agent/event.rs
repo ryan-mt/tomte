@@ -246,15 +246,14 @@ impl Agent {
                 // Previously handled identically to Completed, which
                 // masked content-filter / quota / 5xx errors as a
                 // successful empty turn. Surface them instead.
-                if let Some(u) =
-                    emit_usage(&response, tx, self.config.effective_context_limit()).await
-                {
-                    // Update occupancy (it helps the next iteration shed context
-                    // before the retry) and surface the in-stream Usage/warning
-                    // telemetry — but do NOT record_cost here. A failed event that
-                    // the caller recovers from (`continue 'turn`) would otherwise
-                    // double-count: the retried Completed records the real cost on
-                    // top of this. /cost should reflect successful billed responses.
+                //
+                // Refresh occupancy (it helps the next iteration shed context
+                // before the retry) via the PURE parse — do NOT emit the live
+                // Usage event / threshold banners and do NOT record_cost. A
+                // failed event the caller recovers from (`continue 'turn`) is not
+                // billed, and emitting here would double-count its tokens in the
+                // live readout: once now, once on the retried Completed.
+                if let Some(u) = parse_usage(&response) {
                     self.last_input_tokens = u.occupancy;
                 }
                 let message = response

@@ -2,70 +2,98 @@
 
 use super::*;
 
-/// Very small inline markdown renderer: handles `code`, **bold**, *italic*.
+/// Very small inline markdown renderer: handles `` `code` ``, **bold**, and
+/// *italic*. Only a *matched* pair styles its span — an unmatched marker (a glob
+/// like `*.rs`, a multiplication `2 * 3`, or an unterminated `` `code ``) is
+/// emitted literally instead of swallowing the rest of the line. Emphasis
+/// follows CommonMark's flanking rule loosely: a marker only opens when the
+/// character after it is non-whitespace, and only closes when the character
+/// before it is non-whitespace, so a spaced asterisk stays a plain asterisk.
 pub(super) fn render_markdown_inline(line: &str) -> Vec<Span<'static>> {
+    let chars: Vec<char> = line.chars().collect();
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut buf = String::new();
-    let mut chars = line.chars().peekable();
     let code_style = Style::default()
         .fg(Color::Rgb(255, 184, 108))
         .bg(Color::Rgb(40, 30, 18));
     let bold_style = Style::default().add_modifier(Modifier::BOLD);
     let italic_style = Style::default().add_modifier(Modifier::ITALIC);
     let plain = Style::default().fg(palette::TEXT_MUTED);
+    let flush = |buf: &mut String, spans: &mut Vec<Span<'static>>| {
+        if !buf.is_empty() {
+            spans.push(Span::styled(std::mem::take(buf), plain));
+        }
+    };
 
-    while let Some(c) = chars.next() {
-        match c {
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            // Code span: style only when a closing backtick exists on the line.
             '`' => {
-                if !buf.is_empty() {
-                    spans.push(Span::styled(std::mem::take(&mut buf), plain));
+                if let Some(close) = (i + 1..chars.len()).find(|&j| chars[j] == '`') {
+                    flush(&mut buf, &mut spans);
+                    let code: String = chars[i + 1..close].iter().collect();
+                    spans.push(Span::styled(code, code_style));
+                    i = close + 1;
+                } else {
+                    buf.push('`');
+                    i += 1;
                 }
-                let mut code = String::new();
-                while let Some(&nc) = chars.peek() {
-                    chars.next();
-                    if nc == '`' {
-                        break;
-                    }
-                    code.push(nc);
-                }
-                spans.push(Span::styled(code, code_style));
             }
-            '*' if chars.peek() == Some(&'*') => {
-                chars.next();
-                if !buf.is_empty() {
-                    spans.push(Span::styled(std::mem::take(&mut buf), plain));
+            // Bold: `**x**` where `x` is non-empty and not space-flanked.
+            '*' if chars.get(i + 1) == Some(&'*') => {
+                let start = i + 2;
+                let close = chars
+                    .get(start)
+                    .filter(|c| !c.is_whitespace())
+                    .and_then(|_| {
+                        (start + 1..chars.len()).find(|&j| {
+                            chars[j] == '*'
+                                && chars.get(j + 1) == Some(&'*')
+                                && !chars[j - 1].is_whitespace()
+                        })
+                    });
+                if let Some(k) = close {
+                    flush(&mut buf, &mut spans);
+                    let bold: String = chars[start..k].iter().collect();
+                    spans.push(Span::styled(bold, bold_style));
+                    i = k + 2;
+                } else {
+                    // Emit BOTH markers literally and skip past them. Leaving the
+                    // second `*` to be re-evaluated would let it pair with a later
+                    // lone `*` (e.g. the `*` in a `**/*.ts` glob), re-introducing
+                    // the runaway this guards against.
+                    buf.push_str("**");
+                    i += 2;
                 }
-                let mut bold = String::new();
-                while let Some(&nc) = chars.peek() {
-                    chars.next();
-                    if nc == '*' && chars.peek() == Some(&'*') {
-                        chars.next();
-                        break;
-                    }
-                    bold.push(nc);
-                }
-                spans.push(Span::styled(bold, bold_style));
             }
+            // Italic: `*x*` where `x` is non-empty and not space-flanked.
             '*' => {
-                if !buf.is_empty() {
-                    spans.push(Span::styled(std::mem::take(&mut buf), plain));
+                let start = i + 1;
+                let close = chars
+                    .get(start)
+                    .filter(|c| !c.is_whitespace() && **c != '*')
+                    .and_then(|_| {
+                        (start + 1..chars.len())
+                            .find(|&j| chars[j] == '*' && !chars[j - 1].is_whitespace())
+                    });
+                if let Some(k) = close {
+                    flush(&mut buf, &mut spans);
+                    let italic: String = chars[start..k].iter().collect();
+                    spans.push(Span::styled(italic, italic_style));
+                    i = k + 1;
+                } else {
+                    buf.push('*');
+                    i += 1;
                 }
-                let mut italic = String::new();
-                while let Some(&nc) = chars.peek() {
-                    chars.next();
-                    if nc == '*' {
-                        break;
-                    }
-                    italic.push(nc);
-                }
-                spans.push(Span::styled(italic, italic_style));
             }
-            _ => buf.push(c),
+            c => {
+                buf.push(c);
+                i += 1;
+            }
         }
     }
-    if !buf.is_empty() {
-        spans.push(Span::styled(buf, plain));
-    }
+    flush(&mut buf, &mut spans);
     if spans.is_empty() {
         spans.push(Span::raw(""));
     }
@@ -141,16 +169,152 @@ pub(super) fn render_assistant_md(text: &str, content_width: usize) -> Vec<Vec<S
             i = j;
             continue;
         }
-        // Plain prose line.
-        for w in wrap(line, content_width) {
-            out.push(render_markdown_inline(&w));
-        }
+        // Heading, list item, blockquote, or plain paragraph.
+        push_prose_line(&mut out, line, content_width);
         i += 1;
     }
     if out.is_empty() {
         out.push(vec![Span::raw("")]);
     }
     out
+}
+
+/// A leading ATX heading (`#`..`######` then a space): returns the heading text
+/// with the markers stripped. Requires the space so `#define`, `#!/bin/sh`, and
+/// a `#1` issue reference are not mistaken for headings.
+fn parse_heading(s: &str) -> Option<&str> {
+    let hashes = s.len() - s.trim_start_matches('#').len();
+    if (1..=6).contains(&hashes) {
+        if let Some(text) = s[hashes..].strip_prefix(' ') {
+            return Some(text.trim_end_matches('#').trim());
+        }
+    }
+    None
+}
+
+/// A leading list marker: a `-`/`*`/`+` bullet (normalized to `•`) or an
+/// ordered `1.`/`1)` item (number kept). Returns the marker to render plus the
+/// item body. The trailing space is required, so `*emphasis*` and `3.14` are
+/// not treated as list items.
+fn parse_list_marker(s: &str) -> Option<(String, &str)> {
+    for bullet in ["- ", "* ", "+ "] {
+        if let Some(rest) = s.strip_prefix(bullet) {
+            return Some(("• ".to_string(), rest));
+        }
+    }
+    let digits = s.chars().take_while(|c| c.is_ascii_digit()).count();
+    if (1..=3).contains(&digits) {
+        let after = &s[digits..];
+        for delim in [". ", ") "] {
+            if let Some(rest) = after.strip_prefix(delim) {
+                return Some((format!("{}{} ", &s[..digits], &delim[..1]), rest));
+            }
+        }
+    }
+    None
+}
+
+/// Render one non-fence, non-table line. A heading renders bright/bold with its
+/// `#`s stripped; a list item and a blockquote get a hanging indent so a wrapped
+/// continuation line aligns under the text instead of back at the marker — the
+/// single biggest "reads like raw markdown" gap in everyday answers. Plain
+/// paragraphs keep the original wrap-then-inline-style path.
+fn push_prose_line(out: &mut Vec<Vec<Span<'static>>>, line: &str, content_width: usize) {
+    use unicode_width::UnicodeWidthStr;
+    let indent_len = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent_len);
+    let indent_cols = indent.width();
+    let ind = || -> Vec<Span<'static>> {
+        if indent.is_empty() {
+            Vec::new()
+        } else {
+            vec![Span::raw(indent.to_string())]
+        }
+    };
+    let faint = Style::default().fg(palette::TEXT_FAINT);
+
+    if let Some(text) = parse_heading(rest) {
+        let style = Style::default()
+            .fg(palette::TEXT_BRIGHT)
+            .add_modifier(Modifier::BOLD);
+        push_wrapped_with_prefix(
+            out,
+            ind(),
+            ind(),
+            indent_cols,
+            text,
+            content_width,
+            Some(style),
+        );
+    } else if let Some(body) = rest.strip_prefix("> ").or((rest == ">").then_some("")) {
+        let mut first = ind();
+        first.push(Span::styled("│ ", faint));
+        let mut cont = ind();
+        cont.push(Span::styled("│ ", faint));
+        push_wrapped_with_prefix(
+            out,
+            first,
+            cont,
+            indent_cols + 2,
+            body,
+            content_width,
+            Some(faint),
+        );
+    } else if let Some((marker, body)) = parse_list_marker(rest) {
+        let mcols = marker.width();
+        let mut first = ind();
+        first.push(Span::styled(marker, faint));
+        let mut cont = ind();
+        cont.push(Span::raw(" ".repeat(mcols)));
+        push_wrapped_with_prefix(
+            out,
+            first,
+            cont,
+            indent_cols + mcols,
+            body,
+            content_width,
+            None,
+        );
+    } else {
+        for w in wrap(line, content_width) {
+            out.push(render_markdown_inline(&w));
+        }
+    }
+}
+
+/// Wrap `body` to the room left after a `prefix_cols`-wide gutter and emit one
+/// content row per wrapped line: the first row carries `first`, every
+/// continuation row `cont` (same width), giving list items and blockquotes their
+/// hanging indent. `body_style`, when set, is patched over the inline styling.
+fn push_wrapped_with_prefix(
+    out: &mut Vec<Vec<Span<'static>>>,
+    first: Vec<Span<'static>>,
+    cont: Vec<Span<'static>>,
+    prefix_cols: usize,
+    body: &str,
+    content_width: usize,
+    body_style: Option<Style>,
+) {
+    let body_width = content_width.saturating_sub(prefix_cols).max(1);
+    let mut wrapped = wrap(body, body_width);
+    if wrapped.is_empty() {
+        wrapped.push(String::new());
+    }
+    for (idx, w) in wrapped.into_iter().enumerate() {
+        let mut row = if idx == 0 {
+            first.clone()
+        } else {
+            cont.clone()
+        };
+        let mut spans = render_markdown_inline(&w);
+        if let Some(st) = body_style {
+            for s in spans.iter_mut() {
+                s.style = s.style.patch(st);
+            }
+        }
+        row.extend(spans);
+        out.push(row);
+    }
 }
 
 /// Resolve a fenced-code language token to a syntect syntax. syntect matches by

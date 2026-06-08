@@ -259,79 +259,24 @@ impl Agent {
                                         )
                                         .await
                                     };
-                                    match choice {
-                                        ConscienceChoice::Abort => {
-                                            precomputed.push((
-                                                pc.call_id.clone(),
-                                                format!(
-                                                    "Error: aborted — this edit conflicts with recorded decision #{} ({}). Not applied; reconcile with the decision or supersede it.",
-                                                    conflict.ts, conflict.reason
-                                                ),
-                                                true,
-                                            ));
-                                            continue;
-                                        }
-                                        ConscienceChoice::Supersede => {
-                                            let rec = crate::decisions::DecisionRecord {
-                                                loc: conflict.file.clone(),
-                                                decision: format!(
-                                                    "override approved for the edit to {}",
-                                                    conflict.file
-                                                ),
-                                                why: format!(
-                                                    "human supersede of #{} (\"{}\") — {}",
-                                                    conflict.ts,
-                                                    conflict.prev_decision,
-                                                    conflict.reason
-                                                ),
-                                                rejected: Vec::new(),
-                                                model: self.config.model.clone(),
-                                                ts: crate::session::now_ms(),
-                                                anchor: None,
-                                                supersedes: Some(conflict.ts),
-                                            };
-                                            if let Err(e) =
-                                                crate::decisions::append(&self.cwd, &rec)
-                                            {
-                                                tracing::warn!(error = %e, "conscience: failed to append supersede record");
-                                            }
-                                            let _ = tx
-                                                .send(AgentEvent::DecisionOverturned {
-                                                    file: conflict.file.clone(),
-                                                    prev_decision: conflict.prev_decision.clone(),
-                                                    prev_model: conflict.prev_model.clone(),
-                                                    reason: conflict.reason.clone(),
-                                                    recorded: true,
-                                                })
-                                                .await;
-                                        }
-                                        ConscienceChoice::EditAnyway => {
-                                            if self.non_interactive {
-                                                tracing::warn!(
-                                                    file = %conflict.file,
-                                                    ts = conflict.ts,
-                                                    "conscience: edited over a decision without an override (headless run)"
-                                                );
-                                            }
-                                            let _ = tx
-                                                .send(AgentEvent::DecisionOverturned {
-                                                    file: conflict.file.clone(),
-                                                    prev_decision: conflict.prev_decision.clone(),
-                                                    prev_model: conflict.prev_model.clone(),
-                                                    reason: conflict.reason.clone(),
-                                                    recorded: false,
-                                                })
-                                                .await;
-                                        }
+                                    if matches!(choice, ConscienceChoice::Abort) {
+                                        precomputed.push((
+                                            pc.call_id.clone(),
+                                            format!(
+                                                "Error: aborted — this edit conflicts with recorded decision #{} ({}). Not applied; reconcile with the decision or supersede it.",
+                                                conflict.ts, conflict.reason
+                                            ),
+                                            true,
+                                        ));
+                                        continue;
                                     }
-                                    // Interactive: the human resolved the 3-way card
-                                    // (Abort already returned), so EditAnyway /
-                                    // Supersede is explicit consent that stands in for
-                                    // the gate. Headless: nobody saw the card, so fall
-                                    // back to the baseline gate — the conscience may
-                                    // only ADD friction, never turn a headless edit the
-                                    // gate would DENY into an executed write. Either
-                                    // way, still honor any PreToolUse hook.
+                                    // Supersede / EditAnyway chosen. Interactive: the
+                                    // human's choice stands in for the gate. Headless:
+                                    // nobody saw the card, so fall back to the baseline
+                                    // gate — the conscience may only ADD friction, never
+                                    // turn a headless edit the gate would DENY into an
+                                    // executed write. Either way, still honor a
+                                    // PreToolUse hook.
                                     let approved = if self.non_interactive {
                                         matches!(
                                             approval_outcome(
@@ -353,7 +298,58 @@ impl Agent {
                                     )
                                     .await
                                     {
-                                        Ok(()) => runnable.push((pc.call_id.clone(), args, t)),
+                                        Ok(()) => {
+                                            // Only now that the edit cleared the gate and
+                                            // will run do we commit the override: record a
+                                            // supersede to the trail (Supersede only) and
+                                            // announce it. Deferring past the gate means a
+                                            // blocked edit leaves no supersede record and
+                                            // no "decision overturned" card for a write
+                                            // that never happened.
+                                            let superseding =
+                                                matches!(choice, ConscienceChoice::Supersede);
+                                            if superseding {
+                                                let rec = crate::decisions::DecisionRecord {
+                                                    loc: conflict.file.clone(),
+                                                    decision: format!(
+                                                        "override approved for the edit to {}",
+                                                        conflict.file
+                                                    ),
+                                                    why: format!(
+                                                        "human supersede of #{} (\"{}\") — {}",
+                                                        conflict.ts,
+                                                        conflict.prev_decision,
+                                                        conflict.reason
+                                                    ),
+                                                    rejected: Vec::new(),
+                                                    model: self.config.model.clone(),
+                                                    ts: crate::session::now_ms(),
+                                                    anchor: None,
+                                                    supersedes: Some(conflict.ts),
+                                                };
+                                                if let Err(e) =
+                                                    crate::decisions::append(&self.cwd, &rec)
+                                                {
+                                                    tracing::warn!(error = %e, "conscience: failed to append supersede record");
+                                                }
+                                            } else if self.non_interactive {
+                                                tracing::warn!(
+                                                    file = %conflict.file,
+                                                    ts = conflict.ts,
+                                                    "conscience: edited over a decision without an override (headless run)"
+                                                );
+                                            }
+                                            let _ = tx
+                                                .send(AgentEvent::DecisionOverturned {
+                                                    file: conflict.file.clone(),
+                                                    prev_decision: conflict.prev_decision.clone(),
+                                                    prev_model: conflict.prev_model.clone(),
+                                                    reason: conflict.reason.clone(),
+                                                    recorded: superseding,
+                                                })
+                                                .await;
+                                            runnable.push((pc.call_id.clone(), args, t));
+                                        }
                                         Err(reason) => {
                                             let reason = if !approved && self.non_interactive {
                                                 match danger {
