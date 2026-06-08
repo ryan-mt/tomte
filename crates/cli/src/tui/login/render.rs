@@ -265,8 +265,11 @@ fn render_paste(f: &mut Frame, area: Rect, url: &str, input: &TextInput, err: Op
     let body = if input.is_empty() {
         Span::styled("paste code here…", Style::default().fg(palette::TEXT_MUTED))
     } else {
+        // Mask the pasted authorization code like the API-key field — it is a
+        // sensitive secret and should not sit in cleartext on screen / in a
+        // screen-share or recording.
         Span::styled(
-            input.buffer.clone(),
+            "•".repeat(input.buffer.chars().count()),
             Style::default().fg(palette::TEXT_BRIGHT),
         )
     };
