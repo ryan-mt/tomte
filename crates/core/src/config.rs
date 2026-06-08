@@ -76,8 +76,9 @@ pub struct Config {
     /// `<provider-id>/<model>` for a configured endpoint). Empty by default, so
     /// existing and single-model setups are unaffected. The list is
     /// provider-agnostic: a fallback may target a different provider or a local
-    /// endpoint. (Consumed by [`crate::fallback`]; not yet wired into the turn
-    /// loop — see that module.)
+    /// endpoint. Wired into the turn loop via [`crate::fallback`] and
+    /// `agent::turn`'s `try_fail_over` — reactive failover that only fires before
+    /// any answer text has streamed.
     #[serde(default)]
     pub fallback_models: Vec<String>,
     /// OS-level sandbox for `run_shell` child processes — see [`SandboxConfig`].
