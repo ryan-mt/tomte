@@ -40,6 +40,11 @@ pub fn project_commands_dir(cwd: &Path) -> PathBuf {
     cwd.join(".tomte").join("commands")
 }
 
+/// Project command files ship in cloned (untrusted) repos and a real command is
+/// tiny; cap the read so a planted symlink to a huge or non-regular file can't be
+/// slurped unboundedly when the slash menu enumerates commands.
+const CMD_MAX_BYTES: u64 = 64 * 1024;
+
 /// Load commands from global first, then project — project files with the
 /// same `name` override globals. Result is sorted by name.
 pub fn load_all(cwd: &Path) -> Vec<CustomCommand> {
@@ -54,7 +59,7 @@ pub fn load_all(cwd: &Path) -> Vec<CustomCommand> {
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Ok(text) = crate::config::read_text_file_capped(&path, CMD_MAX_BYTES) else {
                 continue;
             };
             match parse(&text, &path) {
