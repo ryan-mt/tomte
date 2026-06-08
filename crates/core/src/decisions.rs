@@ -99,6 +99,21 @@ pub fn for_loc(cwd: &Path, loc: &str) -> Vec<DecisionRecord> {
     load(cwd).into_iter().filter(|d| d.loc == needle).collect()
 }
 
+/// Like [`for_loc`], but first heals drifted lines in memory against the working
+/// tree (without persisting) — so `tomte why <file:line>` finds a decision even
+/// after the code shifted since it was recorded, matching the drift tolerance
+/// the injected trail already gets. A read-only query never mutates the store.
+pub fn for_loc_live(cwd: &Path, loc: &str) -> Vec<DecisionRecord> {
+    for_loc_live_at(&store_path(cwd), cwd, loc)
+}
+
+pub(crate) fn for_loc_live_at(store: &Path, root: &Path, loc: &str) -> Vec<DecisionRecord> {
+    let needle = loc.trim();
+    let mut records = load_at(store);
+    let _ = heal_locs(&mut records, root);
+    records.into_iter().filter(|d| d.loc == needle).collect()
+}
+
 /// Decisions recorded anywhere in a given file, in record order (oldest first).
 /// Unlike `for_loc` (which pins to an exact `file:line`), this matches on the
 /// *file* component of each `loc`, so it returns every decision in the file
@@ -323,8 +338,22 @@ pub fn reconcile(cwd: &Path) -> ReconcileReport {
 /// so tests can drive the logic without touching the real config directory.
 pub(crate) fn reconcile_at(store: &Path, root: &Path) -> ReconcileReport {
     let mut records = load_at(store);
-    let mut report = ReconcileReport::default();
+    let report = heal_locs(&mut records, root);
+    if report.changed() {
+        if let Err(e) = save_all(store, &records) {
+            tracing::warn!("decision-trail reconcile could not persist healed locs: {e:#}");
+        }
+    }
+    report
+}
 
+/// Heal the in-memory `loc` of every anchored record whose line merely moved, and
+/// tally what is present / moved / gone / ambiguous / skipped. Reads the working
+/// tree but never persists — the I/O-free core shared by `reconcile_at` (which
+/// then saves) and the read-only `*_live` query paths (which heal only so a
+/// lookup matches the current line, without mutating the store).
+fn heal_locs(records: &mut [DecisionRecord], root: &Path) -> ReconcileReport {
+    let mut report = ReconcileReport::default();
     for rec in records.iter_mut() {
         let Some(anchor) = rec.anchor.clone() else {
             report.skipped += 1;
@@ -358,12 +387,6 @@ pub(crate) fn reconcile_at(store: &Path, root: &Path) -> ReconcileReport {
             }
             [] => report.gone.push(rec.loc.clone()),
             _ => report.ambiguous.push(rec.loc.clone()),
-        }
-    }
-
-    if report.changed() {
-        if let Err(e) = save_all(store, &records) {
-            tracing::warn!("decision-trail reconcile could not persist healed locs: {e:#}");
         }
     }
     report
@@ -851,6 +874,27 @@ mod tests {
             !prompt.contains("src/a.rs:1"),
             "never the stale loc: {prompt}"
         );
+        let _ = std::fs::remove_dir_all(store.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn for_loc_live_finds_a_decision_after_its_line_drifted_without_persisting() {
+        let store = tmp("live_loc");
+        let root = src_root("live_loc");
+        // Recorded at line 1; the anchored line has since drifted to line 3.
+        std::fs::write(
+            root.join("src/a.rs"),
+            "// added\n// added\nlet token = mint();\n",
+        )
+        .unwrap();
+        append_at(&store, &anchored("src/a.rs:1", "let token = mint();")).unwrap();
+
+        // The query heals in memory, so asking for the CURRENT line finds it —
+        // a plain `for_loc` exact-match against the stale `:1` would miss.
+        assert_eq!(for_loc_live_at(&store, &root, "src/a.rs:3").len(), 1);
+        // ...but a read-only query must never mutate the on-disk trail.
+        assert_eq!(load_at(&store)[0].loc, "src/a.rs:1");
         let _ = std::fs::remove_dir_all(store.parent().unwrap());
         let _ = std::fs::remove_dir_all(&root);
     }

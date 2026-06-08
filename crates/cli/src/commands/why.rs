@@ -25,7 +25,7 @@ pub async fn run(
 
     match loc {
         Some(loc) if !all => {
-            let records = decisions::for_loc(&here, &loc);
+            let records = decisions::for_loc_live(&here, &loc);
             println!("{}", decisions::render_for_loc(&records, &loc));
         }
         _ => {
