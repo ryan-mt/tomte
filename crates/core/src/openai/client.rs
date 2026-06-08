@@ -4,7 +4,6 @@ use anyhow::{anyhow, Result};
 use base64::Engine;
 use rand::RngCore;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
-use serde::Serialize;
 
 use crate::auth::Credential;
 
@@ -252,45 +251,6 @@ impl OpenAiClient {
         );
         Ok(StreamHandle::from_response(resp).with_quota(quota))
     }
-}
-
-/// Helper: convenient way to call a non-streaming endpoint with arbitrary body.
-pub async fn raw_post<B: Serialize>(
-    credential: &Credential,
-    path: &str,
-    body: &B,
-) -> Result<serde_json::Value> {
-    let http = reqwest::Client::new();
-    let url = if credential.is_chatgpt_subscription() {
-        format!("{CHATGPT_BACKEND_BASE}/{}", path.trim_start_matches('/'))
-    } else {
-        format!("{API_BASE}/{}", path.trim_start_matches('/'))
-    };
-    let mut req = http
-        .post(&url)
-        .header(AUTHORIZATION, credential.auth_header_value())
-        .header(CONTENT_TYPE, "application/json")
-        .json(body);
-    if let Credential::OAuth {
-        account_id: Some(id),
-        ..
-    } = credential
-    {
-        if !id.is_empty() {
-            req = req.header("ChatGPT-Account-ID", id.clone());
-        }
-    }
-    let resp = req.send().await?;
-    let status = resp.status();
-    let text = resp.text().await?;
-    if !status.is_success() {
-        return Err(anyhow!(
-            "OpenAI {} {}",
-            status,
-            crate::sensitive::error_excerpt_redacting(&text, credential.secret_value())
-        ));
-    }
-    parse_json_response(&text)
 }
 
 #[async_trait::async_trait]

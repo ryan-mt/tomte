@@ -211,10 +211,17 @@ async fn read_file_on_fifo_errors_instead_of_hanging() {
     let dir = tempfile::tempdir().unwrap();
     let fifo = dir.path().join("pipe");
     let c = CString::new(fifo.to_str().unwrap()).unwrap();
-    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo failed");
+    assert_eq!(
+        unsafe { libc::mkfifo(c.as_ptr(), 0o600) },
+        0,
+        "mkfifo failed"
+    );
     // Without the is_file guard the eager read blocks forever (no writer), so a
     // timeout makes a regression fail loudly instead of hanging the suite.
-    let fut = ReadFile.execute(read_args("pipe", None, None), &ctx(dir.path().to_path_buf()));
+    let fut = ReadFile.execute(
+        read_args("pipe", None, None),
+        &ctx(dir.path().to_path_buf()),
+    );
     let err = tokio::time::timeout(std::time::Duration::from_secs(5), fut)
         .await
         .expect("read_file hung on a FIFO instead of rejecting it")
