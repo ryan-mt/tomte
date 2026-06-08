@@ -100,7 +100,10 @@ pub(super) fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
         } else {
             step(false, "run /init so i learn this project's house rules")
         },
-        plain("/help · shift+tab cycles · Ctrl+V paste · ^C exit", faint),
+        plain(
+            "/help · shift+tab cycles · Ctrl/Alt+V paste · ^C exit",
+            faint,
+        ),
     ];
 
     const GAP: usize = 3; // columns between the sprite and the text column

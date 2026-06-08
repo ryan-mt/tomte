@@ -307,16 +307,17 @@ fn streaming_assistant(text: &str, done: bool) -> Block {
 #[test]
 fn render_mode_parses_env_value() {
     use RenderMode::{AltScreen, Inline};
-    // The full-screen alternate screen is the default now (input pinned at the
-    // bottom); only an explicit truthy value (TOMTE_INLINE=1 / true / yes / on)
-    // opts into the inline viewport (Pillar 4).
+    // The inline viewport (Pillar 4) is the default now — it keeps the
+    // terminal's native scrollback + selection/copy; only an explicit falsy
+    // value (TOMTE_INLINE=0 / false / no / off) opts into the full-screen
+    // alternate screen.
     let cases = [
-        (None, AltScreen),
+        (None, Inline),
         (Some("1"), Inline),
         (Some(" on "), Inline),
         (Some("true"), Inline),
         (Some("yes"), Inline),
-        (Some("nope"), AltScreen),
+        (Some("nope"), Inline),
         (Some("0"), AltScreen),
         (Some(" off "), AltScreen),
         (Some("false"), AltScreen),

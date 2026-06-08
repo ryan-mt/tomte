@@ -197,13 +197,23 @@ pub async fn cancel_current_turn(app: &mut App) {
         }
     }
     app.conscience_handle = None;
+    // Esc is "stop everything": also drop messages queued via type-ahead while
+    // busy. Otherwise the post-turn queue flush in `main_loop` relaunches a turn
+    // the instant this one is aborted, so Esc looks like it did nothing — most
+    // visibly after a multi-line paste that queued many lines.
+    let dropped = app.message_queue.len();
+    app.message_queue.clear();
     // Close the open assistant block, then surface a small note so the user
     // can see the cancel happened.
     if let Some(Block::Assistant { done, .. }) = last_assistant_mut_open(&mut app.blocks) {
         *done = true;
     }
-    app.blocks
-        .push(Block::System("(cancelled — Esc)".to_string()));
+    let note = if dropped > 0 {
+        format!("(cancelled — Esc; cleared {dropped} queued)")
+    } else {
+        "(cancelled — Esc)".to_string()
+    };
+    app.blocks.push(Block::System(note));
 }
 
 /// True when the (col, row) terminal cell falls inside `r`. Mouse hit-test for

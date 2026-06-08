@@ -58,7 +58,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  Ctrl+O              toggle tool-call detail view\n  \
                  Ctrl+T              show / hide the live todo panel\n  \
                  Ctrl+L              clear the screen\n  \
-                 Ctrl+V              paste text or image\n  \
+                 Ctrl+V / Alt+V      paste text or image (use Alt+V on Windows Terminal)\n  \
                  Left-drag           select text and copy it to the clipboard\n  \
                  Ctrl+C              quit"
                     .to_string(),

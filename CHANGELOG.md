@@ -2,6 +2,17 @@
 
 ## 0.0.2
 
+### Hot fix
+
+- Fixed multi-line paste auto-submitting on Windows — crossterm emits no bracketed-paste event there (its WinAPI input backend doesn't parse `␛[200~`), so a pasted block arrived as individual key events and the first newline sent the half-typed message while the rest piled into the queue. The event loop now coalesces an input burst, treats newlines inside it as newlines (not Enter), and inserts the whole paste in a single redraw — which also removes the per-character paste lag.
+- Added Alt+V as a paste shortcut alongside Ctrl+V. Windows Terminal binds Ctrl+V to its own paste (delivered as keystrokes that never reach the app), so Alt+V is the reliable in-app clipboard paste — `/help` and the welcome footer note it.
+- Made Esc a true full stop — cancelling a running turn now also clears the type-ahead queue, so a queued (or paste-spammed) message can't immediately relaunch a new turn and make Esc look like it did nothing; the cancel note reports how many queued messages were dropped.
+- Extended the no-ripgrep `grep` fallback to honor `glob`, `file_type`, and `multiline` instead of hard-erroring (`the grep fallback does not support 'glob'`). On a box without ripgrep, `glob`/`file_type` now filter the native file walk and `multiline` matches across newlines, so every search option keeps working — `grep`/`glob` now degrade to a native, dependency-free search on every platform.
+- Made the worktree tools fail fast with a clear, cross-platform message when git isn't installed — a missing git was surfacing as a raw OS error (`The system cannot find the file specified`) or getting mislabeled as "not in a git repository"; `enter_worktree` now checks for git up front and says so plainly.
+- Made the inline viewport the default renderer so selecting and copying text works like a normal terminal — native click-drag selection over the terminal's own scrollback, with no mouse capture in the way. Set `TOMTE_INLINE=0` (or `false`/`no`/`off`) for the previous full-screen alternate screen.
+
+### Earlier in 0.0.2
+
 - Taught the agent to see a task through by default — a `# Seeing a task through` section in the system prompt every turn inherits: plan, write the failing test first (TDD), finish the job, then prove it with build/test/lint and loop until green; scaled so a one-line fix stays light.
 - Added a glass-box pre-flight — before a write or shell command runs, one calm line states what it changes and how far it reaches (plus a leash note for destructive ones); reads and searches stay cardless.
 - Surfaced a file's recorded decisions as house rules in the pre-flight — an edit to a file with recorded decisions lists them first, so the agent re-reads its own constraints before it could break one.
@@ -37,7 +48,7 @@
 - Gave `read_file` vision — a whole-file read of an image (PNG/JPEG/GIF/WebP) or PDF now attaches the bytes as media so a vision model can SEE it (the Anthropic translator emits `image`/`document` blocks in the `tool_result`), instead of the old text-only "binary file" note. Tool results carry optional media end-to-end via a new `execute_rich` (the 26 text tools are untouched; only `read_file` overrides it); the OpenAI wire degrades to the text note since its `function_call_output` doesn't accept media.
 - Surfaced project-local skills and custom commands in the `/` slash menu — skills under `.tomte/skills` (and `.claude`/`.codex`) plus `commands/*.md` now appear as `/<name>` entries (tagged by scope, e.g. `skill (.tomte)`) so you can trigger them manually, and typing `/<skill-name>` loads that skill's instructions into the composer. Global skills stay out of the quick menu (the model still loads any of them on demand via the `skill` tool).
 - Made `read_file` and `list_dir` give a clear, self-correcting error when handed the wrong kind of path — `read_file` on a directory points to `list_dir`/`glob`, and `list_dir` on a file points to `read_file`, instead of surfacing a raw OS error.
-- Settled on the full-screen alternate-buffer renderer as the default; the inline viewport is now opt-in via `TOMTE_INLINE=1`, with a slimmer height and a bottom-anchored live tail.
+- Built the inline viewport (SOUL Pillar 4) — a slimmer-height renderer with a bottom-anchored live tail that leaves finished turns in the terminal's own native scrollback instead of an alternate screen (made the default in the hot fix above; `TOMTE_INLINE=0` opts back into the full-screen alternate screen).
 - Unified the TUI's ~70 scattered color literals into one calm palette — an achromatic base, a single muted sage-teal accent, and muted semantic colors.
 - Gave the harness prompt a voice with a spine — it pushes back on weak plans, states confidence, anchors claims to receipts, and drops sycophancy and emoji.
 - Made tool calls self-correcting — a failed-to-parse argument gets an expected-args summary, and an unknown tool name suggests the closest real one (`Did you mean: read_file?`).

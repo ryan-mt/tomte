@@ -234,14 +234,12 @@ async fn execute_grep_with_commands(
         let stdout = normalize_search_output_paths(&String::from_utf8_lossy(&out.stdout), mode);
         return Ok(apply_limits(&stdout, a.head_limit, a.offset, 8000));
     }
-    if a.multiline.unwrap_or(false) {
-        return Err(grep_fallback_unsupported("multiline"));
-    }
-    if a.glob.is_some() {
-        return Err(grep_fallback_unsupported("glob"));
-    }
-    if a.file_type.is_some() {
-        return Err(grep_fallback_unsupported("file_type"));
+    // ripgrep could not be spawned. The external `grep` can't honor
+    // `glob`/`file_type`/`multiline`, so when any is requested route straight to
+    // the native engine (which now supports all three). Otherwise try external
+    // `grep` first, falling back to native if that can't spawn either.
+    if a.glob.is_some() || a.file_type.is_some() || a.multiline.unwrap_or(false) {
+        return native_grep_search(a, ctx, mode, context_before, context_after);
     }
 
     let mut grep = Command::new(grep_program);
@@ -298,14 +296,14 @@ async fn execute_grep_with_commands(
     Ok(apply_limits(&stdout, a.head_limit, a.offset, 8000))
 }
 
-/// Native, dependency-free search used only when neither ripgrep nor an
-/// external `grep` can be spawned (e.g. a stock Windows box with no Unix
-/// tooling). Covers the same plain-pattern subset the external `grep` fallback
-/// does — `glob`, `file_type`, and `multiline` are rejected before we get here —
-/// and emits ripgrep-shaped lines (`path:lineno:text`, with `path:lineno-text`
-/// context lines and `--` group separators) so the shared limiter applies
-/// unchanged. Binary (NUL-containing), unreadable, or very large files are
-/// skipped, matching grep/ripgrep's defaults.
+/// Native, dependency-free search used when ripgrep is unavailable (e.g. a stock
+/// Windows box with no Unix tooling), and the only path that honors
+/// `glob`/`file_type`/`multiline` without ripgrep — the external `grep` can't, so
+/// `execute_grep_with_commands` routes those straight here. Emits ripgrep-shaped
+/// lines (`path:lineno:text`, with `path:lineno-text` context lines and `--`
+/// group separators) so the shared limiter applies unchanged. Binary
+/// (NUL-containing), unreadable, or very large files are skipped, matching
+/// grep/ripgrep's defaults.
 fn native_grep_search(
     a: &GrepArgs,
     ctx: &ToolContext,
@@ -313,8 +311,11 @@ fn native_grep_search(
     context_before: Option<usize>,
     context_after: Option<usize>,
 ) -> Result<String> {
+    let multiline = a.multiline.unwrap_or(false);
     let re = regex::RegexBuilder::new(&a.pattern)
         .case_insensitive(a.case_insensitive)
+        .multi_line(multiline)
+        .dot_matches_new_line(multiline)
         .build()
         .map_err(|e| anyhow::anyhow!("invalid regex: {e}"))?;
 
@@ -341,6 +342,21 @@ fn native_grep_search(
     }
     files.sort();
 
+    // The no-ripgrep equivalents of rg's `--glob` / `--type`: drop files whose
+    // path doesn't match the glob, or whose basename extension isn't in the
+    // requested file type. ANDed when both are present.
+    if let Some(g) = a.glob.as_deref() {
+        files.retain(|rel| glob_matches_rel(g, rel));
+    }
+    if let Some(t) = a.file_type.as_deref() {
+        let exts = file_type_extensions(t).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown file_type '{t}' for the no-ripgrep fallback; install ripgrep for full --type support, or filter with `glob` instead"
+            )
+        })?;
+        files.retain(|rel| file_has_extension(rel, exts));
+    }
+
     let before = context_before.unwrap_or(0);
     let after = context_after.unwrap_or(0);
     let mut out = String::new();
@@ -360,15 +376,16 @@ fn native_grep_search(
         }
         let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<&str> = text.lines().collect();
+        let is_match = line_match_flags(&re, &text, &lines, multiline);
         match mode {
             "files_with_matches" => {
-                if lines.iter().any(|l| re.is_match(l)) {
+                if is_match.iter().any(|&m| m) {
                     out.push_str(rel);
                     out.push('\n');
                 }
             }
             "count" => {
-                let n = lines.iter().filter(|l| re.is_match(l)).count();
+                let n = is_match.iter().filter(|&&m| m).count();
                 if n > 0 {
                     out.push_str(&format!("{rel}:{n}\n"));
                 }
@@ -376,10 +393,8 @@ fn native_grep_search(
             _ => {
                 let n = lines.len();
                 let mut want = vec![false; n];
-                let mut is_match = vec![false; n];
-                for (i, line) in lines.iter().enumerate() {
-                    if re.is_match(line) {
-                        is_match[i] = true;
+                for (i, &matched) in is_match.iter().enumerate() {
+                    if matched {
                         let lo = i.saturating_sub(before);
                         let hi = (i + after).min(n.saturating_sub(1));
                         for w in want.iter_mut().take(hi + 1).skip(lo) {
@@ -425,10 +440,105 @@ fn normalize_grep_output_mode(mode: Option<&str>) -> Option<&'static str> {
     }
 }
 
-fn grep_fallback_unsupported(feature: &str) -> anyhow::Error {
-    anyhow::anyhow!(
-        "ripgrep is not available and the grep fallback does not support '{feature}'; install ripgrep or remove that option"
-    )
+/// Match a glob against a cwd-relative path for the no-ripgrep fallback,
+/// mirroring ripgrep's `--glob`: a pattern with no `/` matches the basename at
+/// any depth (gitignore-style), while a slashed pattern matches the full
+/// relative path. Same semantics as the `glob` tool's own fallback matcher.
+fn glob_matches_rel(pattern: &str, rel_path: &str) -> bool {
+    if pattern.contains('/') {
+        crate::hooks::glob_match(pattern, rel_path)
+    } else {
+        let base = rel_path.rsplit('/').next().unwrap_or(rel_path);
+        crate::hooks::glob_match(pattern, base)
+    }
+}
+
+/// True when `rel_path`'s basename has an extension (lowercased) in `exts`.
+fn file_has_extension(rel_path: &str, exts: &[&str]) -> bool {
+    let base = rel_path.rsplit('/').next().unwrap_or(rel_path);
+    match base.rsplit_once('.') {
+        Some((_, ext)) => {
+            let ext = ext.to_ascii_lowercase();
+            exts.iter().any(|&x| x == ext)
+        }
+        None => false,
+    }
+}
+
+/// Map a subset of ripgrep's `--type` names to file extensions for the
+/// no-ripgrep fallback. Not exhaustive (ripgrep ships a large table); covers the
+/// common languages a model reaches for. `None` for an unrecognized type, which
+/// the caller surfaces as a clear error rather than silently matching nothing.
+fn file_type_extensions(t: &str) -> Option<&'static [&'static str]> {
+    Some(match t.trim().to_ascii_lowercase().as_str() {
+        "rust" | "rs" => &["rs"],
+        "ts" | "typescript" => &["ts", "cts", "mts"],
+        "tsx" => &["tsx"],
+        "js" | "javascript" => &["js", "jsx", "mjs", "cjs"],
+        "jsx" => &["jsx"],
+        "py" | "python" => &["py", "pyi"],
+        "go" | "golang" => &["go"],
+        "c" => &["c", "h"],
+        "cpp" | "c++" | "cxx" | "cc" => &["cpp", "cc", "cxx", "hpp", "hh", "hxx", "h"],
+        "java" => &["java"],
+        "kotlin" | "kt" => &["kt", "kts"],
+        "rb" | "ruby" => &["rb"],
+        "php" => &["php"],
+        "swift" => &["swift"],
+        "sh" | "shell" | "bash" => &["sh", "bash", "zsh"],
+        "json" => &["json"],
+        "yaml" | "yml" => &["yaml", "yml"],
+        "toml" => &["toml"],
+        "md" | "markdown" => &["md", "markdown"],
+        "html" => &["html", "htm"],
+        "css" => &["css"],
+        "scss" | "sass" => &["scss", "sass"],
+        "xml" => &["xml"],
+        "sql" => &["sql"],
+        _ => return None,
+    })
+}
+
+/// Per-line match flags for `lines`. Non-multiline: each line is tested on its
+/// own (matching grep's line-oriented default). Multiline: match the whole
+/// `text`, then flag every line a match overlaps — so a pattern spanning a
+/// newline reports each line it touches.
+fn line_match_flags(re: &regex::Regex, text: &str, lines: &[&str], multiline: bool) -> Vec<bool> {
+    if !multiline {
+        return lines.iter().map(|l| re.is_match(l)).collect();
+    }
+    let mut flags = vec![false; lines.len()];
+    if lines.is_empty() {
+        return flags;
+    }
+    // Byte offset where each `lines()` entry begins in `text`. `str::lines`
+    // splits on '\n' and strips a trailing '\r', so step past both terminators.
+    let bytes = text.as_bytes();
+    let mut starts = Vec::with_capacity(lines.len());
+    let mut off = 0usize;
+    for l in lines {
+        starts.push(off);
+        off += l.len();
+        if off < bytes.len() && bytes[off] == b'\r' {
+            off += 1;
+        }
+        if off < bytes.len() && bytes[off] == b'\n' {
+            off += 1;
+        }
+    }
+    let line_of = |pos: usize| match starts.binary_search(&pos) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1),
+    };
+    for m in re.find_iter(text) {
+        let first = line_of(m.start());
+        // Inclusive last byte of the match; an empty match maps to its start line.
+        let last = line_of(m.end().saturating_sub(1).max(m.start())).min(flags.len() - 1);
+        for f in flags.iter_mut().take(last + 1).skip(first) {
+            *f = true;
+        }
+    }
+    flags
 }
 
 fn filter_zero_count_lines(stdout: &str) -> String {

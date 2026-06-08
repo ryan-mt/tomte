@@ -8,6 +8,11 @@ pub async fn handle_key(
     agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
     tx: &mpsc::Sender<AgentEvent>,
     bang_tx: &mpsc::Sender<BangResult>,
+    // True when this key arrived inside a coalesced input burst (a paste). On
+    // Windows crossterm delivers a paste as individual key events rather than
+    // one `Event::Paste`, so a pasted newline would otherwise submit the partial
+    // message; while `pasting`, Enter inserts a newline instead. See `main_loop`.
+    pasting: bool,
 ) -> Result<bool> {
     // A keypress during the hatch animation skips straight to the reveal.
     if app.hatch.is_some() {
@@ -206,7 +211,10 @@ pub async fn handle_key(
             app.input.kill_to_line_end();
             app.history_pos = None;
         }
-        KeyCode::Char('v') if ctrl => {
+        // Ctrl+V and Alt+V both paste from the clipboard. Alt+V matters on
+        // Windows Terminal, which binds Ctrl+V to its own paste (delivered as
+        // keystrokes, never reaching us), so Alt+V is the reliable in-app paste.
+        KeyCode::Char('v') if ctrl || alt => {
             handle_paste(app).await;
         }
         KeyCode::Char('o') if ctrl => {
@@ -237,7 +245,7 @@ pub async fn handle_key(
             app.input.insert_char(ch);
             app.history_pos = None;
         }
-        KeyCode::Enter if shift || alt => app.input.insert_newline(),
+        KeyCode::Enter if shift || alt || pasting => app.input.insert_newline(),
         KeyCode::Enter => {
             if app.input.is_empty() {
                 return Ok(false);

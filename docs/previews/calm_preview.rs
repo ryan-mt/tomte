@@ -9,9 +9,9 @@
 //! OWN scrollback while only the active turn stays live. That is the felt difference a
 //! "quiet custodian" owes you, and it is what static screenshots cannot show.
 //!
-//! Shipped state: this inline viewport is real but **opt-in via `TOMTE_INLINE=1`**; the
-//! 0.0.2 default is the alternate screen (it keeps in-app mouse selection / scroll /
-//! clickable targets). This preview demos what `TOMTE_INLINE=1` delivers.
+//! Shipped state: as of the 0.0.2 hot fix this inline viewport is the **default** — it
+//! keeps the terminal's native scrollback and click-drag selection/copy. Opt into the
+//! full-screen alternate screen with `TOMTE_INLINE=0`. This preview demos the default.
 //! Record this for the relaunch (asciinema / vhs):
 //!
 //!   rustc -D warnings docs/previews/calm_preview.rs -o /tmp/calm_preview && /tmp/calm_preview

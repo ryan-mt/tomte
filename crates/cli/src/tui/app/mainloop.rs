@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// Upper bound on how many already-buffered input events we coalesce into one
+/// batch per loop turn. A paste arrives as a burst the OS delivers at once;
+/// draining it together lets us tell a pasted newline from a deliberate Enter
+/// and insert the whole paste in a single redraw. The cap only bounds a
+/// pathological flood — `now_or_never` already ends the drain the instant input
+/// pauses.
+const PASTE_BURST_MAX: usize = 200_000;
+
 pub async fn main_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     start_with_resume_picker: bool,
@@ -281,97 +289,125 @@ pub async fn main_loop(
         tokio::select! {
             biased;
             maybe_ev = events.next() => {
-                let Some(ev) = maybe_ev else { break; };
-                match ev {
-                    Ok(Event::Key(key)) => {
-                        if key.kind != KeyEventKind::Press { continue; }
-                        match app.screen {
-                            Screen::Login => {
-                                if app.login.handle_key(key).await? {
-                                    let stage = app.login.stage().await;
-                                    if let LoginStage::Success(mode) = stage {
-                                        app.auth_mode = mode;
-                                        app.screen = Screen::Chat;
-                                        app.login = LoginScreen::new();
-                                    } else if matches!(stage, LoginStage::Cancelled) {
+                let Some(ev0) = maybe_ev else { break; };
+                // Coalesce a burst of already-buffered input events. The OS
+                // delivers a paste as one contiguous block, so every event is
+                // ready at once; a human keystroke arrives alone. `pasting` (a
+                // burst of >1 event) tells the Chat key handler to treat an Enter
+                // inside a paste as a newline, not a submit — the Windows fix for
+                // "long paste auto-sends" (crossterm emits no Event::Paste on
+                // Windows). Draining also collapses an N-keystroke paste into a
+                // single insert+redraw instead of N (the paste-lag fix).
+                let mut batch = vec![ev0];
+                while batch.len() < PASTE_BURST_MAX {
+                    match events.next().now_or_never() {
+                        Some(Some(ev)) => batch.push(ev),
+                        _ => break,
+                    }
+                }
+                let pasting = batch.len() > 1;
+                let mut stop = false;
+                for ev in batch {
+                    match ev {
+                        Ok(Event::Key(key)) => {
+                            if key.kind != KeyEventKind::Press {
+                                continue;
+                            }
+                            match app.screen {
+                                Screen::Login => {
+                                    if app.login.handle_key(key).await? {
+                                        let stage = app.login.stage().await;
+                                        if let LoginStage::Success(mode) = stage {
+                                            app.auth_mode = mode;
+                                            app.screen = Screen::Chat;
+                                            app.login = LoginScreen::new();
+                                        } else if matches!(stage, LoginStage::Cancelled) {
+                                            stop = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                Screen::Chat => {
+                                    if handle_key(&mut app, key, &agent, &agent_tx, &bang_tx, pasting)
+                                        .await?
+                                    {
+                                        stop = true;
                                         break;
                                     }
                                 }
                             }
-                            Screen::Chat => {
-                                if handle_key(&mut app, key, &agent, &agent_tx, &bang_tx).await? { break; }
-                            }
                         }
-                    }
-                    Ok(Event::Resize(_, _)) => {}
-                    // Bracketed paste on the login screen: route the clipboard
-                    // into the active field (OAuth code / API key). Without this
-                    // a paste arrives as Event::Paste and is dropped, since the
-                    // Chat arm below ignores it.
-                    Ok(Event::Paste(text)) if app.screen == Screen::Login => {
-                        app.login.handle_paste_text(&text).await;
-                    }
-                    // Bracketed paste: the whole clipboard arrives as one event,
-                    // so multi-line text lands in the composer for editing
-                    // instead of submitting on the first newline.
-                    Ok(Event::Paste(text))
-                        if app.screen == Screen::Chat
-                            && app.pending_approval.is_none()
-                            && app.pending_conscience.is_none() =>
-                    {
-                        // Insert in one shift (not char-by-char) so a large paste
-                        // isn't O(n²); strip CR so CRLF clipboards don't double up.
-                        let cleaned: String = text.chars().filter(|&c| c != '\r').collect();
-                        app.input.insert_str(&cleaned);
-                        app.history_pos = None;
-                    }
-                    Ok(Event::Mouse(m)) => {
-                        use crossterm::event::{MouseButton, MouseEventKind};
-                        match m.kind {
-                            MouseEventKind::ScrollUp => {
-                                app.scroll = app.scroll.saturating_sub(3);
-                                app.auto_scroll = false;
-                                // The view scrolls back by 3 rows, so the content
-                                // shifts DOWN on screen. Move any active selection
-                                // with it (instead of dropping it) so the user can
-                                // wheel up to read or extend what they're copying.
-                                app.shift_selection_rows(3);
-                            }
-                            MouseEventKind::ScrollDown => {
-                                app.scroll = app.scroll.saturating_add(3);
-                                // Content shifts UP by 3 rows; move the selection
-                                // with it so the highlight keeps tracking the text.
-                                app.shift_selection_rows(-3);
-                            }
-                            MouseEventKind::Down(MouseButton::Left) => {
-                                // Begin a selection. The click target (jump /
-                                // fleet toggle) only fires on release if no drag
-                                // happened — see Up(Left) below.
-                                app.copy_notice = None;
-                                app.selection =
-                                    Some(selection::Selection::new(m.column, m.row));
-                            }
-                            MouseEventKind::Drag(MouseButton::Left) => {
-                                if let Some(sel) = app.selection.as_mut() {
-                                    sel.cursor = (m.column, m.row);
+                        Ok(Event::Resize(_, _)) => {}
+                        // Bracketed paste on the login screen: route the clipboard
+                        // into the active field (OAuth code / API key). Without this
+                        // a paste arrives as Event::Paste and is dropped, since the
+                        // Chat arm below ignores it.
+                        Ok(Event::Paste(text)) if app.screen == Screen::Login => {
+                            app.login.handle_paste_text(&text).await;
+                        }
+                        // Bracketed paste: the whole clipboard arrives as one event,
+                        // so multi-line text lands in the composer for editing
+                        // instead of submitting on the first newline.
+                        Ok(Event::Paste(text))
+                            if app.screen == Screen::Chat
+                                && app.pending_approval.is_none()
+                                && app.pending_conscience.is_none() =>
+                        {
+                            // Insert in one shift (not char-by-char) so a large paste
+                            // isn't O(n²); strip CR so CRLF clipboards don't double up.
+                            let cleaned: String = text.chars().filter(|&c| c != '\r').collect();
+                            app.input.insert_str(&cleaned);
+                            app.history_pos = None;
+                        }
+                        Ok(Event::Mouse(m)) => {
+                            use crossterm::event::{MouseButton, MouseEventKind};
+                            match m.kind {
+                                MouseEventKind::ScrollUp => {
+                                    app.scroll = app.scroll.saturating_sub(3);
+                                    app.auto_scroll = false;
+                                    // The view scrolls back by 3 rows, so the content
+                                    // shifts DOWN on screen. Move any active selection
+                                    // with it (instead of dropping it) so the user can
+                                    // wheel up to read or extend what they're copying.
+                                    app.shift_selection_rows(3);
                                 }
-                            }
-                            MouseEventKind::Up(MouseButton::Left) => {
-                                if let Some(mut sel) = app.selection.take() {
-                                    sel.cursor = (m.column, m.row);
-                                    if sel.is_dragged() {
-                                        app.finish_selection(sel);
-                                    } else {
-                                        // A plain click → act on the target.
-                                        handle_left_click(&mut app, m.column, m.row);
+                                MouseEventKind::ScrollDown => {
+                                    app.scroll = app.scroll.saturating_add(3);
+                                    // Content shifts UP by 3 rows; move the selection
+                                    // with it so the highlight keeps tracking the text.
+                                    app.shift_selection_rows(-3);
+                                }
+                                MouseEventKind::Down(MouseButton::Left) => {
+                                    // Begin a selection. The click target (jump /
+                                    // fleet toggle) only fires on release if no drag
+                                    // happened — see Up(Left) below.
+                                    app.copy_notice = None;
+                                    app.selection =
+                                        Some(selection::Selection::new(m.column, m.row));
+                                }
+                                MouseEventKind::Drag(MouseButton::Left) => {
+                                    if let Some(sel) = app.selection.as_mut() {
+                                        sel.cursor = (m.column, m.row);
                                     }
                                 }
+                                MouseEventKind::Up(MouseButton::Left) => {
+                                    if let Some(mut sel) = app.selection.take() {
+                                        sel.cursor = (m.column, m.row);
+                                        if sel.is_dragged() {
+                                            app.finish_selection(sel);
+                                        } else {
+                                            // A plain click → act on the target.
+                                            handle_left_click(&mut app, m.column, m.row);
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
-                            _ => {}
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
+                if stop { break; }
             }
             Some(ev) = agent_rx.recv() => {
                 apply_agent_event(&mut app, ev);

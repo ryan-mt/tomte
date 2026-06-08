@@ -94,6 +94,7 @@ pub async fn enter_worktree(ctx: &ToolContext, name: Option<&str>) -> Result<Str
         }
     }
 
+    ensure_git().await?;
     let original_cwd = canonicalize_dir(&ctx.cwd)?;
     let repo_root = git_stdout(&original_cwd, ["rev-parse", "--show-toplevel"])
         .await
@@ -401,6 +402,22 @@ fn git_command() -> Command {
     let mut git = Command::new("git");
     crate::secret_env::scrub_secret_env(&mut git);
     git
+}
+
+/// Fail early with a clear, cross-platform message when git isn't installed.
+/// Without this the first git call surfaces a raw OS spawn error ("The system
+/// cannot find the file specified" on Windows / "No such file or directory"
+/// elsewhere) or gets mislabeled by an outer context (e.g. "not in a git
+/// repository"). The worktree tools genuinely need git, so it's the one external
+/// dependency we check up front rather than fall back from.
+async fn ensure_git() -> Result<()> {
+    match git_command().arg("--version").output().await {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(anyhow!(
+            "git is not installed or not on PATH — the worktree tools (enter_worktree / exit_worktree) require git"
+        )),
+        Err(e) => Err(anyhow::Error::new(e).context("run git --version")),
+    }
 }
 
 #[cfg(test)]

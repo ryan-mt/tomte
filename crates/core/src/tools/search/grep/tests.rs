@@ -205,24 +205,85 @@ async fn grep_fallback_count_mode_returns_matching_files_only() {
 }
 
 #[tokio::test]
-async fn grep_fallback_rejects_unsupported_glob_instead_of_ignoring_it() {
+async fn native_fallback_glob_filters_files() {
+    // With neither rg nor grep, a `glob` now filters the native search instead
+    // of hard-erroring (regression for "the grep fallback does not support
+    // 'glob'" on a stock Windows box).
     let dir = tempfile::tempdir().unwrap();
-    let mut args = grep_args("x");
+    write(dir.path(), "a.rs", "needle\n");
+    write(dir.path(), "b.txt", "needle\n");
+    write(dir.path(), "src/c.rs", "needle\n");
+    let missing = missing_rg(dir.path());
+    let cx = ctx(dir.path().to_path_buf());
+
+    // No-slash glob matches the basename at any depth.
+    let mut args = grep_args("needle");
     args.glob = Some("*.rs".to_string());
-
-    let err = execute_grep_with_commands(
-        &args,
-        &ctx(dir.path().to_path_buf()),
-        &missing_rg(dir.path()),
-        "grep",
-    )
-    .await
-    .unwrap_err();
-
+    let out = execute_grep_with_commands(&args, &cx, &missing, &missing)
+        .await
+        .unwrap();
+    assert!(out.contains("a.rs:1:needle"), "got: {out}");
+    assert!(out.contains("src/c.rs:1:needle"), "got: {out}");
     assert!(
-        err.to_string().contains("does not support 'glob'"),
-        "got: {err}"
+        !out.contains("b.txt"),
+        "glob must exclude non-matching files: {out}"
     );
+
+    // A slashed glob matches the full relative path.
+    let mut scoped = grep_args("needle");
+    scoped.glob = Some("src/**/*.rs".to_string());
+    let out = execute_grep_with_commands(&scoped, &cx, &missing, &missing)
+        .await
+        .unwrap();
+    assert!(out.contains("src/c.rs:1:needle"), "got: {out}");
+    assert!(!out.contains("a.rs"), "got: {out}");
+}
+
+#[tokio::test]
+async fn native_fallback_file_type_filters_by_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "a.rs", "needle\n");
+    write(dir.path(), "b.py", "needle\n");
+    let missing = missing_rg(dir.path());
+    let cx = ctx(dir.path().to_path_buf());
+
+    let mut args = grep_args("needle");
+    args.file_type = Some("rust".to_string());
+    let out = execute_grep_with_commands(&args, &cx, &missing, &missing)
+        .await
+        .unwrap();
+    assert!(out.contains("a.rs:1:needle"), "got: {out}");
+    assert!(
+        !out.contains("b.py"),
+        "file_type must exclude other languages: {out}"
+    );
+
+    // An unknown type surfaces a clear error rather than silently empty output.
+    let mut bad = grep_args("needle");
+    bad.file_type = Some("klingon".to_string());
+    let err = execute_grep_with_commands(&bad, &cx, &missing, &missing)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("unknown file_type"), "got: {err}");
+}
+
+#[tokio::test]
+async fn native_fallback_multiline_matches_across_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "f.txt", "alpha\nbeta\ngamma\n");
+    let missing = missing_rg(dir.path());
+    let cx = ctx(dir.path().to_path_buf());
+
+    // A pattern spanning the newline between alpha and beta. Both overlapped
+    // lines are reported; the unrelated line is not.
+    let mut args = grep_args("alpha\\nbeta");
+    args.multiline = Some(true);
+    let out = execute_grep_with_commands(&args, &cx, &missing, &missing)
+        .await
+        .unwrap();
+    assert!(out.contains("f.txt:1:alpha"), "got: {out}");
+    assert!(out.contains("f.txt:2:beta"), "got: {out}");
+    assert!(!out.contains("gamma"), "got: {out}");
 }
 
 #[tokio::test]
