@@ -47,7 +47,12 @@ impl LlmClient {
     /// path, resolving the stored credential for the detected provider.
     pub async fn for_config(cfg: &Config) -> Result<Self> {
         if let Some((prefix, _)) = cfg.model.split_once('/') {
-            if let Some(pc) = cfg.providers.get(prefix) {
+            if let Some(pc) = cfg
+                .providers
+                .get(prefix)
+                .cloned()
+                .or_else(|| crate::config::builtin_provider(prefix))
+            {
                 let client = ChatCompletionsClient::new(
                     prefix.to_string(),
                     pc.base_url.clone(),
@@ -160,6 +165,18 @@ mod tests {
         };
         let client = LlmClient::for_config(&cfg).await.unwrap();
         // The Chat Completions adapter reports the OpenAI-compatible protocol.
+        assert_eq!(client.provider(), Provider::OpenAi);
+    }
+
+    #[tokio::test]
+    async fn for_config_routes_builtin_provider_without_declaration() {
+        // `groq/<model>` with NO `providers` entry still routes to the Chat
+        // adapter via the built-in preset — works out of the box, no network.
+        let cfg = Config {
+            model: "groq/llama-3.3-70b".to_string(),
+            ..Config::default()
+        };
+        let client = LlmClient::for_config(&cfg).await.unwrap();
         assert_eq!(client.provider(), Provider::OpenAi);
     }
 }

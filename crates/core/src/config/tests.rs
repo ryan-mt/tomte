@@ -234,6 +234,46 @@ fn provider_config_parses_and_resolves_literal_key() {
 }
 
 #[test]
+fn builtin_provider_resolves_known_ids_and_rejects_unknown() {
+    let groq = builtin_provider("groq").expect("groq is built-in");
+    assert_eq!(groq.base_url, "https://api.groq.com/openai/v1");
+    assert_eq!(groq.api_key_env.as_deref(), Some("GROQ_API_KEY"));
+    // Case-insensitive id match.
+    assert!(builtin_provider("OpenRouter").is_some());
+    // Local servers need no key.
+    assert!(builtin_provider("ollama").unwrap().api_key_env.is_none());
+    // Unknown id → None (routing falls back to the OpenAI heuristic).
+    assert!(builtin_provider("definitely-not-a-provider").is_none());
+}
+
+#[test]
+fn effective_context_limit_uses_builtin_then_user_override() {
+    // A known prefix with NO declared provider routes through the built-in
+    // preset, which carries no context_limit → the conservative default.
+    let cfg = Config {
+        model: "groq/llama-3.3-70b".to_string(),
+        ..Config::default()
+    };
+    assert_eq!(
+        cfg.effective_context_limit(),
+        DEFAULT_PROVIDER_CONTEXT_LIMIT
+    );
+    // A user-declared provider wins, and its explicit context_limit is honored.
+    let mut overridden = cfg.clone();
+    overridden.providers.insert(
+        "groq".into(),
+        ProviderConfig {
+            base_url: "https://api.groq.com/openai/v1".into(),
+            api_key: None,
+            api_key_env: None,
+            context_limit: Some(131_072),
+            forward_reasoning_effort: true,
+        },
+    );
+    assert_eq!(overridden.effective_context_limit(), 131_072);
+}
+
+#[test]
 fn redacted_view_hides_literal_provider_keys() {
     let mut cfg = Config::default();
     cfg.providers.insert(

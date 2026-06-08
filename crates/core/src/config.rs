@@ -159,6 +159,77 @@ impl ProviderConfig {
     }
 }
 
+/// Built-in base URLs + key-env conventions for well-known OpenAI-compatible
+/// providers, so a `<id>/<model>` spec works out of the box (e.g.
+/// `groq/llama-3.3-70b`) without hand-writing a `providers` entry. Each tuple is
+/// `(id, base_url, api_key_env, forward_reasoning_effort)`; local servers
+/// (Ollama / LM Studio) take no key.
+const BUILTIN_PROVIDERS: &[(&str, &str, Option<&str>, bool)] = &[
+    (
+        "groq",
+        "https://api.groq.com/openai/v1",
+        Some("GROQ_API_KEY"),
+        true,
+    ),
+    (
+        "openrouter",
+        "https://openrouter.ai/api/v1",
+        Some("OPENROUTER_API_KEY"),
+        false,
+    ),
+    (
+        "deepseek",
+        "https://api.deepseek.com/v1",
+        Some("DEEPSEEK_API_KEY"),
+        true,
+    ),
+    ("xai", "https://api.x.ai/v1", Some("XAI_API_KEY"), true),
+    (
+        "together",
+        "https://api.together.xyz/v1",
+        Some("TOGETHER_API_KEY"),
+        true,
+    ),
+    (
+        "fireworks",
+        "https://api.fireworks.ai/inference/v1",
+        Some("FIREWORKS_API_KEY"),
+        false,
+    ),
+    (
+        "cerebras",
+        "https://api.cerebras.ai/v1",
+        Some("CEREBRAS_API_KEY"),
+        false,
+    ),
+    (
+        "mistral",
+        "https://api.mistral.ai/v1",
+        Some("MISTRAL_API_KEY"),
+        false,
+    ),
+    ("ollama", "http://localhost:11434/v1", None, false),
+    ("lmstudio", "http://localhost:1234/v1", None, false),
+];
+
+/// Synthesize a [`ProviderConfig`] for a well-known provider id (see
+/// [`BUILTIN_PROVIDERS`]), or `None` if the id isn't recognized. The API key is
+/// resolved later from the conventional `<ID>_API_KEY` env var. This is only a
+/// fallback: a user's own `config.providers["<id>"]` always takes precedence.
+pub fn builtin_provider(id: &str) -> Option<ProviderConfig> {
+    let id = id.trim();
+    BUILTIN_PROVIDERS
+        .iter()
+        .find(|entry| entry.0.eq_ignore_ascii_case(id))
+        .map(|entry| ProviderConfig {
+            base_url: entry.1.to_string(),
+            api_key: None,
+            api_key_env: entry.2.map(str::to_string),
+            context_limit: None,
+            forward_reasoning_effort: entry.3,
+        })
+}
+
 impl Config {
     /// Effective input context window (tokens) for the active model — the value
     /// the warn/auto-compact thresholds and the status bar must use. A model
@@ -169,7 +240,12 @@ impl Config {
     /// Built-in OpenAI/Anthropic models use the catalog value.
     pub fn effective_context_limit(&self) -> u64 {
         if let Some((prefix, _)) = self.model.split_once('/') {
-            if let Some(pc) = self.providers.get(prefix) {
+            if let Some(pc) = self
+                .providers
+                .get(prefix)
+                .cloned()
+                .or_else(|| builtin_provider(prefix))
+            {
                 return pc.context_limit.unwrap_or(DEFAULT_PROVIDER_CONTEXT_LIMIT);
             }
         }
