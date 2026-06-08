@@ -134,7 +134,7 @@ fn format_memory_block(entries: &[MemoryEntry]) -> String {
 /// locate their block by `find`ing the marker and truncating there — so a
 /// planted copy would make a stripper delete unrelated content. A zero-width
 /// space breaks the literal match while leaving the text visually unchanged.
-fn neutralize_block_markers(text: &str) -> String {
+pub(crate) fn neutralize_block_markers(text: &str) -> String {
     text.replace("<!-- tomte-", "<!-- tomte-\u{200b}")
 }
 

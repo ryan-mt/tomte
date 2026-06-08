@@ -201,7 +201,9 @@ impl Agent {
             return;
         }
         let count = entries.len();
-        let manifest = crate::skill::manifest(&entries);
+        // Defang framework block markers a project-supplied SKILL.md name or
+        // description might embed, the same as inherited memory content.
+        let manifest = crate::memory::neutralize_block_markers(&crate::skill::manifest(&entries));
         self.system_prompt.push_str(&format!(
             "\n\n# Available skills ({count})\n\n\
              These curated playbooks are installed and available. Each is the distilled \

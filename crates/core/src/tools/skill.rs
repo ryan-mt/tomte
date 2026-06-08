@@ -70,7 +70,9 @@ Behaviour:\n\
                 "# Skill: {}\n(skill directory: {})\n\n{}",
                 a.name,
                 dir.display(),
-                body.trim()
+                // Defang framework block markers a project-supplied SKILL.md body
+                // might embed, matching the memory-injection path.
+                crate::memory::neutralize_block_markers(body.trim())
             )),
             Err(_) => {
                 let available: Vec<String> = crate::skill::discover(&ctx.cwd)
