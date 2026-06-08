@@ -201,7 +201,7 @@ pub fn load_by_name(cwd: &Path, name: &str) -> Result<SubagentDefinition> {
     ))
 }
 
-/// Resolve a Claude Code model alias to a concrete Anthropic model id. A
+/// Resolve a model alias to a concrete Anthropic model id. A
 /// `~/.claude/agents/*.md` file commonly sets `model: sonnet`; sent verbatim
 /// that 404s at the API, so map the well-known aliases. Anything already
 /// concrete (or an OpenAI id) passes through unchanged.

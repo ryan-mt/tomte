@@ -163,9 +163,8 @@ Parameters:\n\
         let body = String::from_utf8_lossy(&buf);
         // HTML pages are mostly markup, scripts and inline styles — returning
         // them verbatim buries the useful text and can dump 250k+ tokens of
-        // noise into the context from a single fetch. Convert to plain text
-        // (like Claude Code's web fetch) so only the readable content lands in
-        // the model's context.
+        // noise into the context from a single fetch. Convert to plain text so
+        // only the readable content lands in the model's context.
         let ct = content_type.to_ascii_lowercase();
         let head: String = body
             .chars()

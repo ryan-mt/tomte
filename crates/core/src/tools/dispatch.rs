@@ -1,4 +1,4 @@
-//! Sub-agent dispatch tool. The Claude Code analogue of `Task`.
+//! Sub-agent dispatch tool: spawn a child agent to run a self-contained task.
 //!
 //! Given a `subagent_type` (matching a file in `~/.config/tomte/agents/`)
 //! and a `prompt`, spins up a child `Agent` with a restricted tool registry,
@@ -280,7 +280,7 @@ Behaviour:\n\
 
         let mut cfg = ctx.config.clone();
         if let Some(m) = a.model.as_ref().or(def.model.as_ref()) {
-            // `inherit`/`default` (a Claude Code convention) mean "use the parent
+            // `inherit`/`default` (a common subagent convention) mean "use the parent
             // agent's model" — keep cfg.model instead of sending a bogus model id
             // that 404s and breaks every tool call in the subagent turn.
             let alias = m.trim().to_ascii_lowercase();

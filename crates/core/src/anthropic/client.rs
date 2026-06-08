@@ -25,15 +25,15 @@ const CREATE_TIMEOUT: Duration = Duration::from_secs(300);
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-/// Beta-feature flags required for OAuth subscription tokens to be accepted
-/// by the Messages API. These match the values the official Claude Code CLI
-/// sends; they are undocumented and may change without notice.
+/// Beta-feature flags required for OAuth subscription tokens to be accepted by
+/// the Messages API. These are the exact values the subscription client must
+/// send; they are undocumented and may change without notice.
 const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
 
 /// Beta flag that unlocks the 1M-token context window on the Claude API. Sent
 /// only for models that actually have a 1M window (see `model_supports_1m`);
 /// requesting it for a 200K model is rejected, and it is harmless for the GA-1M
-/// models. Mirrors how the official Claude Code CLI enables 1M.
+/// models. This is the beta flag that enables the 1M window.
 const CONTEXT_1M_BETA: &str = "context-1m-2025-08-07";
 
 /// Required first line of the system prompt when authenticating with an

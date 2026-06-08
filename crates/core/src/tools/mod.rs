@@ -172,6 +172,6 @@ pub enum ApprovalMode {
     Manual,
     /// Read-only execution. Tools that are not `is_read_only()` are rejected
     /// before they run; the model receives an error so it can adjust the
-    /// plan instead of stalling. Mirrors Claude Code's Plan mode.
+    /// plan instead of stalling.
     Plan,
 }

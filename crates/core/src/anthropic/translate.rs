@@ -77,9 +77,9 @@ impl EffortPlan {
 ///     adaptive. Opus 4.7/4.8 reject `type:enabled` (400), so they only ever use
 ///     adaptive.
 ///
-/// `none`/`minimal`/`disabled` engage no thinking on either shape. `xhigh`
-/// (and Claude Code's `ultracode`, which is xhigh on the wire) is only honoured
-/// on Opus 4.7/4.8 and clamps to `high` elsewhere.
+/// `none`/`minimal`/`disabled` engage no thinking on either shape. `xhigh` (and
+/// `ultracode`, which is xhigh on the wire) is only honoured on Opus 4.7/4.8 and
+/// clamps to `high` elsewhere.
 fn map_effort(model: &str, effort: Option<&str>) -> EffortPlan {
     let Some(raw) = effort else {
         return EffortPlan::no_thinking();

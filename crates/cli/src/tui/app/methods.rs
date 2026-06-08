@@ -96,9 +96,8 @@ impl App {
             pending_plan_exit: None,
             pending_session_save: false,
         };
-        // Restore the last-persisted permission mode (Claude Code's
-        // `defaultMode`). Overrides the literal defaults above for the three
-        // approval fields via the canonical setter.
+        // Restore the last-persisted permission mode. Overrides the literal
+        // defaults above for the three approval fields via the canonical setter.
         app.set_permission_mode(PermissionMode::from_config_str(
             &app.config.default_permission_mode,
         ));

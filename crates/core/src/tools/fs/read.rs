@@ -80,13 +80,12 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
         // Bound the read so the LLM can't request /dev/zero or a multi-GB log
         // and OOM the process.
         const MAX_BYTES: u64 = 5_000_000;
-        // Default lines-per-call when caller does not pass `limit`. Matches
-        // Claude Code's Read tool — keeps a single read from flooding the
-        // context window with a large file.
+        // Default lines-per-call when caller does not pass `limit`. Keeps a
+        // single read from flooding the context window with a large file.
         const DEFAULT_LINE_LIMIT: usize = 2000;
         const MAX_LINE_LIMIT: usize = DEFAULT_LINE_LIMIT;
         // Per-line truncation so a minified bundle (one giant line) can't
-        // blow out the context. Mirrors Claude Code's 2000-char-per-line cap.
+        // blow out the context.
         const MAX_LINE_CHARS: usize = 2000;
 
         let meta = match tokio::fs::metadata(&path).await {
@@ -147,9 +146,9 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
                 .with_context(|| format!("read {}", path.display()))?;
             match String::from_utf8(bytes) {
                 // A whole-file read of a Jupyter notebook is rendered as cells
-                // (like Claude Code's Read) rather than dumped as raw JSON; a
-                // sliced read (offset/limit) still returns the raw JSON. A parse
-                // failure falls through to the plain-text reader.
+                // rather than dumped as raw JSON; a sliced read (offset/limit)
+                // still returns the raw JSON. A parse failure falls through to
+                // the plain-text reader.
                 Ok(text)
                     if a.path.ends_with(".ipynb") && a.offset.is_none() && a.limit.is_none() =>
                 {
@@ -179,7 +178,7 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
     /// Whole-file read of an image (PNG/JPEG/GIF/WebP) or PDF attaches the bytes
     /// as media so a vision model can SEE it, instead of the text "binary file"
     /// note. A sliced read (offset/limit) or any other file defers to the
-    /// text-only `execute`. Mirrors Claude Code's Read.
+    /// text-only `execute`.
     async fn execute_rich(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput> {
         let a: ReadArgs = crate::tools::parse_args("read_file", args.clone())?;
         if a.offset.is_none() && a.limit.is_none() {
@@ -306,10 +305,10 @@ fn render_text_read(
 
 /// Render a Jupyter `.ipynb` (nbformat 4) as readable cells instead of raw
 /// JSON. Returns `None` when the bytes don't parse as a notebook so the caller
-/// falls back to the plain-text reader. Mirrors Claude Code's Read (notebooks as
-/// cells with outputs) and pairs with `notebook_edit` — cell ids/indices are
-/// shown so the model can target a cell. Binary outputs (images, etc.) become a
-/// placeholder so a base64 PNG can't flood the context.
+/// falls back to the plain-text reader. Notebooks render as cells with outputs
+/// and pair with `notebook_edit` — cell ids/indices are shown so the model can
+/// target a cell. Binary outputs (images, etc.) become a placeholder so a
+/// base64 PNG can't flood the context.
 fn render_notebook(display_path: &str, text: &str) -> Option<String> {
     const MAX_OUTPUT_CHARS: usize = 2000;
     let nb: Value = serde_json::from_str(text).ok()?;

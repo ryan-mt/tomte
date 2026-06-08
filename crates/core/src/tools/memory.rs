@@ -1,8 +1,8 @@
 //! The `memory` tool: agent-writable, persistent project memory (a "memdir").
 //!
-//! Mirrors Anthropic's memory tool / Claude Code's memdir: a single builtin
-//! with a `command` discriminator (`view`/`create`/`str_replace`/`insert`/
-//! `delete`/`rename`) over a flat directory of Markdown notes the model owns.
+//! A persistent, agent-owned project memory store: a single builtin with a
+//! `command` discriminator (`view`/`create`/`str_replace`/`insert`/`delete`/
+//! `rename`) over a flat directory of Markdown notes the model owns.
 //! Storage is project-scoped at `<config_dir>/projects/<key>/memory/`, and the
 //! `MEMORY.md` index is re-injected into the system prompt each session (see
 //! [`apply_store_to_prompt`]) so notes survive across runs.
@@ -173,8 +173,8 @@ pub fn store_dir(cwd: &Path) -> PathBuf {
 }
 
 /// Stable, filesystem-safe key for a project: the git root (or `cwd` when not a
-/// repo) with every non-`[A-Za-z0-9._-]` byte replaced by `-`. Mirrors the
-/// `-home-user-proj` convention Claude Code uses for its per-project dirs.
+/// repo) with every non-`[A-Za-z0-9._-]` byte replaced by `-`, giving a
+/// `-home-user-proj` style slug for the per-project dir.
 fn project_key(cwd: &Path) -> String {
     let base = crate::memory::git_root_from(cwd).unwrap_or_else(|| cwd.to_path_buf());
     let mut key: String = base

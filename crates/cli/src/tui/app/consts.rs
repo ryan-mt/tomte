@@ -52,17 +52,13 @@ pub fn format_goal_elapsed(duration: Duration) -> String {
 
 // === Spinner word — tomte's own voice ========================================
 //
-// Studied from the real Claude Code CLI (reverse-read from its bundled binary):
-// it keeps a few hundred whimsical gerunds (`Sgq`: "Reticulating",
-// "Flibbertigibbeting", "Razzle-dazzling", "Clauding", "Moonwalking", …), picks
-// ONE at random per spinner mount and holds it, prefers a running task's verb
-// when there is one, and lets the user override the pool via config.
+// A few hundred whimsical gerunds, so a session rarely repeats: one is picked at
+// random per spinner mount and held, a running task's verb is preferred when
+// there is one, and the user can override the pool via config.
 //
-// We match that *scale* (hundreds of words, so a session rarely repeats) but not
-// its *vocabulary*: every word here is tomte's own voice — a cozy, diligent
-// Nordic house-spirit (a *tomte*) keeping house and tending the homestead:
-// sweeping, mending, kneading, foraging, smithing, pottering by the hearth. One
-// unmistakable flavour, Claude-scale variety, not a copy.
+// Every word here is tomte's own voice — a cozy, diligent Nordic house-spirit (a
+// *tomte*) keeping house and tending the homestead: sweeping, mending, kneading,
+// foraging, smithing, pottering by the hearth.
 pub const SPINNER_WORDS: &[&str] = &[
     // Tidying & keeping house
     "Pottering",
@@ -330,9 +326,9 @@ pub const SPINNER_WORDS: &[&str] = &[
 pub const SPINNER_FRAMES: &[&str] = &["▁", "▂", "▄", "▃", "▅", "▇", "█", "▆", "▇", "▅", "▃", "▂"];
 
 /// Calm drift cadence: the spinner word advances to the next one every this many
-/// seconds. Long enough that a typical short turn shows a single steady word
-/// (Claude Code never drifts at all), yet a long wait gently cycles through the
-/// pool so the line never looks frozen. Driven by wall-clock elapsed, so it stays
+/// seconds. Long enough that a typical short turn shows a single steady word,
+/// yet a long wait gently cycles through the pool so the line never looks frozen.
+/// Driven by wall-clock elapsed, so it stays
 /// deterministic and flicker-free — the same trick the braille glyph already uses.
 pub const SPINNER_WORD_SECS: u64 = 8;
 
@@ -347,11 +343,10 @@ pub fn spinner_word_index(seed: u32, elapsed: Duration, len: usize) -> usize {
     (seed as usize).wrapping_add(step) % len
 }
 
-/// Resolve the effective spinner word pool from config, mirroring the real
-/// Claude Code `spinnerVerbs` logic (reverse-read from its binary): when
-/// `exclude_default` is set and the user gave at least one word, show ONLY their
-/// words; otherwise append their words to tomte's built-in pool. Resolved once
-/// per session (see `App::new`), never per frame.
+/// Resolve the effective spinner word pool from config: when `exclude_default`
+/// is set and the user gave at least one word, show ONLY their words; otherwise
+/// append their words to tomte's built-in pool. Resolved once per session (see
+/// `App::new`), never per frame.
 pub fn resolve_spinner_words(cfg: &Config) -> Vec<String> {
     let default = || SPINNER_WORDS.iter().map(|s| s.to_string());
     match &cfg.spinner_verbs {
@@ -369,10 +364,10 @@ pub fn pick_spinner_seed() -> u32 {
 }
 
 /// Past-tense companion verbs for a *finished* sub-agent in the fleet view — the
-/// settled counterpart to the present-tense [`SPINNER_WORDS`]. Claude Code reads
-/// an idle teammate as "Baked · 1m 12s"; tomte keeps its own hearth-and-workshop
-/// voice and its own list. A done agent's label must not drift, so each agent
-/// gets one stable verb from [`fleet_idle_verb`].
+/// settled counterpart to the present-tense [`SPINNER_WORDS`], so a done row
+/// reads "Baked · 1m 12s" in tomte's own hearth-and-workshop voice. A done
+/// agent's label must not drift, so each agent gets one stable verb from
+/// [`fleet_idle_verb`].
 pub const FLEET_IDLE_VERBS: &[&str] = &[
     "Tended", "Mended", "Whittled", "Wove", "Kindled", "Forged", "Gathered", "Tidied", "Polished",
     "Cobbled", "Stewed", "Pottered",

@@ -1,6 +1,6 @@
 //! Skills: curated, reusable playbooks that tomte can load on demand.
 //!
-//! Model — progressive disclosure, exactly like Claude Code:
+//! Model — progressive disclosure:
 //!   1. At session start we *discover* every installed skill across all
 //!      known sources and inject a compact manifest (one `name: description`
 //!      line each) into the system prompt. That manifest is part of the

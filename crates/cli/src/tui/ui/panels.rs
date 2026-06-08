@@ -160,8 +160,8 @@ pub(super) fn truncate_chars(s: &str, max: usize) -> String {
 
 /// Live fleet view: a list of the sub-agents `dispatch_agent` spawned this turn,
 /// each with a status dot, type, prompt summary, current activity and elapsed
-/// time — Claude Code's sub-agent list. Records each row's screen rect into
-/// `app.subagent_rows` so a left-click can toggle the row's detail.
+/// time. Records each row's screen rect into `app.subagent_rows` so a left-click
+/// can toggle the row's detail.
 pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
     let header_dim = Style::default().fg(palette::TEXT_MUTED);
     let kind_style = Style::default()
@@ -215,8 +215,8 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
             }
         };
         // While running, show the live activity; once finished, show a settled
-        // past-tense verb (Claude Code's idle-teammate convention) so a done row
-        // reads "Forged · 4 steps · 1m 12s" instead of a stale in-flight phrase.
+        // past-tense verb so a done row reads "Forged · 4 steps · 1m 12s"
+        // instead of a stale in-flight phrase.
         let activity_label = match s.done {
             None => s.activity.clone(),
             Some(_) => fleet_idle_verb(&s.id).to_string(),
@@ -356,8 +356,8 @@ pub(super) fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
     let frame = SPINNER_FRAMES[(elapsed.as_millis() / 80) as usize % SPINNER_FRAMES.len()];
     let mut extras = String::new();
     if app.tokens_used > 0 {
-        // Current context window usage, not cumulative throughput. Mirrors
-        // Claude Code's "X% context" readout.
+        // Current context window usage, not cumulative throughput — the
+        // "X% context" readout.
         let limit = app.config.effective_context_limit();
         let pct = app.tokens_used.saturating_mul(100) / limit.max(1);
         extras.push_str(&format!(

@@ -1,7 +1,7 @@
 //! Colored renderer for the `/context` report.
 //!
 //! Turns a [`tomte_core::context_report::ContextReport`] into styled
-//! scrollback lines that mirror Claude Code's `/context`: a proportional grid on
+//! scrollback lines for the `/context` report: a proportional grid on
 //! the left, the model headline plus a per-category legend on the right, and
 //! detail sections (MCP servers, custom agents, memory files, skills) underneath
 //! with their slash-command shortcuts. `/context all` expands the detail

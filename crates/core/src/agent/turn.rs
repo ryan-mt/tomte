@@ -65,9 +65,9 @@ impl Agent {
     /// less lossy than the full-summary `/compact` fallback (which the TUI fires
     /// at 85%): it keeps every message, reasoning block, and the most recent
     /// tool results, dropping only old, already-acted-on tool outputs — the
-    /// bulkiest, lowest-value content. Mirrors Claude Code's `clear_tool_uses`
-    /// context-editing strategy. A no-op unless `auto_compact` is on and we are
-    /// genuinely near the limit, so it almost never costs a prompt-cache miss.
+    /// bulkiest, lowest-value content. A no-op unless `auto_compact` is on and
+    /// we are genuinely near the limit, so it almost never costs a prompt-cache
+    /// miss.
     /// Scoped to `history_seen_len` so it can never clear the just-produced batch
     /// of a multi-tool response before the model has been shown those results.
     pub(super) fn microcompact_tool_outputs(&mut self) {

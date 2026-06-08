@@ -1,5 +1,4 @@
-//! Composer-prefix features driven from the chat input, mirroring Claude Code /
-//! Codex muscle memory:
+//! Composer-prefix features driven from the chat input:
 //!   - `!<command>` — run a shell command now (no model turn), output staged as
 //!     context for the next message; `!!` forces past the destructive guard.
 //!   - `#<note>`    — append a note to the project `CLAUDE.md` and re-apply it.
@@ -34,9 +33,9 @@ pub(crate) struct BangResult {
     pub(crate) context: String,
 }
 
-/// Run a `!`-prefixed shell command straight from the composer (no model turn),
-/// mirroring `!bash` mode in Claude Code. A leading `!` (the user typed `!!cmd`)
-/// forces past the destructive-command guard.
+/// Run a `!`-prefixed shell command straight from the composer (no model turn).
+/// A leading `!` (the user typed `!!cmd`) forces past the destructive-command
+/// guard.
 ///
 /// The command runs on a **background task** and reports back over `bang_tx`, so
 /// a slow or non-terminating command never blocks the event loop (the previous
@@ -163,7 +162,7 @@ fn claude_md_note_block(existed: bool, ends_with_newline: bool, note: &str) -> S
 }
 
 /// Append a `#`-prefixed note to the project `CLAUDE.md` and re-apply memory to
-/// the live agent so it takes effect immediately (Claude Code's `#` quick-add).
+/// the live agent so it takes effect immediately.
 pub(crate) async fn handle_hash_memory(
     app: &mut App,
     agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
@@ -290,7 +289,7 @@ fn walk_files(root: &Path, max: usize, out: &mut Vec<String>) {
 
 /// Scan `text` for `@<path>` references that resolve to real files/dirs under
 /// `cwd` and return a context block with their contents (files) or listings
-/// (dirs), to append to the prompt — mirroring Claude Code's `@file` expansion.
+/// (dirs), to append to the prompt — `@file` expansion.
 /// Each `@` must start the string or follow whitespace, so `a@b.com` is left
 /// alone. Returns `None` when nothing resolves.
 pub(crate) fn expand_at_mentions(text: &str, cwd: &Path) -> Option<String> {

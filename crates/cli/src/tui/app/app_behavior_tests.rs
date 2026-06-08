@@ -545,7 +545,7 @@ fn altscreen_pins_input_to_the_bottom() {
         .map(|r| r.iter().map(|c| c.symbol()).collect::<String>())
         .collect();
     // The default full-screen layout: welcome at the top, input pinned to the
-    // bottom edge of the terminal (the "like Claude" layout the user asked for).
+    // bottom edge of the terminal.
     let greet = rows
         .iter()
         .position(|r| r.contains("hi, i'm tomte!"))
@@ -564,8 +564,8 @@ fn altscreen_pins_input_to_the_bottom() {
 #[test]
 fn spinner_words_are_a_distinct_hundreds_strong_pool() {
     use std::collections::HashSet;
-    // "Hundreds of words, like Claude" — and every entry unique, so the drift
-    // never stalls and never shows the same word twice in a row.
+    // Hundreds of words, every entry unique, so the drift never stalls and
+    // never shows the same word twice in a row.
     assert!(
         SPINNER_WORDS.len() >= 150,
         "expected a large pool, got {}",

@@ -28,7 +28,7 @@ pub(super) fn render_input(f: &mut Frame, area: Rect, app: &App) {
     let bordered = block.inner(area);
     f.render_widget(block, area);
     // One column of breathing room inside the border on each side, so the "> "
-    // prompt isn't flush against the left edge (matches Claude Code's box).
+    // prompt isn't flush against the left edge.
     let inner = Rect {
         x: bordered.x.saturating_add(1),
         y: bordered.y,
@@ -169,8 +169,8 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
         ),
     ];
     // Live context occupancy — how full the window is, so a coming compaction is
-    // visible at a glance (the indicator Claude Code keeps in its status line,
-    // here in tomte's calm palette). Shown only once a turn has reported usage.
+    // visible at a glance, in tomte's calm palette. Shown only once a turn has
+    // reported usage.
     if let Some((label, color)) =
         context_gauge(app.tokens_used, app.config.effective_context_limit())
     {
@@ -306,9 +306,8 @@ pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect,
         }
     }
     lines.push(Line::from(""));
-    // Option 1 persists a per-project allow-rule (same logic as Claude Code's
-    // "don't ask again", but tomte's own wording): the label names exactly
-    // what gets allowed in this project.
+    // Option 1 persists a per-project allow-rule (a "don't ask again" scoped to
+    // this project): the label names exactly what gets allowed.
     let allow_label = {
         let args_val: serde_json::Value =
             serde_json::from_str(&p.args_json).unwrap_or(serde_json::Value::Null);

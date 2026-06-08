@@ -104,7 +104,7 @@ fn normalize_openai_reasoning_effort(
         // used `minimal`, so keep the old `none -> minimal` shim only there.
         "none" if !is_chatgpt_subscription => "minimal".to_string(),
         "minimal" if is_chatgpt_subscription => "none".to_string(),
-        // `max` and Claude Code's `ultracode` aren't OpenAI effort levels; both
+        // `max` and `ultracode` aren't OpenAI effort levels; both
         // clamp to the top OpenAI tier, `xhigh`.
         "max" | "ultracode" => "xhigh".to_string(),
         other => other.to_string(),

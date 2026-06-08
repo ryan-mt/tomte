@@ -29,8 +29,8 @@ the Anthropic Messages API directly. Anthropic restricts subscription tokens to
 the official Claude Code CLI; using them with a third-party tool MAY violate
 Anthropic's Terms of Service. You assume full responsibility for this choice.";
 
-/// `claude.ai` Claude Code OAuth client. Discovered by reverse-engineering the
-/// public Claude Code CLI auth flow; values are taken from open-source
+/// `claude.ai` OAuth client for Claude Pro/Max subscription sign-in. These are
+/// the public OAuth endpoints and client-id; values are taken from open-source
 /// reference implementations.
 pub const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
@@ -71,8 +71,7 @@ pub struct ManualLogin {
 }
 
 pub fn build_authorize_url(redirect_uri: &str, pkce: &Pkce, state: &str) -> String {
-    // `code=true` triggers the Claude Max upsell on the login page; the same
-    // parameter is used by the official Claude Code CLI.
+    // `code=true` triggers the Claude Max upsell on the login page.
     let params = [
         ("code", "true"),
         ("client_id", CLIENT_ID),

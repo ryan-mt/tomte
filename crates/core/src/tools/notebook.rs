@@ -1,6 +1,5 @@
-//! `notebook_edit` — the Claude Code `NotebookEdit` analogue. Replace, insert,
-//! or delete a single cell in a Jupyter `.ipynb` notebook while leaving the
-//! rest of the document untouched.
+//! `notebook_edit` — replace, insert, or delete a single cell in a Jupyter
+//! `.ipynb` notebook while leaving the rest of the document untouched.
 //!
 //! Follows nbformat 4: each cell carries `cell_type` (`code` | `markdown`),
 //! `source` (stored here as an array of line-strings), `metadata`, and — for

@@ -380,8 +380,8 @@ pub(super) fn render_tool(
         return;
     }
     for (i, body) in body_lines.into_iter().enumerate() {
-        // Claude Code branches the first result line with `⎿`, then aligns any
-        // continuation lines under it — no per-line gutter glyph.
+        // Branch the first result line with `⎿`, then align any continuation
+        // lines under it — no per-line gutter glyph.
         let branch = if i == 0 { "  ⎿ " } else { "    " };
         lines.push(Line::from(
             std::iter::once(Span::styled(

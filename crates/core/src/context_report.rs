@@ -1,7 +1,7 @@
 //! Context-window usage breakdown for the `/context` command.
 //!
-//! Estimates how the model's context window is occupied, split into the same
-//! categories Claude Code's `/context` surfaces: the base system prompt, the
+//! Estimates how the model's context window is occupied, split into the
+//! categories the `/context` report surfaces: the base system prompt, the
 //! built-in tool schemas, custom agents, inherited memory files, skills, MCP
 //! tools, and the visible conversation.
 //!

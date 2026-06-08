@@ -29,8 +29,8 @@ impl TodoStatus {
     }
 }
 
-/// One entry in the session todo list. Mirrors Claude Code's TodoWrite shape
-/// closely so existing prompts and skills transfer.
+/// One entry in the session todo list. The shape stays close to the common
+/// `TodoWrite` convention so existing prompts and skills transfer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoItem {
     pub content: String,
@@ -123,7 +123,7 @@ pub struct SessionState {
     pub background_shells: HashMap<String, Arc<BackgroundShellState>>,
     pub undo_stack: std::collections::VecDeque<UndoEntry>,
     /// Canonical paths read this session, keyed exactly as `fs::resolve`
-    /// produces them. Powers Claude Code's read-before-write safety:
+    /// produces them. Powers the read-before-write safety:
     /// `write_file` refuses to overwrite, and `edit_file`/`multi_edit` refuse
     /// to touch, a file that was never read — so the model can't clobber
     /// content it has not seen. A successful write/edit also records the path.

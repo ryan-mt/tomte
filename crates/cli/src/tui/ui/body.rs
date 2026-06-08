@@ -224,8 +224,8 @@ pub(super) fn friendly_body<'a>(
             let stderr_trim = stderr.trim();
             if !stderr_trim.is_empty() {
                 if !success || expanded {
-                    // Claude Code style: stderr rendered in red, with no
-                    // separator box — the colour alone sets it apart from stdout.
+                    // stderr rendered in red, with no separator box — the
+                    // colour alone sets it apart from stdout.
                     let err_style = Style::default().fg(palette::DANGER);
                     let total_err = stderr.lines().count();
                     for raw in stderr.lines().take(stderr_budget) {
@@ -256,8 +256,8 @@ pub(super) fn friendly_body<'a>(
                     )));
                 }
             }
-            // Claude Code shows no "exit 0" on success; only a compact red
-            // footer when the command failed.
+            // No "exit 0" line on success; only a compact red footer when the
+            // command failed.
             if !success {
                 out.push(Line::from(Span::styled(
                     format!("Error (exit {code})"),
@@ -284,9 +284,8 @@ pub(super) fn friendly_body<'a>(
             }
         }
         "todo_write" => {
-            // Render the canonical todo list as a checklist, mirroring the
-            // Claude Code CLI presentation. Falls back to the summary text
-            // when the args JSON hasn't fully arrived yet.
+            // Render the canonical todo list as a checklist. Falls back to the
+            // summary text when the args JSON hasn't fully arrived yet.
             let Some(todos) = args.get("todos").and_then(|v| v.as_array()) else {
                 out.push(Line::from(Span::styled(
                     text.lines().next().unwrap_or("").to_string(),

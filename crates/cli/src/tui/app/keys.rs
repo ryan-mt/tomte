@@ -223,8 +223,8 @@ pub async fn handle_key(
         }
         KeyCode::Char('@') if ctrl == alt => {
             // Insert '@' and open the file typeahead; characters typed after it
-            // filter the list (handled in handle_overlay_key), matching the
-            // `@file` reference flow in Claude Code / Codex.
+            // filter the list (handled in handle_overlay_key), the standard
+            // `@file` reference flow.
             app.input.insert_char('@');
             app.history_pos = None;
             app.open_overlay(OverlayKind::FilePicker);

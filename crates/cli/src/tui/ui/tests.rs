@@ -213,7 +213,7 @@ mod shell_tool_render_tests {
             "got: {rendered}"
         );
         assert!(rendered.contains("Error (exit 101)"), "got: {rendered}");
-        // Claude Code style: no yellow "─ stderr ─" separator box.
+        // No yellow "─ stderr ─" separator box.
         assert!(!rendered.contains("─ stderr ─"), "got: {rendered}");
     }
 

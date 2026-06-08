@@ -204,8 +204,8 @@ pub async fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             handle_overlay_select(app, kind, &key_sel).await;
         }
         KeyCode::Tab if kind == OverlayKind::SlashMenu => {
-            // Autocomplete the highlighted command into the input (like Claude
-            // Code's Tab), then close the menu. The completed `/<cmd> ` lands in
+            // Autocomplete the highlighted command into the input (Tab-complete),
+            // then close the menu. The completed `/<cmd> ` lands in
             // the normal composer so the user can add arguments or press Enter
             // to run it via the standard slash path.
             if let Some(key_sel) = picker.selected_key() {

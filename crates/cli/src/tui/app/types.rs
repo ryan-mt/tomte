@@ -28,8 +28,7 @@ impl PermissionMode {
             Self::BypassPerms => "⚠ bypass permissions",
         }
     }
-    /// Stable string persisted to `config.default_permission_mode`. Matches the
-    /// names Claude Code uses for `permissions.defaultMode`.
+    /// Stable string persisted to `config.default_permission_mode`.
     pub fn config_str(self) -> &'static str {
         match self {
             Self::Plan => "plan",
@@ -157,7 +156,7 @@ pub struct HatchAnim {
 }
 
 /// One live sub-agent row in the fleet view, populated from `Subagent*` events
-/// forwarded by `dispatch_agent`. Mirrors Claude Code's sub-agent list.
+/// forwarded by `dispatch_agent`.
 #[derive(Debug, Clone)]
 pub struct SubagentView {
     pub id: String,
@@ -193,7 +192,7 @@ pub struct App {
     /// Screen rect of the clickable "Jump to bottom" hint. `render` sets it each
     /// frame when the user has scrolled away from the tail (and clears it
     /// otherwise); the mouse handler tests left-clicks against it to re-enable
-    /// auto-follow, mirroring Claude Code's click-to-jump affordance.
+    /// auto-follow (click-to-jump).
     pub jump_to_bottom_hint: Option<ratatui::layout::Rect>,
     /// Live sub-agents spawned by `dispatch_agent` during the current turn, in
     /// start order. Rendered as a fleet-view panel above the input and cleared
@@ -345,7 +344,7 @@ pub struct App {
     /// the card's choice is delivered without blocking on the agent mutex.
     pub conscience_handle: Option<ConscienceHandle>,
     /// Previously submitted prompts, oldest first. Up/Down in the composer
-    /// recall these (shell / Claude Code style). In-memory for this session.
+    /// recall these (shell-style history). In-memory for this session.
     pub input_history: Vec<String>,
     /// Cursor into `input_history` while browsing with Up/Down. `None` means the
     /// user is editing a fresh draft rather than navigating history.

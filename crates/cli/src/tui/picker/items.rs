@@ -310,7 +310,7 @@ pub fn efforts(model: &str) -> Vec<PickerItem> {
                 items.push(item("xhigh", "Opus 4.7+ · between high and max"));
             }
             items.push(item("max", "adaptive max · top thinking tier"));
-            items.push(item("ultracode", "Claude Code tier · xhigh + multi-agent"));
+            items.push(item("ultracode", "ultra tier · xhigh + multi-agent"));
             items
         }
     }

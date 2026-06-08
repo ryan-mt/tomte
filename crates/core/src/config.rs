@@ -10,10 +10,10 @@ pub use sandbox::SandboxConfig;
 
 const CONFIG_DIR_NAME: &str = "tomte";
 static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-// `ultracode` is Claude Code's top effort-menu entry. Per the Anthropic docs it
-// is not a distinct API effort level — it pairs `xhigh` thinking with standing
-// permission to launch multi-agent workflows. tomte accepts it as a selectable
-// effort and maps it onto `xhigh` on the wire (see translate.rs / openai client).
+// `ultracode` is a top-tier effort: it pairs `xhigh` thinking with standing
+// permission to launch multi-agent workflows. It is not a distinct API effort
+// level — tomte accepts it as a selectable effort and maps it onto `xhigh` on
+// the wire (see translate.rs / openai client).
 pub const VALID_REASONING_EFFORTS: &[&str] = &[
     "none",
     "minimal",
@@ -62,7 +62,7 @@ pub struct Config {
     /// Permission mode the TUI starts in, persisted across launches. One of
     /// `default`, `acceptEdits`, `plan`, `bypassPermissions`. Shift+Tab in the
     /// TUI cycles the mode and writes the new value here, so relaunching keeps
-    /// the last-chosen mode. Mirrors Claude Code's `permissions.defaultMode`.
+    /// the last-chosen mode.
     #[serde(default = "default_permission_mode")]
     pub default_permission_mode: String,
     /// Extra OpenAI-compatible providers, keyed by the id used in the `model`
@@ -84,15 +84,14 @@ pub struct Config {
     #[serde(default)]
     pub sandbox: SandboxConfig,
     /// Customize the spinner companion words (the gerunds shown while a turn
-    /// runs). Optional; unset uses tomte's built-in pool. Mirrors Claude Code's
-    /// `spinnerVerbs` setting (`verbs` + `excludeDefault`) — see [`SpinnerVerbs`].
+    /// runs). Optional; unset uses tomte's built-in pool. See [`SpinnerVerbs`].
     #[serde(default)]
     pub spinner_verbs: Option<SpinnerVerbs>,
 }
 
-/// User overrides for the spinner companion words. Modeled on Claude Code's
-/// `spinnerVerbs` setting: a `verbs` list that either *appends* to the built-in
-/// pool (default) or *replaces* it when `exclude_default` is set.
+/// User overrides for the spinner companion words: a `verbs` list that either
+/// *appends* to the built-in pool (default) or *replaces* it when
+/// `exclude_default` is set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpinnerVerbs {
     /// Extra (or replacement) words to show, e.g. `["Hacking", "Vibing"]`.

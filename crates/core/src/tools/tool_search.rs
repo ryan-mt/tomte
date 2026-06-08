@@ -9,8 +9,8 @@
 //! This tool is the second half of that disclosure. The model calls it with a
 //! query; matching tools are returned WITH their schemas and marked
 //! `activated`. From the model's *next* message those tools appear in the
-//! request's tool list and can be called directly — exactly the deferred-tool
-//! flow Claude Code uses. Activation is shared (`Arc<Mutex<…>>`) so this
+//! request's tool list and can be called directly — the standard deferred-tool
+//! disclosure flow. Activation is shared (`Arc<Mutex<…>>`) so this
 //! tool's `execute` can record it while `Registry::definitions` reads it.
 
 use anyhow::Result;

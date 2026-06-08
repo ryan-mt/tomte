@@ -1,4 +1,4 @@
-//! Per-project tool-permission rules, mirroring Claude Code's `permissions`.
+//! Per-project tool-permission rules.
 //! Two sources are merged (see [`load`]): the in-repo
 //! `<cwd>/.tomte/permissions.json` is honored for `deny` ONLY — a cloned repo
 //! may *tighten* what the agent can do but must never silently *grant* it —

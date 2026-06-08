@@ -3,8 +3,7 @@
 use super::*;
 
 /// Shared git safety protocol injected into the `/commit` family so the agent
-/// can't freelance into a destructive operation. Mirrors Claude Code's commit
-/// guardrails.
+/// can't freelance into a destructive operation.
 pub const GIT_SAFETY_PROTOCOL: &str = "Git safety protocol — follow exactly:\n\
 - NEVER `git commit --amend`, `git rebase`, or `git reset --hard` unless the user explicitly asked.\n\
 - NEVER pass `--no-verify` (do not skip hooks).\n\

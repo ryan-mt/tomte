@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 )]
 struct Cli {
     /// Require plan mode before implementation. Hidden compatibility flag for
-    /// Claude Code-style teammate/spawn flows.
+    /// teammate/spawn flows that pass it.
     #[arg(long, hide = true, global = true)]
     plan_mode_required: bool,
     #[command(subcommand)]

@@ -272,7 +272,7 @@ pub(super) fn push_assistant_lines(
     }
 }
 
-/// Render a `User` block as the full-width gray stanza (like Claude Code): each
+/// Render a `User` block as the full-width gray stanza: each
 /// wrapped line is padded with background-carrying spaces so the fill reaches
 /// the right edge. Shared by the alt-screen transcript (`render_chat`) and the
 /// inline viewport so both render the user's turn identically.
