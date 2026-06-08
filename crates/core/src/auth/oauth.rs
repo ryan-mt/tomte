@@ -21,7 +21,7 @@ const CALLBACK_HOST: &str = "127.0.0.1";
 pub const SCOPES: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct TokenSet {
     pub access_token: String,
     pub refresh_token: String,
@@ -29,6 +29,18 @@ pub struct TokenSet {
     pub id_token: Option<String>,
     #[serde(default)]
     pub expires_in: Option<i64>,
+}
+
+// Manual Debug so the freshly minted tokens can't reach a log via `{:?}`.
+impl std::fmt::Debug for TokenSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenSet")
+            .field("access_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field("id_token", &self.id_token.as_ref().map(|_| "<redacted>"))
+            .field("expires_in", &self.expires_in)
+            .finish()
+    }
 }
 
 pub struct OauthClient {

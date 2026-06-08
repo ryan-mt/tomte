@@ -59,7 +59,7 @@ fn effective_mode_with_env_values(
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Credential {
     OAuth {
         provider: Provider,
@@ -70,6 +70,30 @@ pub enum Credential {
         provider: Provider,
         key: String,
     },
+}
+
+// Manual Debug so the raw bearer secret can never reach a log or error context
+// via `{:?}` (the derived impl would print it verbatim).
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OAuth {
+                provider,
+                account_id,
+                ..
+            } => f
+                .debug_struct("Credential::OAuth")
+                .field("provider", provider)
+                .field("access_token", &"<redacted>")
+                .field("account_id", account_id)
+                .finish(),
+            Self::ApiKey { provider, .. } => f
+                .debug_struct("Credential::ApiKey")
+                .field("provider", provider)
+                .field("key", &"<redacted>")
+                .finish(),
+        }
+    }
 }
 
 impl Credential {
@@ -241,6 +265,37 @@ mod tests {
             account_id: Some("acct".to_string()),
             expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
         }
+    }
+
+    #[test]
+    fn debug_redacts_credential_and_token_secrets() {
+        let oauth = Credential::OAuth {
+            provider: Provider::Anthropic,
+            access_token: "sk-ant-supersecret".to_string(),
+            account_id: Some("acct-123".to_string()),
+        };
+        let dbg = format!("{oauth:?}");
+        assert!(!dbg.contains("supersecret"), "token leaked in Debug: {dbg}");
+        assert!(dbg.contains("<redacted>"), "{dbg}");
+
+        let key = Credential::ApiKey {
+            provider: Provider::OpenAi,
+            key: "sk-keysecret".to_string(),
+        };
+        assert!(!format!("{key:?}").contains("keysecret"));
+
+        // StoredTokens / AuthRecord too — the persisted form must not leak via {:?}.
+        let dbg = format!("{:?}", fresh_tokens());
+        assert!(
+            !dbg.contains("oauth-access") && !dbg.contains("oauth-refresh"),
+            "{dbg}"
+        );
+        let record = AuthRecord {
+            api_key: Some("api-key-secret".to_string()),
+            anthropic_tokens: Some(fresh_tokens()),
+            ..Default::default()
+        };
+        assert!(!format!("{record:?}").contains("api-key-secret"));
     }
 
     #[tokio::test]

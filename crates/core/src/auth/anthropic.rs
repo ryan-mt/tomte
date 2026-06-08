@@ -38,7 +38,7 @@ pub const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 pub const MANUAL_REDIRECT_URI: &str = "https://console.anthropic.com/oauth/code/callback";
 pub const SCOPES: &str = "org:create_api_key user:profile user:inference";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct TokenSet {
     pub access_token: String,
     pub refresh_token: String,
@@ -46,6 +46,18 @@ pub struct TokenSet {
     pub expires_in: Option<i64>,
     #[serde(default)]
     pub scope: Option<String>,
+}
+
+// Manual Debug so the freshly minted tokens can't reach a log via `{:?}`.
+impl std::fmt::Debug for TokenSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenSet")
+            .field("access_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 /// A manual (copy/paste) Anthropic login in progress. The Claude OAuth client

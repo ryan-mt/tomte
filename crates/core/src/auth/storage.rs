@@ -20,7 +20,7 @@ pub enum AuthMode {
     AnthropicApiKey,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct StoredTokens {
     pub access_token: String,
     pub refresh_token: String,
@@ -32,7 +32,21 @@ pub struct StoredTokens {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+// Manual Debug: redact the token strings so they can't reach a log via `{:?}`.
+// Non-secret fields (account id, expiry) stay visible for debugging.
+impl std::fmt::Debug for StoredTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredTokens")
+            .field("access_token", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field("id_token", &self.id_token.as_ref().map(|_| "<redacted>"))
+            .field("account_id", &self.account_id)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct AuthRecord {
     #[serde(default)]
     pub mode: AuthMode,
@@ -46,6 +60,24 @@ pub struct AuthRecord {
     pub anthropic_tokens: Option<StoredTokens>,
     #[serde(default)]
     pub last_refresh: Option<DateTime<Utc>>,
+}
+
+// Manual Debug: redact the API keys; the token fields are `StoredTokens`, whose
+// own Debug already redacts.
+impl std::fmt::Debug for AuthRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthRecord")
+            .field("mode", &self.mode)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("tokens", &self.tokens)
+            .field(
+                "anthropic_api_key",
+                &self.anthropic_api_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("anthropic_tokens", &self.anthropic_tokens)
+            .field("last_refresh", &self.last_refresh)
+            .finish()
+    }
 }
 
 fn auth_file() -> std::path::PathBuf {
