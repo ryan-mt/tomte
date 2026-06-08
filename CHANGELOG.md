@@ -12,6 +12,7 @@
 - Added an OS-level sandbox for `run_shell` — Landlock + seccomp (Linux) / `sandbox-exec` (macOS) confine writes to the workspace and block outbound network by default (`read-only` / `workspace-write` / `danger-full-access`).
 - Added per-run sandbox overrides — `--sandbox <mode>` / `--sandbox-allow-net` and `TOMTE_SANDBOX_*` env vars (never persisted); Linux adds conservative rlimits, Windows tears the tree down via a kill-on-close Job Object.
 - Added `tomte doctor` and `/doctor` — a read-only setup health check (auth, config, model routing, MCP, external tools) that runs headless and exits non-zero on failure.
+- Added `tomte mcp` — manage MCP servers from the CLI instead of hand-editing `settings.json`: `tomte mcp add <name> -- <command> [args…]` (with repeatable `--env KEY=VALUE`) writes the `mcp_servers` entry atomically while preserving every other key, and `list` / `get` / `remove` round it out (env values are never printed back).
 - Added a `TOMTE_CONFIG_DIR` override to relocate the whole config tree (config, auth, sessions, logs) on every platform — also the portable way to isolate tests.
 - Added composer prefixes — `@<path>` attaches a file via gitignore-aware typeahead, `!<command>` runs a shell command inline (`!!` past the guard), `#<note>` appends to `CLAUDE.md`.
 - Added automatic, provider-agnostic model failover — a rate-limited or overloaded model switches to the next in `fallback_models`; off by default, only before any answer has streamed.

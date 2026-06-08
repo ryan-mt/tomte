@@ -146,6 +146,13 @@ enum Command {
         #[command(subcommand)]
         action: Option<commands::hooks::HooksAction>,
     },
+    /// Manage MCP (Model Context Protocol) servers — list, add, remove, or
+    /// inspect the servers in settings.json without hand-editing JSON. Each
+    /// server's tools are exposed to the agent as `mcp__<server>__<tool>`.
+    Mcp {
+        #[command(subcommand)]
+        action: Option<commands::mcp::McpAction>,
+    },
 }
 
 fn init_tracing(stderr_logs: bool) {
@@ -276,6 +283,7 @@ async fn async_main() -> Result<()> {
         Some(Command::Blame { file, cwd }) => commands::blame::run(file, cwd).await,
         Some(Command::Cost { session, cwd }) => commands::cost::run(session, cwd).await,
         Some(Command::Hooks { action }) => commands::hooks::run(action).await,
+        Some(Command::Mcp { action }) => commands::mcp::run(action).await,
     }
 }
 
@@ -407,5 +415,43 @@ mod tests {
                 cwd: None
             })
         ));
+    }
+
+    #[test]
+    fn mcp_add_parses_name_env_and_trailing_command() {
+        let cli = Cli::try_parse_from([
+            "tomte", "mcp", "add", "fs", "--env", "K=V", "--", "npx", "-y", "server", "/tmp",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Mcp {
+                action: Some(commands::mcp::McpAction::Add { name, env, command }),
+            }) => {
+                assert_eq!(name, "fs");
+                assert_eq!(env, vec!["K=V".to_string()]);
+                assert_eq!(
+                    command,
+                    ["npx", "-y", "server", "/tmp"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                );
+            }
+            other => panic!("expected mcp add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_remove_accepts_rm_alias_and_bare_lists() {
+        let aliased = Cli::try_parse_from(["tomte", "mcp", "rm", "filesystem"]).unwrap();
+        assert!(matches!(
+            aliased.command,
+            Some(Command::Mcp {
+                action: Some(commands::mcp::McpAction::Remove { .. })
+            })
+        ));
+        // `tomte mcp` with no action defaults to the list view.
+        let bare = Cli::try_parse_from(["tomte", "mcp"]).unwrap();
+        assert!(matches!(bare.command, Some(Command::Mcp { action: None })));
     }
 }

@@ -124,6 +124,17 @@ when read-only:
 One more — `tool_search` — appears automatically when many MCP tools are connected, so their
 schemas load on demand instead of bloating every request.
 
+**MCP servers** — wire one up from the CLI, no hand-editing JSON:
+
+```bash
+tomte mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /tmp
+tomte mcp list                       # what's configured (env values stay hidden)
+tomte mcp remove filesystem
+```
+
+Servers land in `settings.json` under `mcp_servers`, and each one's tools show up to the agent as
+`mcp__<server>__<tool>`. Pass `--env KEY=VALUE` (repeatable) to set per-server environment.
+
 Stale-file guards refuse a write when a file changed since the model last read it, destructive
 shell commands are flagged for confirmation, and incomplete streamed tool calls are dropped
 rather than executed with half-finished arguments.

@@ -6,4 +6,5 @@ pub mod cost;
 pub mod doctor;
 pub mod hooks;
 pub mod login;
+pub mod mcp;
 pub mod why;
