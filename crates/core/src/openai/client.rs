@@ -17,10 +17,12 @@ use super::stream::StreamHandle;
 /// silent stream stalls.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Total timeout for a NON-streaming `create()` (e.g. the compaction summary).
-/// Unlike a stream, a one-shot response has no idle-watchdog, so without this a
-/// server that connects then never responds would hang the turn forever. Each
-/// retry attempt is bounded by it.
+/// Total timeout for a NON-streaming `create()`. Unlike a stream, a one-shot
+/// response has no idle-watchdog, so without this a server that connects then
+/// never responds would hang the caller forever. Each retry attempt is bounded
+/// by it. (Note: the ChatGPT/Codex OAuth backend rejects non-streaming requests
+/// with `400 "Stream must be set to true"`, so `create()` must not be used with
+/// an OpenAI OAuth credential; the agent's text turns all stream instead.)
 const CREATE_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn parse_json_response(text: &str) -> Result<serde_json::Value> {
