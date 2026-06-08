@@ -89,35 +89,47 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
             && c.expanded_tools == expanded
     });
     if cache_meta_matches {
-        // Borrow the cache only long enough to produce owned lines, so the
-        // mutable cache write below doesn't overlap the immutable read. The
-        // bool says whether the cache's `lines`/`last_block_size` need updating
-        // (true only on the streaming fast path).
-        let hit: Option<(Vec<Line<'static>>, bool)> = {
+        // Render straight from the cache without rebuilding — or cloning — the
+        // whole transcript. `render_window` materializes only the visible rows,
+        // so a cache-hit frame is O(viewport), not O(transcript). The cache
+        // borrow is confined to this block (it yields owned scalars), so the
+        // `app` mutation below doesn't overlap it.
+        let resolved: Option<(u16, bool)> = {
             let c = app.chat_render_cache.as_ref().unwrap();
             if c.last_block_size == last_block_size {
                 // Exact hit: nothing observable changed since last frame.
-                Some((c.lines.clone(), false))
-            } else if let (Some(prefix), Some(Block::Assistant { .. })) =
-                (c.prefix_lines.as_ref(), app.blocks.last())
+                Some(render_window(
+                    f,
+                    area,
+                    &c.lines,
+                    &[],
+                    app.auto_scroll,
+                    app.scroll,
+                ))
+            } else if let (Some(split), Some(Block::Assistant { .. })) =
+                (c.prefix_split, app.blocks.last())
             {
                 // Streaming fast path: only the final Assistant block grew.
-                // Reuse the cached prefix; re-wrap just that one block.
-                let mut lines = prefix.clone();
-                push_assistant_lines(&mut lines, app.blocks.last().unwrap(), inner_width);
-                Some((lines, true))
+                // Reuse the cached prefix (`lines[..split]`, borrowed — not
+                // cloned) and re-wrap just that one block into the window's tail.
+                let mut tail: Vec<Line<'static>> = Vec::new();
+                push_assistant_lines(&mut tail, app.blocks.last().unwrap(), inner_width);
+                let head = &c.lines[..split.min(c.lines.len())];
+                Some(render_window(
+                    f,
+                    area,
+                    head,
+                    &tail,
+                    app.auto_scroll,
+                    app.scroll,
+                ))
             } else {
                 None
             }
         };
-        if let Some((lines, update_cache)) = hit {
-            if update_cache {
-                if let Some(c) = app.chat_render_cache.as_mut() {
-                    c.lines = lines.clone();
-                    c.last_block_size = last_block_size;
-                }
-            }
-            finalize_chat_render(f, area, app, lines);
+        if let Some((scroll, auto)) = resolved {
+            app.scroll = scroll;
+            app.auto_scroll = auto;
             return;
         }
     }
@@ -198,19 +210,21 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
         i += 1;
     }
 
-    // Save into the cache so the next frame can skip the rebuild loop. The
-    // lines clone here is cheap relative to the textwrap pass we just did.
-    let prefix_lines = prefix_split.map(|s| lines[..s].to_vec());
+    // Render the visible window now (O(viewport)), then MOVE the freshly wrapped
+    // lines into the cache so the next frame can skip this rebuild. `prefix_split`
+    // is the index where the last block's lines begin (stored, not copied), so
+    // the transcript's lines live in memory once, not twice.
+    let (scroll, auto) = render_window(f, area, &lines, &[], app.auto_scroll, app.scroll);
+    app.scroll = scroll;
+    app.auto_scroll = auto;
     app.chat_render_cache = Some(crate::tui::app::ChatRenderCache {
         blocks_len: app.blocks.len(),
         inner_width,
         expanded_tools: expanded,
         last_block_size,
-        lines: lines.clone(),
-        prefix_lines,
+        lines,
+        prefix_split,
     });
-
-    finalize_chat_render(f, area, app, lines);
 }
 
 /// Render a single `Assistant` block's wrapped lines into `lines`. Pulled out
@@ -351,32 +365,94 @@ pub(super) fn block_fingerprint(block: &Block) -> usize {
 /// Shared tail of `render_chat`: scroll math + Paragraph dispatch. Same
 /// code runs whether we hit the cache (early return) or just rebuilt the
 /// lines; pulled into a helper to keep the two paths in lockstep.
-pub(super) fn finalize_chat_render(
+/// Render only the visible window of the transcript — whose wrapped lines are
+/// the concatenation of `head` then `tail` — into `area`. Clones at most
+/// `area.height` lines (the viewport), never the whole transcript, so a frame
+/// stays O(viewport) instead of O(blocks). `head` + `tail` lets the streaming
+/// path pass the cached prefix (borrowed) plus the freshly wrapped final block
+/// without concatenating them into one big Vec first. Returns the resolved
+/// `(scroll, auto_scroll)` for the caller to store.
+pub(super) fn render_window(
     f: &mut Frame,
     area: Rect,
-    app: &mut App,
-    lines: Vec<Line<'static>>,
-) {
-    let total_lines = lines.len();
-    let inner_height = area.height.saturating_sub(2) as usize;
-    let max_scroll = total_lines.saturating_sub(inner_height) as u16;
-    // If the user manually scrolled back to (or past) the bottom, resume the
-    // auto-follow behaviour. This is how scroll-down with the mouse wheel or
-    // PageDown re-enables sticky-bottom without a dedicated key.
-    if !app.auto_scroll && app.scroll >= max_scroll {
-        app.auto_scroll = true;
-    }
-    let scroll = if app.auto_scroll {
+    head: &[Line<'static>],
+    tail: &[Line<'static>],
+    auto_scroll: bool,
+    cur_scroll: u16,
+) -> (u16, bool) {
+    let total = head.len() + tail.len();
+    let viewport = area.height as usize;
+    let (scroll, auto) = resolve_scroll(total, viewport, auto_scroll, cur_scroll);
+    // Materialize only `[scroll, scroll+viewport)` — the same rows the old
+    // full-Vec `Paragraph.scroll(scroll)` would have shown, minus the cost of
+    // building and offsetting every line above the viewport.
+    let start = (scroll as usize).min(total);
+    let visible: Vec<Line<'static>> = head
+        .iter()
+        .chain(tail.iter())
+        .skip(start)
+        .take(viewport)
+        .cloned()
+        .collect();
+    f.render_widget(Paragraph::new(visible), area);
+    (scroll, auto)
+}
+
+/// Resolve the scroll offset + auto-follow state for a transcript of `total`
+/// wrapped lines in a `viewport`-row area. Pure (no `Frame`) so the scroll math
+/// — the part that had to stay byte-identical when the renderer switched from
+/// "build the whole transcript then `Paragraph::scroll`" to "materialize only
+/// the visible window" — is unit-tested directly. `max_scroll` uses
+/// `viewport - 2` (a 2-row breathing gap at the bottom), the long-standing
+/// alt-screen behavior.
+fn resolve_scroll(total: usize, viewport: usize, auto_scroll: bool, cur_scroll: u16) -> (u16, bool) {
+    let inner_height = viewport.saturating_sub(2);
+    let max_scroll = total.saturating_sub(inner_height) as u16;
+    // Scrolling back to (or past) the bottom resumes auto-follow — how
+    // mouse-wheel / PageDown re-enables sticky-bottom without a dedicated key.
+    let auto = auto_scroll || cur_scroll >= max_scroll;
+    let scroll = if auto {
         max_scroll
     } else {
-        app.scroll.min(max_scroll)
+        cur_scroll.min(max_scroll)
     };
-    // Sync app.scroll with what we actually rendered. Without this, the field
-    // is stale (initially 0); when the user mouse-scrolls up from a fully
-    // auto-scrolled bottom, `scroll - 3` underflows to 0 and the view jumps
-    // to the very top of the chat — the main "scroll feels broken" symptom.
-    app.scroll = scroll;
+    (scroll, auto)
+}
 
-    let p = Paragraph::new(lines).scroll((scroll, 0));
-    f.render_widget(p, area);
+#[cfg(test)]
+mod tests {
+    use super::resolve_scroll;
+
+    #[test]
+    fn auto_follow_pins_to_the_bottom_gap() {
+        // 100 lines, 22-row viewport → inner_height 20 → max_scroll 80.
+        // Auto-following shows the last 20 lines with the 2-row bottom gap.
+        assert_eq!(resolve_scroll(100, 22, true, 0), (80, true));
+    }
+
+    #[test]
+    fn parked_above_the_tail_keeps_the_users_scroll() {
+        // Not auto-following and parked below max → scroll is held, auto stays off.
+        assert_eq!(resolve_scroll(100, 22, false, 30), (30, false));
+    }
+
+    #[test]
+    fn scrolling_to_the_bottom_resumes_auto_follow() {
+        // cur_scroll at/over max_scroll re-arms auto-follow (sticky bottom).
+        assert_eq!(resolve_scroll(100, 22, false, 80), (80, true));
+        assert_eq!(resolve_scroll(100, 22, false, 999), (80, true));
+    }
+
+    #[test]
+    fn short_transcript_never_scrolls() {
+        // Fewer lines than the viewport → max_scroll 0, always top-anchored.
+        assert_eq!(resolve_scroll(5, 22, true, 0), (0, true));
+        assert_eq!(resolve_scroll(5, 22, false, 3), (0, true));
+    }
+
+    #[test]
+    fn a_parked_scroll_is_clamped_to_max() {
+        // A stale cur_scroll past the new max clamps down (no overscroll).
+        assert_eq!(resolve_scroll(50, 22, false, 40), (30, true));
+    }
 }

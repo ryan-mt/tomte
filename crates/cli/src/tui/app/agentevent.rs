@@ -164,6 +164,11 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             if let Some(receipt) = build_turn_summary(&app.blocks) {
                 app.blocks.push(receipt);
             }
+            // The render cache isn't updated during streaming (that would clone
+            // the whole transcript per frame), so the now-finalized last block
+            // leaves it stale. Invalidate so the next frame rebuilds the settled
+            // transcript once; idle frames after that hit the exact cache cheaply.
+            app.chat_render_cache = None;
             app.busy = false;
             app.turn_started_at = None;
             app.status_line.clear();

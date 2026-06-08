@@ -381,14 +381,15 @@ pub struct ChatRenderCache {
     /// constant and the cache is hit cleanly.
     pub last_block_size: usize,
     pub lines: Vec<ratatui::text::Line<'static>>,
-    /// Wrapped lines for every block EXCEPT the last one, when the last block
-    /// renders as its own standalone stanza (the common streaming case: a
-    /// growing `Assistant` block). `None` when the last block has no clean
-    /// split point (e.g. it was merged into a grouped read_file stanza). Lets
-    /// a streaming frame re-wrap only the final block instead of the whole
-    /// transcript — the difference between O(transcript) and O(last block) per
-    /// token, which is what kept long chats from streaming smoothly.
-    pub prefix_lines: Option<Vec<ratatui::text::Line<'static>>>,
+    /// Index into `lines` where the LAST block's wrapped lines begin, when the
+    /// last block renders as its own standalone stanza (the common streaming
+    /// case: a growing `Assistant` block). `None` when the last block has no
+    /// clean split point (e.g. it was merged into a grouped read_file stanza).
+    /// Lets a streaming frame reuse `lines[..prefix_split]` as the unchanged
+    /// prefix (borrowed, not cloned) and re-wrap only the final block —
+    /// O(last block) per token instead of O(transcript). Stored as an index,
+    /// not a copied Vec, so the transcript's lines live in memory once.
+    pub prefix_split: Option<usize>,
 }
 
 #[derive(Debug, Clone)]

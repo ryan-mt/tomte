@@ -436,7 +436,7 @@ fn tool_result_invalidates_render_cache() {
         expanded_tools: false,
         last_block_size: 0,
         lines: Vec::new(),
-        prefix_lines: None,
+        prefix_split: None,
     });
     apply_agent_event(
         &mut app,
