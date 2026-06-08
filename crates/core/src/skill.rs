@@ -336,7 +336,7 @@ mod tests {
             &format!("desc {marker}"),
             &format!("body {marker}"),
         );
-        let entries = discover_in(&[root.clone()]);
+        let entries = discover_in(std::slice::from_ref(&root));
 
         // Manifest injection path (lifecycle::apply_skill_manifest).
         let manifest_text = crate::memory::neutralize_block_markers(&manifest(&entries));
