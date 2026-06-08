@@ -151,7 +151,11 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     // Right side: model · effort · cwd
     let cwd = shorten_home_path(&app.cwd);
     let auth_dot = match app.auth_mode {
-        AuthMode::None => Span::styled("● ", Style::default().fg(palette::DANGER)),
+        // "not authenticated" is the one auth state a user must not miss, so it
+        // carries a word — a red dot alone is ambiguous against the signed-in
+        // dots and invisible to a colour-blind reader. Signed-in states stay
+        // dot-only to keep the status line calm.
+        AuthMode::None => Span::styled("● offline  ", Style::default().fg(palette::DANGER)),
         AuthMode::OpenaiApiKey => Span::styled("● ", Style::default().fg(palette::INFO)),
         AuthMode::OpenaiOauth => Span::styled("● ", Style::default().fg(palette::SUCCESS)),
         AuthMode::AnthropicApiKey => Span::styled("● ", Style::default().fg(palette::VIOLET)),

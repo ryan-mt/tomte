@@ -127,6 +127,7 @@
 - Fixed the conscience-conflict gate recording an override before the edit was allowed to run — a Supersede that a PreToolUse hook (or the headless baseline gate) then blocks no longer appends a supersede to the decision trail or shows a "decision overturned" card for a write that never happened; the trail append and the event are deferred until the edit clears the gate.
 - Stopped a `response.failed` event from emitting a live `Usage` / context-warning for tokens it deliberately does not bill — a failed-then-retried turn no longer double-counts its input in the live readout, since the occupancy refresh now goes through a pure parse that records and emits nothing.
 - Fixed background-shell output that overflows the 4 MiB cap trimming through the middle of a multi-byte UTF-8 character — the front trim now lands on a char boundary, so the next `bash_output` read no longer surfaces a spurious U+FFFD where a valid character was split.
+- Named the offline auth state in the status line — the "not authenticated" case now reads `● offline` instead of a bare red dot, since that one state (the one you must not miss) was conveyed by hue alone, ambiguous against the signed-in dots and invisible to a colour-blind reader; the signed-in states stay dot-only to keep the line calm.
 
 ## 0.0.1-beta.4
 
