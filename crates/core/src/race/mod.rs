@@ -46,6 +46,32 @@ pub struct RaceOptions {
     pub apply: bool,
 }
 
+/// Progress events emitted while a race runs, so the CLI can narrate a
+/// multi-minute tournament instead of going silent until the final report.
+#[derive(Debug, Clone)]
+pub enum RaceEvent {
+    /// Worktrees are ready; the field is about to run.
+    Starting { contestants: usize },
+    /// A contestant's worktree could not be created — it can never win.
+    WorktreeFailed { label: String, error: String },
+    /// A contestant's agent process began.
+    AgentStarted { label: String, model: String },
+    /// A contestant's agent process ended; `error` carries its run failure.
+    AgentFinished {
+        label: String,
+        secs: u64,
+        error: Option<String>,
+    },
+    /// A contestant's worktree is being verified (the project's own checks).
+    Verifying { label: String },
+    /// Verification finished for a contestant.
+    Verified {
+        label: String,
+        passed: usize,
+        failed: usize,
+    },
+}
+
 /// The evidence gathered for one contestant — every field is measured by the
 /// CLI, never supplied by the model.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -121,8 +147,14 @@ pub struct RaceReport {
 
 /// Run the tournament: build the line-up, run each contestant in its own
 /// worktree, judge by evidence, rank, and (optionally) apply the winner. Worktrees
-/// are always cleaned up.
-pub async fn run_race(cwd: &Path, task: &str, opts: &RaceOptions) -> anyhow::Result<RaceReport> {
+/// are always cleaned up. Progress is narrated through `on_event`.
+pub async fn run_race(
+    cwd: &Path,
+    task: &str,
+    opts: &RaceOptions,
+    // Shared by the concurrent contestants, hence `Send + Sync`.
+    on_event: &(dyn Fn(RaceEvent) + Send + Sync),
+) -> anyhow::Result<RaceReport> {
     use anyhow::Context as _;
 
     if !crate::doctor::binary_on_path("git") {
@@ -157,9 +189,19 @@ pub async fn run_race(cwd: &Path, task: &str, opts: &RaceOptions) -> anyhow::Res
         let wt = base.join(&s.label);
         match add_worktree(&root, &wt).await {
             Ok(()) => planned.push((s, Some(wt), None)),
-            Err(e) => planned.push((s, None, Some(format!("could not create worktree: {e:#}")))),
+            Err(e) => {
+                let err = format!("could not create worktree: {e:#}");
+                on_event(RaceEvent::WorktreeFailed {
+                    label: s.label.clone(),
+                    error: err.clone(),
+                });
+                planned.push((s, None, Some(err)));
+            }
         }
     }
+    on_event(RaceEvent::Starting {
+        contestants: planned.iter().filter(|(_, wt, _)| wt.is_some()).count(),
+    });
 
     // Run every contestant that has a worktree, concurrently.
     let futures = planned.into_iter().map(|(s, wt, err)| {
@@ -167,7 +209,7 @@ pub async fn run_race(cwd: &Path, task: &str, opts: &RaceOptions) -> anyhow::Res
         let task = task.to_string();
         async move {
             match (wt, err) {
-                (Some(wt), _) => run_one(&exe, &wt, &s, &task).await,
+                (Some(wt), _) => run_one(&exe, &wt, &s, &task, on_event).await,
                 (None, err) => AgentOutcome {
                     label: s.label,
                     model: s.model.unwrap_or_else(|| "default".into()),
@@ -212,22 +254,44 @@ pub async fn run_race(cwd: &Path, task: &str, opts: &RaceOptions) -> anyhow::Res
 }
 
 /// Run one contestant in its worktree and gather its evidence.
-async fn run_one(exe: &Path, wt: &Path, strategy: &Strategy, task: &str) -> AgentOutcome {
+async fn run_one(
+    exe: &Path,
+    wt: &Path,
+    strategy: &Strategy,
+    task: &str,
+    on_event: &(dyn Fn(RaceEvent) + Send + Sync),
+) -> AgentOutcome {
     let model = strategy.model.clone().unwrap_or_else(|| "default".into());
     let prompt = format!("{task}{}", strategy.prompt_suffix());
 
+    on_event(RaceEvent::AgentStarted {
+        label: strategy.label.clone(),
+        model: model.clone(),
+    });
+    let started = std::time::Instant::now();
     let events = match spawn_agent(exe, wt, strategy, &prompt).await {
         Ok(stdout) => stdout,
         Err(e) => {
+            let err = format!("agent run failed: {e:#}");
+            on_event(RaceEvent::AgentFinished {
+                label: strategy.label.clone(),
+                secs: started.elapsed().as_secs(),
+                error: Some(err.clone()),
+            });
             return AgentOutcome {
                 label: strategy.label.clone(),
                 model,
                 diff: String::new(),
                 metrics: Metrics::default(),
-                run_error: Some(format!("agent run failed: {e:#}")),
+                run_error: Some(err),
             };
         }
     };
+    on_event(RaceEvent::AgentFinished {
+        label: strategy.label.clone(),
+        secs: started.elapsed().as_secs(),
+        error: None,
+    });
 
     let (diff, numstat) = capture_diff(wt).await;
     let (files_changed, insertions, deletions) = judge::parse_numstat(&numstat);
@@ -236,6 +300,9 @@ async fn run_one(exe: &Path, wt: &Path, strategy: &Strategy, task: &str) -> Agen
     let risky_commands = judge::count_risky_commands(&events);
 
     // The deterministic verification: run the project's own checks in the worktree.
+    on_event(RaceEvent::Verifying {
+        label: strategy.label.clone(),
+    });
     let capsule = crate::proof::collect(wt).await;
     let checks_total = capsule.checks.len();
     let checks_passed = capsule
@@ -253,6 +320,11 @@ async fn run_one(exe: &Path, wt: &Path, strategy: &Strategy, task: &str) -> Agen
             )
         })
         .count();
+    on_event(RaceEvent::Verified {
+        label: strategy.label.clone(),
+        passed: checks_passed,
+        failed: checks_failed,
+    });
 
     AgentOutcome {
         label: strategy.label.clone(),
@@ -399,6 +471,30 @@ async fn git_output(dir: &Path, args: &[&str]) -> std::io::Result<std::process::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The progress narration around one contestant: `AgentStarted` is always
+    /// followed by an erroring `AgentFinished` when the agent binary can't
+    /// spawn — and the outcome carries the same failure. Hermetic (no LLM, no
+    /// git): the exe path simply doesn't exist.
+    #[tokio::test]
+    async fn run_one_emits_started_then_failed_on_spawn_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let events: std::sync::Mutex<Vec<String>> = Default::default();
+        let on_event = |ev: RaceEvent| {
+            let tag = match ev {
+                RaceEvent::AgentStarted { .. } => "started",
+                RaceEvent::AgentFinished { error: Some(_), .. } => "failed",
+                RaceEvent::AgentFinished { error: None, .. } => "finished",
+                _ => "other",
+            };
+            events.lock().unwrap().push(tag.to_string());
+        };
+        let strategy = build_strategies(1, &[]).remove(0);
+        let missing = tmp.path().join("definitely-not-a-binary");
+        let out = run_one(&missing, tmp.path(), &strategy, "task", &on_event).await;
+        assert!(out.run_error.is_some(), "spawn failure must be carried");
+        assert_eq!(events.into_inner().unwrap(), vec!["started", "failed"]);
+    }
 
     /// Exercise the git plumbing the orchestrator depends on — worktree create,
     /// diff capture (including a new untracked file), patch save, apply, and

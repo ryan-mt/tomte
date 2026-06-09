@@ -7,7 +7,7 @@
 //! applies the winning patch to the working tree.
 
 use anyhow::Result;
-use tomte_core::race::{self, RaceOptions};
+use tomte_core::race::{self, RaceEvent, RaceOptions};
 
 pub async fn run(
     task: Vec<String>,
@@ -42,7 +42,44 @@ pub async fn run(
         apply,
     };
 
-    let report = race::run_race(&here, &task, &opts).await?;
+    // Narrate progress on stderr — a race can run many minutes, and stdout must
+    // stay clean for `--json | jq`-style piping.
+    let t0 = std::time::Instant::now();
+    let progress = move |ev: RaceEvent| {
+        let t = t0.elapsed().as_secs();
+        match ev {
+            RaceEvent::Starting { contestants } => eprintln!(
+                "🏁 {contestants} contestant(s) racing from HEAD in isolated worktrees — \
+                 this runs the task AND the project's checks per contestant…"
+            ),
+            RaceEvent::WorktreeFailed { label, error } => {
+                eprintln!("[{t:>4}s] {label}: {error}")
+            }
+            RaceEvent::AgentStarted { label, model } => {
+                eprintln!("[{t:>4}s] {label} ({model}) started")
+            }
+            RaceEvent::AgentFinished {
+                label,
+                secs,
+                error: None,
+            } => eprintln!("[{t:>4}s] {label} finished its run in {secs}s"),
+            RaceEvent::AgentFinished {
+                label,
+                secs,
+                error: Some(e),
+            } => eprintln!("[{t:>4}s] {label} failed after {secs}s: {e}"),
+            RaceEvent::Verifying { label } => {
+                eprintln!("[{t:>4}s] {label} verifying — running the project's own checks…")
+            }
+            RaceEvent::Verified {
+                label,
+                passed,
+                failed,
+            } => eprintln!("[{t:>4}s] {label} checks: {passed} passed, {failed} failed"),
+        }
+    };
+
+    let report = race::run_race(&here, &task, &opts, &progress).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
