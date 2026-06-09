@@ -586,3 +586,44 @@ async fn consecutive_edits_after_one_read_are_allowed() {
         .unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "1 two 3");
 }
+
+#[tokio::test]
+async fn undo_last_edit_unwinds_two_stacked_edits_to_the_same_file() {
+    // Regression: `undo_last_edit` rewrites the file with a fresh mtime, so the
+    // NEXT undo entry for the same file looked externally modified and the tool
+    // refused ("file has been modified since the edit"). Stacked edits to one
+    // file must undo all the way back, one step at a time.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.txt");
+    std::fs::write(&path, "v0").unwrap();
+    let ctx = ctx(dir.path().to_path_buf());
+
+    ReadFile
+        .execute(json!({"path": "a.txt"}), &ctx)
+        .await
+        .unwrap();
+    EditFile
+        .execute(
+            json!({"path": "a.txt", "old_string": "v0", "new_string": "v1"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    EditFile
+        .execute(
+            json!({"path": "a.txt", "old_string": "v1", "new_string": "v2"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2");
+
+    UndoLastEdit.execute(json!({}), &ctx).await.unwrap(); // v2 -> v1
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+    UndoLastEdit.execute(json!({}), &ctx).await.unwrap(); // v1 -> v0 (previously refused)
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "v0",
+        "both stacked edits undone to the pre-edit content"
+    );
+}

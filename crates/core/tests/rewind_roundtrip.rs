@@ -303,3 +303,97 @@ async fn rewind_preview_reports_distinct_file_blast_radius_per_point() {
     assert_eq!(preview[1].label, "turn 2");
     assert_eq!(preview[1].files_to_revert, 2);
 }
+
+#[tokio::test]
+async fn undo_then_rewind_to_earlier_point_does_not_over_revert() {
+    // Regression: `/undo` pops the undo stack, so it must also drop the
+    // edits-pushed counter the checkpoint math trusts. If it doesn't, a `/rewind`
+    // to an EARLIER checkpoint over-counts the edits "since" that point and
+    // reverts edits from BEFORE it — silently clobbering older content.
+    //
+    // Turn 2 makes two edits to a.txt; the user `/undo`s both; then rewinds to
+    // turn 2. Nothing past turn-2's checkpoint remains to revert, and turn-1's
+    // edit to a.txt must survive (NOT roll back to its pre-turn-1 value).
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path();
+    let mut agent = test_agent(cwd).await;
+    let ctx = ctx_for(&agent);
+
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        tokio::fs::write(cwd.join(name), b"v0").await.unwrap();
+        mark_read(&ctx, name).await;
+    }
+
+    // Turn 1: edit a.txt.
+    agent.record_checkpoint("turn 1").await;
+    agent.push_user_message("turn 1");
+    write_file(&ctx, "a.txt", "a1").await;
+    agent.history.push(assistant("did turn 1"));
+
+    // Turn 2: edit b.txt and c.txt (distinct files, so each `/undo`'s staleness
+    // guard stays clean).
+    agent.record_checkpoint("turn 2").await;
+    agent.push_user_message("turn 2");
+    write_file(&ctx, "b.txt", "b1").await;
+    write_file(&ctx, "c.txt", "c1").await;
+    agent.history.push(assistant("did turn 2"));
+
+    // User manually undoes BOTH turn-2 edits.
+    agent.undo_last_edit().await.unwrap(); // c.txt -> v0
+    agent.undo_last_edit().await.unwrap(); // b.txt -> v0
+    assert_eq!(read(cwd, "b.txt"), "v0", "turn-2 edits undone");
+    assert_eq!(read(cwd, "c.txt"), "v0");
+
+    // Blast-radius preview must agree: turn-2 reverts nothing now; turn-1 still
+    // reverts its own surviving edit to a.txt.
+    let preview = agent.rewind_preview().await;
+    assert_eq!(preview.len(), 2);
+    assert_eq!(
+        preview[1].files_to_revert, 0,
+        "turn-2 point reverts nothing after its edits were undone"
+    );
+    assert_eq!(preview[0].files_to_revert, 1, "turn-1's edit still reverts");
+
+    // Rewind to turn 2: nothing left past its checkpoint to revert, so turn-1's
+    // a.txt edit must survive — NOT get clobbered back to v0.
+    let out = agent.rewind_to(1).await.unwrap();
+    assert_eq!(
+        out.files_reverted, 0,
+        "turn-2 edits were already undone — nothing to revert"
+    );
+    assert_eq!(
+        read(cwd, "a.txt"),
+        "a1",
+        "turn-1 edit must survive the rewind, not roll back to v0"
+    );
+    assert_eq!(agent.checkpoints.len(), 1);
+}
+
+#[tokio::test]
+async fn undo_unwinds_two_stacked_edits_to_the_same_file() {
+    // Regression: `/undo` rewrites the file with a fresh mtime, so the NEXT undo
+    // entry for that same file looked externally modified and `/undo` refused
+    // ("file has been modified since the edit"). A stacked pair of edits to one
+    // file must undo all the way back, one step at a time.
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path();
+    let agent = test_agent(cwd).await;
+    let ctx = ctx_for(&agent);
+
+    tokio::fs::write(cwd.join("a.txt"), b"v0").await.unwrap();
+    mark_read(&ctx, "a.txt").await;
+
+    edit_file(&ctx, "a.txt", "v0", "v1").await;
+    edit_file(&ctx, "a.txt", "v1", "v2").await;
+    assert_eq!(read(cwd, "a.txt"), "v2");
+
+    agent.undo_last_edit().await.unwrap(); // v2 -> v1
+    assert_eq!(read(cwd, "a.txt"), "v1");
+    agent.undo_last_edit().await.unwrap(); // v1 -> v0 (previously refused)
+    assert_eq!(
+        read(cwd, "a.txt"),
+        "v0",
+        "both stacked edits undone to the pre-edit content"
+    );
+    assert_eq!(agent.session.lock().await.undo_stack.len(), 0);
+}

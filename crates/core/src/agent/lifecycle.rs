@@ -89,7 +89,12 @@ impl Agent {
             ));
         }
         apply_revert(&entry).await?;
-        session.undo_stack.pop_back();
+        session.pop_undo_entry();
+        if entry.original_content.is_some() {
+            // Our restore rewrote the file with a fresh mtime; refresh the next
+            // same-file entry so a follow-up `/undo` doesn't read it as external.
+            session.refresh_top_snapshot_for(&entry.path);
+        }
         Ok(if entry.original_content.is_some() {
             format!("Restored {}", entry.path.display())
         } else {
@@ -157,9 +162,11 @@ impl Agent {
             .ok_or_else(|| anyhow!("no such rewind point"))?;
 
         // Phase 1 (locked): pop the edits made since the checkpoint and GROUP them
-        // by file. The monotonic `undo_pushed` tells how many happened (correct even
-        // after the capped stack evicted its oldest); `.min` bounds us to what is
-        // still revertable. For a file edited several times in the range we keep two
+        // by file. `undo_pushed` counts edits still LIVE — it climbs on push, falls
+        // on `/undo`, and survives eviction — so it tells how many happened since the
+        // checkpoint; `.min` bounds us to what is still revertable. (Popping here also
+        // decrements `undo_pushed`, so the remaining checkpoints stay consistent.)
+        // For a file edited several times in the range we keep two
         // entries: the NEWEST (its post snapshot is the "is it externally modified?"
         // guard) and the OLDEST (its `original_content` is the pre-checkpoint state
         // to restore). Reverting per-file in one shot avoids the trap where
@@ -172,7 +179,7 @@ impl Agent {
             let mut map: HashMap<PathBuf, (crate::tools::UndoEntry, crate::tools::UndoEntry)> =
                 HashMap::new();
             for _ in 0..to_revert {
-                let Some(entry) = session.undo_stack.pop_back() else {
+                let Some(entry) = session.pop_undo_entry() else {
                     break;
                 };
                 map.entry(entry.path.clone())

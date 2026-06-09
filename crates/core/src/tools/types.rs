@@ -169,11 +169,15 @@ pub struct SessionState {
     pub todos: Vec<TodoItem>,
     pub background_shells: HashMap<String, Arc<BackgroundShellState>>,
     pub undo_stack: std::collections::VecDeque<UndoEntry>,
-    /// Monotonic count of edits ever pushed onto [`undo_stack`](Self::undo_stack)
-    /// this session — it keeps climbing even when the capped stack evicts its
-    /// oldest entry. A [`Checkpoint`] records this value so `/rewind` can tell how
-    /// many edits happened since, without being fooled by the stack length
-    /// shifting under eviction.
+    /// Sequence number of the most recent *live* edit on
+    /// [`undo_stack`](Self::undo_stack): incremented on every push and decremented
+    /// on every `/undo`-style pop ([`pop_undo_entry`](Self::pop_undo_entry)), but
+    /// NOT on eviction — so it keeps climbing as the capped stack drops its oldest
+    /// entry, yet falls back when an edit is undone. A [`Checkpoint`] records this
+    /// value so `/rewind` can tell exactly how many edits are still live since it:
+    /// eviction is absorbed by the stack-length clamp, and an intervening `/undo`
+    /// by this decrement. Without the decrement, `/rewind` to an earlier point
+    /// would over-count and revert edits from before the checkpoint.
     pub undo_pushed: u64,
     /// Canonical paths read this session, keyed exactly as `fs::resolve`
     /// produces them. Powers the read-before-write safety:
@@ -223,5 +227,39 @@ impl SessionState {
         }
         self.undo_stack.push_back(entry);
         self.undo_pushed = self.undo_pushed.saturating_add(1);
+    }
+
+    /// Pop the most recent undo entry (an `/undo` / `undo_last_edit`), keeping
+    /// [`undo_pushed`](Self::undo_pushed) in step. `/undo` removes the TOP of the
+    /// stack, so the live edits-pushed count must drop too — otherwise `/rewind`'s
+    /// "edits since this checkpoint" math (which trusts `undo_pushed`) would
+    /// over-count and revert edits from BEFORE the checkpoint. Eviction
+    /// (`push_undo_entry`'s `pop_front`) is deliberately different: it drops the
+    /// OLDEST entry and does NOT decrement, so the count still survives eviction.
+    /// Returns the popped entry, if any.
+    pub fn pop_undo_entry(&mut self) -> Option<UndoEntry> {
+        let entry = self.undo_stack.pop_back();
+        if entry.is_some() {
+            self.undo_pushed = self.undo_pushed.saturating_sub(1);
+        }
+        entry
+    }
+
+    /// After an `/undo` restores `path` to a previous edit's post-state, the file
+    /// carries a fresh mtime. If the NEXT undo entry targets that same `path`, its
+    /// recorded post-snapshot is now stale — the staleness guard would read our
+    /// own restore as an external edit and refuse the next `/undo`. Refresh it to
+    /// the file's current `(mtime, size)` so stacked edits to one file unwind all
+    /// the way; a genuine external edit afterwards still moves the mtime and trips
+    /// the guard, so the protection is intact. Call only after a content restore
+    /// (not a new-file deletion) and after the just-undone entry is popped.
+    pub fn refresh_top_snapshot_for(&mut self, path: &std::path::Path) {
+        if let Some(top) = self.undo_stack.back_mut() {
+            if top.path == path {
+                let meta = std::fs::metadata(path);
+                top.post_edit_mtime = meta.as_ref().ok().and_then(|m| m.modified().ok());
+                top.post_edit_size = meta.as_ref().ok().map(|m| m.len());
+            }
+        }
     }
 }

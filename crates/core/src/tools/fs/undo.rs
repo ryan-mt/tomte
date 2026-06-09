@@ -47,6 +47,7 @@ Parameters: none."
                 ));
             }
         }
+        let was_content_restore = entry.original_content.is_some();
         let message = match entry.original_content {
             Some(content) => {
                 // Atomic restore (temp + rename), matching the edit/write tools,
@@ -64,7 +65,12 @@ Parameters: none."
                 format!("Removed (was a new file): {}", entry.path.display())
             }
         };
-        session.undo_stack.pop_back();
+        session.pop_undo_entry();
+        if was_content_restore {
+            // Our restore rewrote the file with a fresh mtime; refresh the next
+            // same-file entry so a follow-up undo doesn't read it as external.
+            session.refresh_top_snapshot_for(&entry.path);
+        }
         Ok(message)
     }
 }
