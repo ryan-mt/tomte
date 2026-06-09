@@ -29,6 +29,45 @@ impl TodoStatus {
     }
 }
 
+#[cfg(test)]
+mod todo_status_tests {
+    use super::TodoStatus;
+
+    #[test]
+    fn parse_accepts_model_facing_aliases_and_rejects_unknown() {
+        // A model phrases a todo status many ways; these all funnel to one of the
+        // three canonical states (lock so a dropped alias can't silently mis-parse
+        // a status). Trim + case + `-`/space → `_` normalization is exercised too.
+        for s in [
+            "pending",
+            "todo",
+            "open",
+            "not_started",
+            "NOT STARTED",
+            " Pending ",
+        ] {
+            assert_eq!(TodoStatus::parse(s), Some(TodoStatus::Pending), "{s:?}");
+        }
+        for s in [
+            "in_progress",
+            "inprogress",
+            "in progress",
+            "active",
+            "doing",
+            "started",
+        ] {
+            assert_eq!(TodoStatus::parse(s), Some(TodoStatus::InProgress), "{s:?}");
+        }
+        for s in ["completed", "complete", "done", "finished"] {
+            assert_eq!(TodoStatus::parse(s), Some(TodoStatus::Completed), "{s:?}");
+        }
+        // An unrecognized value is rejected (so the caller keeps the raw value
+        // rather than guessing a wrong state).
+        assert_eq!(TodoStatus::parse("bogus"), None);
+        assert_eq!(TodoStatus::parse(""), None);
+    }
+}
+
 /// One entry in the session todo list. The shape stays close to the common
 /// `TodoWrite` convention so existing prompts and skills transfer.
 #[derive(Debug, Clone, Serialize, Deserialize)]

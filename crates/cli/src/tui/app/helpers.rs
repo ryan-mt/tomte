@@ -91,3 +91,38 @@ pub async fn save_current_session_record(
     }
     app.pending_session_save = false;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_screen_requires_auth_or_an_env_key() {
+        use tomte_core::auth::AuthMode;
+        // Only a fully-unauthenticated start lands on the login screen.
+        assert!(matches!(
+            initial_screen(AuthMode::None, false),
+            Screen::Login
+        ));
+        assert!(matches!(initial_screen(AuthMode::None, true), Screen::Chat));
+        assert!(matches!(
+            initial_screen(AuthMode::OpenaiApiKey, false),
+            Screen::Chat
+        ));
+    }
+
+    #[test]
+    fn resolve_cwd_arg_accepts_only_an_existing_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        // A relative arg resolves against `current` and canonicalizes.
+        let got = resolve_cwd_arg(tmp.path(), "sub").expect("existing dir resolves");
+        assert_eq!(got, sub.canonicalize().unwrap());
+        // A missing path, or a file (not a directory), is rejected.
+        assert!(resolve_cwd_arg(tmp.path(), "nope").is_none());
+        let file = tmp.path().join("f.txt");
+        std::fs::write(&file, "x").unwrap();
+        assert!(resolve_cwd_arg(tmp.path(), "f.txt").is_none());
+    }
+}

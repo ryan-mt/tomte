@@ -142,6 +142,14 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
         // fresh login is meant to overwrite whatever is there, so propagating a
         // parse error (`?`) on a corrupt file would needlessly lock the user out
         // of the self-healing re-login path.
+        // Serialize the credential read-modify-write against concurrent token
+        // refreshes, which take the same lock: a sibling provider's `ensure_fresh`
+        // could otherwise land its freshly-rotated (single-use) refresh token
+        // between our load and save, and our write-back of the pre-refresh
+        // snapshot would revert it. Acquired only now — after the (up to 10-minute)
+        // browser wait and the code exchange — so a pending login never blocks
+        // refreshes while the user is still in the browser.
+        let _refresh_guard = super::REFRESH_LOCK.lock().await;
         let mut record = load_auth().unwrap_or_default();
         record.mode = AuthMode::OpenaiOauth;
         record.tokens = Some(StoredTokens {

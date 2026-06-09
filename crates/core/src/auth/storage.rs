@@ -211,7 +211,7 @@ pub fn save_auth(record: &AuthRecord) -> Result<()> {
 /// Windows analogue of `chmod 600`, via the always-present `icacls`. Best-effort
 /// (the file already inherits the per-user profile ACL if this can't run).
 #[cfg(windows)]
-fn restrict_to_owner_windows(path: &std::path::Path) {
+pub(crate) fn restrict_to_owner_windows(path: &std::path::Path) {
     // Best-effort (a failure leaves the inherited per-user %APPDATA% ACL, which
     // already excludes other standard users), but no longer SILENT: a failed or
     // skipped tighten is logged so the degraded posture is observable instead of
@@ -255,7 +255,7 @@ fn restrict_to_owner_windows(path: &std::path::Path) {
 /// Best-effort and idempotent, matching the per-file grant; only the dir's own
 /// ACL is changed, so pre-existing sibling files keep their permissions.
 #[cfg(windows)]
-fn restrict_dir_to_owner_windows(dir: &std::path::Path) {
+pub(crate) fn restrict_dir_to_owner_windows(dir: &std::path::Path) {
     let Some(user) = current_windows_user() else {
         return; // restrict_to_owner_windows already warns about an unset USERNAME
     };

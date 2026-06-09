@@ -517,6 +517,35 @@ mod input_wrap_tests {
     }
 
     #[test]
+    fn table_rows_share_one_display_width_so_borders_align() {
+        // Every rendered table row (rules + content) must have the same display
+        // width or the box borders visibly misalign. Stress the column-shrink +
+        // cell-wrap path with wide CJK glyphs and a long unbreakable word at
+        // several narrow widths — a regression guard for the cell-overflow risk.
+        let cases = [
+            "| A | B |\n|---|---|\n| 中文字符非常长的内容示例 | y |",
+            "| A | B |\n|---|---|\n| supercalifragilisticexpialidocious | 中 |",
+            "| 名前 | 値 |\n|---|---|\n| とても長い日本語のセル内容 | x |",
+        ];
+        for md in cases {
+            for w in [6usize, 8, 10, 14, 20] {
+                let rows = render_assistant_md(md, w);
+                let widths: Vec<usize> = rows
+                    .iter()
+                    .map(|row| {
+                        let s: String = row.iter().map(|sp| sp.content.as_ref()).collect();
+                        unicode_width::UnicodeWidthStr::width(s.as_str())
+                    })
+                    .collect();
+                assert!(
+                    widths.windows(2).all(|pair| pair[0] == pair[1]),
+                    "table rows must share one display width (md={md:?}, w={w}); got {widths:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn table_with_header_only_renders_without_body() {
         // Header + separator but no body rows: `tbl` is exactly two lines, so the
         // `tbl[2..]` body slice is empty. Guards the `tbl[0]` / `tbl[2..]`

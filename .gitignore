@@ -15,8 +15,9 @@ Cargo.lock.bak
 # codegraph index
 .codegraph/
 
-# internal strategy / design docs — kept local, not published
+# internal strategy / design docs + session handoffs — kept local, not published
 # (docs/previews/ stays tracked: standalone demos of tomte's own features)
+/HANDOFF.md
 /docs/SOUL.md
 /docs/clone-audit.md
 /docs/pillar-4-calm-terminal.md

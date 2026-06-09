@@ -343,3 +343,54 @@ pub fn render_blocks_as_markdown(blocks: &[Block]) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_fence_outgrows_internal_backtick_runs() {
+        // The `/export` fence must be longer than the longest backtick run inside
+        // the content, so an embedded code block can't close the export's fence
+        // early (the safe-fence invariant) — minimum three backticks.
+        assert_eq!(markdown_fence_for("plain text"), "```");
+        assert_eq!(markdown_fence_for("use `x` inline"), "```");
+        assert_eq!(markdown_fence_for("```rust\ncode\n```"), "````");
+        assert_eq!(markdown_fence_for("a ````` b"), "``````");
+    }
+
+    #[test]
+    fn commit_prompts_carry_the_safety_protocol_and_optional_extra() {
+        let bare = commit_prompt("");
+        assert!(bare.contains(GIT_SAFETY_PROTOCOL));
+        assert!(!bare.contains("Additional instructions"));
+
+        let with_extra = commit_prompt("stage only src/");
+        assert!(with_extra.contains("Additional instructions from the user: stage only src/"));
+
+        let pr = commit_push_pr_prompt("");
+        assert!(pr.contains(GIT_SAFETY_PROTOCOL));
+        assert!(pr.contains("gh pr create"));
+    }
+
+    #[test]
+    fn all_todos_completed_requires_nonempty_and_every_item_done() {
+        use tomte_core::tools::{TodoItem, TodoStatus};
+        let item = |status: TodoStatus| TodoItem {
+            content: "x".into(),
+            status,
+            active_form: "x".into(),
+            id: None,
+            blocked_by: Vec::new(),
+        };
+        assert!(!all_todos_completed(&[]));
+        assert!(!all_todos_completed(&[
+            item(TodoStatus::Completed),
+            item(TodoStatus::Pending)
+        ]));
+        assert!(all_todos_completed(&[
+            item(TodoStatus::Completed),
+            item(TodoStatus::Completed)
+        ]));
+    }
+}

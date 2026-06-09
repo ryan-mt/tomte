@@ -151,11 +151,17 @@ pub(super) fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
         // padding, then the right value flush against the inner border.
         if let Some(r) = rows.get(i) {
             row.extend(r.prefix.clone());
-            let right_w = r.right.chars().count();
+            // Measure by display width, not code points: the text column is
+            // `text_w` terminal columns wide (the sprite column already uses
+            // `.width()`), so a wide CJK/emoji glyph in the body (e.g. a `cwd`
+            // with a CJK directory) or the right value must cost two columns —
+            // counting chars let a wide row overrun and push the right `│` border
+            // out of alignment.
+            let right_w = unicode_width::UnicodeWidthStr::width(r.right.as_str());
             let body_cap =
                 text_w.saturating_sub(r.prefix_w + if right_w > 0 { MIN_GAP + right_w } else { 0 });
-            let body = truncate_chars(&r.body, body_cap);
-            let body_w = body.chars().count();
+            let body = truncate_to_width(&r.body, body_cap);
+            let body_w = unicode_width::UnicodeWidthStr::width(body.as_str());
             if !body.is_empty() {
                 row.push(Span::styled(body, r.body_style));
             }

@@ -58,8 +58,8 @@ pub fn pricing_for(model: &str) -> Pricing {
     // OpenAI Responses families. Cache read is a 10x discount on fresh input;
     // OpenAI does not surcharge cache creation, so cache write = input rate.
     let (input, output) = match model {
-        "gpt-5.5" => (5.00, 30.0),
-        "gpt-5.4" => (2.50, 15.0),
+        "gpt-5.5" | "gpt-5.5-chat-latest" | "gpt-5.5-codex" => (5.00, 30.0),
+        "gpt-5.4" | "gpt-5.4-chat-latest" | "gpt-5.4-codex" => (2.50, 15.0),
         "gpt-5.3" | "gpt-5.3-chat-latest" | "gpt-5.3-codex" => (1.75, 14.0),
         "gpt-5" => (1.25, 10.0),
         "gpt-5.5-pro" | "gpt-5.4-pro" => (30.00, 180.0),
@@ -178,6 +178,12 @@ mod tests {
         assert_eq!(pricing_for("gpt-5-pro").input, 15.00);
         assert_eq!(pricing_for("gpt-5.5-pro").output, 180.0);
         assert_eq!(pricing_for("gpt-5-nano").output, 0.40);
+        // Codex / chat-latest variants are priced at their base family's rate
+        // (the catalog recognizes e.g. `gpt-5.5-codex` as a real id), not the
+        // unknown-model fallback — mirroring the existing gpt-5.3 entry.
+        assert_eq!(pricing_for("gpt-5.5-codex").input, 5.00);
+        assert_eq!(pricing_for("gpt-5.5-codex").output, 30.0);
+        assert_eq!(pricing_for("gpt-5.4-codex").input, 2.50);
         // Cache read is a 10x discount on fresh input for OpenAI too.
         assert!((pricing_for("gpt-5").cache_read - 0.125).abs() < 1e-9);
     }

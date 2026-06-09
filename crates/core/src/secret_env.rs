@@ -19,8 +19,17 @@ const ENV_DENYLIST_SUBSTRINGS: &[&str] = &[
     "_KEY", // the long tail of *_KEY the comment promised (FOO_KEY, STRIPE_KEY)
     "CREDENTIALS",
     "DATABASE_URL", // routinely embeds inline creds (postgres://user:pass@host/db)
-    "_DSN",         // SENTRY_DSN and friends carry a secret
-    "WEBHOOK",      // webhook URLs are bearer-secret endpoints
+    // Sibling connection strings that embed inline `user:pass@host` creds, matched
+    // by specific name (not a blanket `_URL`/`_URI`) so non-secret `REDIS_HOST` /
+    // `MONGO_HOST` style vars are not over-scrubbed.
+    "REDIS_URL",
+    "MONGODB_URI",
+    "MONGODB_URL",
+    "AMQP_URL",
+    "RABBITMQ_URL",
+    "CELERY_BROKER_URL",
+    "_DSN",    // SENTRY_DSN and friends carry a secret
+    "WEBHOOK", // webhook URLs are bearer-secret endpoints
     "OPENAI",
     "ANTHROPIC",
     "AWS_",
@@ -132,6 +141,11 @@ mod tests {
             "DIGITALOCEAN_ACCESS_TOKEN",
             "SLACK_BOT_TOKEN",
             "DISCORD_BOT_TOKEN",
+            // Connection strings that embed inline user:pass@host creds.
+            "REDIS_URL",
+            "MONGODB_URI",
+            "AMQP_URL",
+            "CELERY_BROKER_URL",
         ] {
             assert!(is_secret_env_name(name), "should scrub {name}");
         }
@@ -151,6 +165,12 @@ mod tests {
             // DEFAULT/FAULT contain no "VAULT".
             "DEFAULT_TIMEOUT",
             "FAULT_TOLERANCE",
+            // Non-secret host/port siblings of the connection-string URLs must
+            // survive: the URL entries are matched by specific name, not a bare
+            // REDIS/MONGO prefix.
+            "REDIS_HOST",
+            "REDIS_PORT",
+            "MONGO_HOST",
         ] {
             assert!(!is_secret_env_name(name), "should NOT scrub {name}");
         }

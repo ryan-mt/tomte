@@ -287,7 +287,7 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
     // Windows cmd / PowerShell destructive verbs. The classifier runs on every
     // platform and the Unix vocabulary above never matches these; on Windows the
     // sandbox does not confine the filesystem, so this gate matters most there.
-    if (has("del") || has("erase") || has("rd") || has("rmdir")) && tokens.contains(&"/s") {
+    if (has("del") || has("erase") || has("rd") || has("rmdir")) && has_cmd_switch(&tokens, 's') {
         return Some("del/rd /s recursively deletes a directory tree");
     }
     // `del`/`erase` at a drive root (`del c:\* /q`, `del \*.*`) wipes the root's
@@ -344,6 +344,22 @@ fn operator_split(s: &str) -> Vec<&str> {
     s.split([';', '&', '|', '\n', '(', ')'])
         .flat_map(str::split_whitespace)
         .collect()
+}
+
+/// True when a cmd.exe switch (`/s`, `/q`, …) carrying `sw` is present, including
+/// the glued cluster form cmd.exe accepts (`/s/q`). `operator_split` breaks only
+/// on whitespace and shell operators — not `/` — so `del /s/q dir` arrives as the
+/// single token `/s/q`; an exact `== "/s"` test missed it. A token counts as a
+/// switch cluster only when every `/`-separated piece is a single letter, so a
+/// real path like `/usr/s` (segment `usr` is multi-letter) never false-matches.
+fn has_cmd_switch(tokens: &[&str], sw: char) -> bool {
+    tokens.iter().any(|t| {
+        if !t.starts_with('/') {
+            return false;
+        }
+        let segments = || t.split('/').filter(|s| !s.is_empty());
+        segments().all(|s| s.len() == 1) && segments().any(|s| s.chars().eq([sw]))
+    })
 }
 
 /// A PowerShell parameter written as `-Name` or any prefix abbreviation down to
@@ -532,50 +548,74 @@ fn is_powershell_code_flag(tok: &str) -> bool {
     matches!(tok, "-e" | "-ec") || tok.starts_with("-enc")
 }
 
-/// True when a segment invokes a non-shell interpreter with an inline program.
-/// Mirrors [`command_runs_keyword`]'s segment/command-word logic so a benign
-/// interpreter-named *argument* (`time python`, `echo node`) isn't blamed.
-fn runs_inline_interpreter_code(scan: &str) -> bool {
-    scan.split([';', '&', '|', '\n']).any(|seg| {
-        let words: Vec<&str> = seg.split_whitespace().collect();
-        let Some(cmd) = words
+/// The command name(s) to classify for one `;`/`&`/`|`-separated segment: the
+/// first real command word's name, and — when that word is a known
+/// command-wrapper (`env`, `sudo`, `xargs`, …) — every word's name, because the
+/// real interpreter hides behind the wrapper (`env python3 -c …`, `sudo bash
+/// <(…)`). Mirrors the pipe-into-interpreter guard, which already de-sugars
+/// wrappers this way: we can't reliably parse each wrapper's own flags, so we err
+/// toward flagging (a flag here only adds an override prompt, never auto-runs).
+/// Empty when the segment has no command word.
+fn segment_command_candidates(words: &[&str]) -> Vec<String> {
+    let Some(first) = words
+        .iter()
+        .copied()
+        .map(degroup)
+        .find(|w| !w.is_empty() && !w.starts_with('-') && !is_env_assignment(w))
+    else {
+        return Vec::new();
+    };
+    let first_name = shell_token_command_name(first);
+    if PIPE_WRAPPERS
+        .iter()
+        .any(|w| is_versioned_name(&first_name, w))
+    {
+        return words
             .iter()
             .copied()
             .map(degroup)
-            .find(|w| !w.is_empty() && !w.starts_with('-') && !is_env_assignment(w))
-        else {
-            return false;
-        };
-        let name = shell_token_command_name(cmd);
-        if let Some(flags) = inline_code_flags(&name) {
-            // Match the flag as its own word (`python -c 'code'`) OR glued to its
-            // argument (`python -c'code'`, `node -e'…'`) — a single-letter flag
-            // (`-c`/`-e`) can carry the program with no space, which a plain
-            // equality test missed.
-            if words.iter().copied().map(degroup).any(|w| {
-                flags
+            .map(shell_token_command_name)
+            .collect();
+    }
+    vec![first_name]
+}
+
+/// True when a segment invokes a non-shell interpreter with an inline program.
+/// Uses [`segment_command_candidates`] so a benign interpreter-named *argument*
+/// (`echo node`) isn't blamed, while an interpreter behind a command-wrapper
+/// (`env python3 -c …`, `sudo node -e …`) — which a first-word-only check let
+/// slip past — is still caught.
+fn runs_inline_interpreter_code(scan: &str) -> bool {
+    scan.split([';', '&', '|', '\n']).any(|seg| {
+        let words: Vec<&str> = seg.split_whitespace().collect();
+        segment_command_candidates(&words).iter().any(|name| {
+            if let Some(flags) = inline_code_flags(name) {
+                // Match the flag as its own word (`python -c 'code'`) OR glued to
+                // its argument (`python -c'code'`, `node -e'…'`) — a single-letter
+                // flag (`-c`/`-e`) can carry the program with no space, which a
+                // plain equality test missed.
+                if words.iter().copied().map(degroup).any(|w| {
+                    flags
+                        .iter()
+                        .any(|f| w == *f || (f.len() == 2 && w.len() > 2 && w.starts_with(f)))
+                }) {
+                    return true;
+                }
+            }
+            if (is_versioned_name(name, "pwsh") || is_versioned_name(name, "powershell"))
+                && words
                     .iter()
-                    .any(|f| w == *f || (f.len() == 2 && w.len() > 2 && w.starts_with(f)))
-            }) {
+                    .copied()
+                    .map(degroup)
+                    .any(is_powershell_code_flag)
+            {
                 return true;
             }
-        }
-        if (is_versioned_name(&name, "pwsh") || is_versioned_name(&name, "powershell"))
-            && words
-                .iter()
-                .copied()
-                .map(degroup)
-                .any(is_powershell_code_flag)
-        {
-            return true;
-        }
-        // awk's program is a positional arg, not a flag; `system("…")` is the only
-        // way it shells out, and after quote-stripping the inner words carry no
-        // clean shell token, so the scan above can't see it.
-        if matches!(name.as_str(), "awk" | "gawk" | "mawk" | "nawk") && seg.contains("system(") {
-            return true;
-        }
-        false
+            // awk's program is a positional arg, not a flag; `system("…")` is the
+            // only way it shells out, and after quote-stripping the inner words
+            // carry no clean shell token, so the scan above can't see it.
+            matches!(name.as_str(), "awk" | "gawk" | "mawk" | "nawk") && seg.contains("system(")
+        })
     })
 }
 
@@ -609,16 +649,9 @@ fn shell_runs_process_substitution(scan: &str) -> bool {
     const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
     scan.split([';', '&', '|', '\n']).any(|seg| {
         let words: Vec<&str> = seg.split_whitespace().collect();
-        let Some(cmd) = words
+        segment_command_candidates(&words)
             .iter()
-            .copied()
-            .map(degroup)
-            .find(|w| !w.is_empty() && !w.starts_with('-') && !is_env_assignment(w))
-        else {
-            return false;
-        };
-        let name = shell_token_command_name(cmd);
-        SHELLS.iter().any(|s| is_versioned_name(&name, s))
+            .any(|name| SHELLS.iter().any(|s| is_versioned_name(name, s)))
             && words.iter().any(|w| w.contains("<(") || w.contains(">("))
     })
 }

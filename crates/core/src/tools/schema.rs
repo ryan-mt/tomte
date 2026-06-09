@@ -114,3 +114,77 @@ fn mark_schema_nullable(schema: &mut Value) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn required(schema: &Value) -> Vec<String> {
+        schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn optional_props_become_nullable_and_every_prop_is_required() {
+        // OpenAI strict mode: an optional field must be NULLABLE and ALSO listed
+        // in `required` (a property absent from `required` is rejected), and
+        // `additionalProperties` must be false.
+        let out = strict_parameters_schema(json!({
+            "type": "object",
+            "properties": { "a": {"type": "string"}, "b": {"type": "number"} },
+            "required": ["a"],
+        }));
+        assert_eq!(out["properties"]["a"]["type"], "string"); // required stays scalar
+        assert_eq!(out["properties"]["b"]["type"], json!(["number", "null"]));
+        let req = required(&out);
+        assert!(req.contains(&"a".to_string()) && req.contains(&"b".to_string()));
+        assert_eq!(out["additionalProperties"], false);
+    }
+
+    #[test]
+    fn nested_objects_and_array_items_are_strictened_recursively() {
+        let out = strict_parameters_schema(json!({
+            "type": "object",
+            "properties": {
+                "cfg": { "type": "object", "properties": { "x": {"type": "string"} } },
+                "list": { "type": "array", "items": { "type": "object",
+                    "properties": { "y": {"type": "number"} } } },
+            },
+            "required": ["list"],
+        }));
+        // Optional nested object: nullable AND recursed (child nullable + required).
+        assert_eq!(out["properties"]["cfg"]["type"], json!(["object", "null"]));
+        assert_eq!(
+            out["properties"]["cfg"]["properties"]["x"]["type"],
+            json!(["string", "null"])
+        );
+        assert_eq!(out["properties"]["cfg"]["required"], json!(["x"]));
+        assert_eq!(out["properties"]["cfg"]["additionalProperties"], false);
+        // Array items object recursed even though `list` itself is required.
+        assert_eq!(out["properties"]["list"]["type"], "array");
+        assert_eq!(
+            out["properties"]["list"]["items"]["properties"]["y"]["type"],
+            json!(["number", "null"])
+        );
+        assert_eq!(out["properties"]["list"]["items"]["required"], json!(["y"]));
+    }
+
+    #[test]
+    fn optional_enum_gains_a_null_variant() {
+        let out = strict_parameters_schema(json!({
+            "type": "object",
+            "properties": { "mode": {"type": "string", "enum": ["a", "b"]} },
+        }));
+        assert_eq!(out["properties"]["mode"]["type"], json!(["string", "null"]));
+        let variants = out["properties"]["mode"]["enum"].as_array().unwrap();
+        assert!(
+            variants.iter().any(Value::is_null),
+            "a nullable enum must allow null: {variants:?}"
+        );
+    }
+}

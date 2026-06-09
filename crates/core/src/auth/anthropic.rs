@@ -134,6 +134,12 @@ pub async fn complete_manual_login(login: &ManualLogin, pasted_code: &str) -> Re
     // fresh login is meant to overwrite whatever is there, so propagating a
     // parse error (`?`) on a corrupt file would needlessly lock the user out
     // of the self-healing re-login path.
+    // Serialize the credential read-modify-write against concurrent token
+    // refreshes, which take the same lock: a sibling provider's `ensure_fresh`
+    // could otherwise land its freshly-rotated (single-use) refresh token between
+    // our load and save, and our write-back of the pre-refresh snapshot would
+    // revert it. Held just across the load→save, after the code exchange.
+    let _refresh_guard = super::REFRESH_LOCK.lock().await;
     let mut record = load_auth().unwrap_or_default();
     record.mode = AuthMode::AnthropicOauth;
     record.anthropic_tokens = Some(StoredTokens {

@@ -88,3 +88,58 @@ pub fn rotate_assistant_block(blocks: &mut Vec<Block>) {
         reasoning_started_at: None,
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open(text: &str) -> Block {
+        Block::Assistant {
+            text: text.to_string(),
+            reasoning: String::new(),
+            done: false,
+            thought_for_secs: None,
+            reasoning_started_at: None,
+        }
+    }
+
+    fn is_done(b: &Block) -> bool {
+        matches!(b, Block::Assistant { done: true, .. })
+    }
+
+    #[test]
+    fn last_assistant_mut_open_finds_only_an_open_block() {
+        let mut blocks = vec![open("done"), open("live")];
+        if let Some(Block::Assistant { done, .. }) = blocks.first_mut() {
+            *done = true; // close the first
+        }
+        match last_assistant_mut_open(&mut blocks) {
+            Some(Block::Assistant { text, .. }) => assert_eq!(text, "live"),
+            _ => panic!("expected the open block"),
+        }
+    }
+
+    #[test]
+    fn finish_open_drops_an_empty_block_but_closes_a_nonempty_one() {
+        // A non-empty open block is closed in place.
+        let mut blocks = vec![open("hi")];
+        finish_open_assistant_block(&mut blocks);
+        assert_eq!(blocks.len(), 1);
+        assert!(is_done(&blocks[0]));
+        // An empty open block is removed (no stale empty stanza left behind).
+        let mut empty = vec![open("")];
+        finish_open_assistant_block(&mut empty);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn rotate_closes_all_open_drops_empties_and_pushes_one_fresh() {
+        let mut blocks = vec![open("a"), open("")];
+        rotate_assistant_block(&mut blocks);
+        // "a" closed, the empty dropped, exactly one fresh open block appended.
+        assert_eq!(blocks.len(), 2);
+        assert!(is_done(&blocks[0]));
+        assert!(matches!(&blocks[0], Block::Assistant { text, .. } if text == "a"));
+        assert!(matches!(blocks[1], Block::Assistant { done: false, .. }));
+    }
+}

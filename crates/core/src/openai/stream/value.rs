@@ -113,3 +113,67 @@ pub(super) fn string_value(value: Option<&Value>) -> Option<String> {
         Value::Array(_) | Value::Object(_) => value.and_then(|v| serde_json::to_string(v).ok()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn argument_string_value_keeps_real_values_and_drops_empty_placeholders() {
+        // None / null / "" / empty container are placeholders → dropped, so a
+        // leading empty-args fragment can't poison the accumulated tool args.
+        assert_eq!(argument_string_value(None), None);
+        assert_eq!(argument_string_value(Some(&json!(null))), None);
+        assert_eq!(argument_string_value(Some(&json!(""))), None);
+        assert_eq!(argument_string_value(Some(&json!([]))), None);
+        assert_eq!(argument_string_value(Some(&json!({}))), None);
+        // A raw JSON-text fragment is kept verbatim (e.g. the streamed `null`
+        // value of `"limit": null` — normalizing it would corrupt the args).
+        assert_eq!(
+            argument_string_value(Some(&json!("\"limit\":null"))).as_deref(),
+            Some("\"limit\":null")
+        );
+        // Scalars stringify; non-empty containers serialize back to JSON.
+        assert_eq!(argument_string_value(Some(&json!(5))).as_deref(), Some("5"));
+        assert_eq!(
+            argument_string_value(Some(&json!(true))).as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            argument_string_value(Some(&json!([1, 2]))).as_deref(),
+            Some("[1,2]")
+        );
+        assert_eq!(
+            argument_string_value(Some(&json!({"a":1}))).as_deref(),
+            Some("{\"a\":1}")
+        );
+    }
+
+    #[test]
+    fn text_string_value_flattens_parts_and_picks_known_keys() {
+        assert_eq!(text_string_value(Some(&json!("hi"))).as_deref(), Some("hi"));
+        assert_eq!(text_string_value(Some(&json!(""))), None);
+        assert_eq!(text_string_value(Some(&json!(null))), None);
+        assert_eq!(text_string_value(Some(&json!(5))), None);
+        // Array of parts concatenates; nested {text|content|delta} are picked.
+        assert_eq!(
+            text_string_value(Some(&json!(["a", "b"]))).as_deref(),
+            Some("ab")
+        );
+        assert_eq!(
+            text_string_value(Some(&json!({"text":"x"}))).as_deref(),
+            Some("x")
+        );
+        assert_eq!(
+            text_string_value(Some(&json!({"delta":"d"}))).as_deref(),
+            Some("d")
+        );
+        assert_eq!(
+            text_string_value(Some(&json!([{"text":"a"},{"text":"b"}]))).as_deref(),
+            Some("ab")
+        );
+        // An object with no recognized text key yields nothing.
+        assert_eq!(text_string_value(Some(&json!({"other":"z"}))), None);
+    }
+}

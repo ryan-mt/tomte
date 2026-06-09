@@ -368,3 +368,44 @@ pub fn estimate_messages_tokens(blocks: &[Block]) -> u64 {
     }
     total
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_slash_command_separates_head_and_arg_on_first_whitespace() {
+        assert_eq!(split_slash_command("compact"), ("compact", ""));
+        assert_eq!(
+            split_slash_command("compact the auth refactor"),
+            ("compact", "the auth refactor")
+        );
+        // Leading/trailing space trimmed; the arg's inner run is preserved.
+        assert_eq!(
+            split_slash_command("  compact   focus here  "),
+            ("compact", "focus here")
+        );
+        // Multibyte arg/whitespace must slice on a char boundary (no panic).
+        assert_eq!(split_slash_command("thoughts café"), ("thoughts", "café"));
+        assert_eq!(
+            split_slash_command("compact 中文 字"),
+            ("compact", "中文 字")
+        );
+        assert_eq!(split_slash_command(""), ("", ""));
+    }
+
+    #[test]
+    fn estimate_messages_tokens_counts_text_and_skips_widgets() {
+        // ~chars/4 rounded up; Welcome and Rich widgets aren't conversation text.
+        assert_eq!(estimate_messages_tokens(&[Block::User("abcd".into())]), 1);
+        assert_eq!(estimate_messages_tokens(&[Block::User("abcde".into())]), 2);
+        assert_eq!(
+            estimate_messages_tokens(&[Block::Welcome, Block::Rich(Vec::new())]),
+            0
+        );
+        assert_eq!(
+            estimate_messages_tokens(&[Block::User("ab".into()), Block::System("cdef".into())]),
+            2
+        );
+    }
+}

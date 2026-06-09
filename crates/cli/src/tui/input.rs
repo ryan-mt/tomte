@@ -323,4 +323,52 @@ mod tests {
         assert_eq!(i.buffer, "look at @src/main.rs ");
         assert_eq!(i.cursor, i.buffer.len());
     }
+
+    #[test]
+    fn backspace_removes_one_full_char_and_noops_at_start() {
+        let mut i = at("café", 5); // cursor at end; 'é' is two bytes
+        i.backspace();
+        assert_eq!(i.buffer, "caf");
+        assert_eq!(i.cursor, 3);
+        let mut j = at("x", 0);
+        j.backspace();
+        assert_eq!((j.buffer.as_str(), j.cursor), ("x", 0));
+    }
+
+    #[test]
+    fn delete_word_left_eats_trailing_ws_then_the_word() {
+        let mut i = at("a b  ", 5);
+        i.delete_word_left();
+        assert_eq!((i.buffer.as_str(), i.cursor), ("a ", 2));
+    }
+
+    #[test]
+    fn move_left_right_step_whole_chars() {
+        let mut i = at("a→b", 0); // '→' (U+2192) is three bytes
+        i.move_right();
+        assert_eq!(i.cursor, 1);
+        i.move_right();
+        assert_eq!(i.cursor, 4);
+        assert!(i.buffer.is_char_boundary(i.cursor));
+        i.move_left();
+        assert_eq!(i.cursor, 1);
+    }
+
+    #[test]
+    fn move_up_down_preserve_the_display_column() {
+        let mut i = at("abc\nxyz", 6); // after "xy" on line 1
+        i.move_up();
+        assert_eq!(&i.buffer[..i.cursor], "ab"); // same column on line 0
+        i.move_down();
+        assert_eq!(i.cursor, 6); // back to the same column on line 1
+    }
+
+    #[test]
+    fn move_home_and_end_stop_at_line_bounds() {
+        let mut i = at("ab\ncde", 5); // mid second line
+        i.move_home();
+        assert_eq!(i.cursor, 3); // start of "cde"
+        i.move_end();
+        assert_eq!(i.cursor, 6); // end of "cde"
+    }
 }

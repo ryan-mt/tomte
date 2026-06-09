@@ -644,6 +644,12 @@ pub fn save(cfg: &Config) -> std::io::Result<()> {
 fn save_to_path(path: &Path, cfg: &Config) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         create_dir_secure(dir)?;
+        // Windows: config.json can hold a literal provider `api_key` (a real
+        // credential), so it deserves the same owner-only ACL `auth.json` gets —
+        // Unix already writes it `0o600` below. Harden the dir with inheritance
+        // first so the temp file is owner-only from birth, mirroring `save_auth`.
+        #[cfg(windows)]
+        crate::auth::storage::restrict_dir_to_owner_windows(dir);
     }
     let persistable = persist_view(cfg);
     let text = serde_json::to_string_pretty(&persistable).unwrap();
@@ -671,7 +677,13 @@ pub(crate) fn write_config_file(path: &Path, bytes: &[u8]) -> std::io::Result<()
 
 #[cfg(not(unix))]
 pub(crate) fn write_config_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)
+    std::fs::write(path, bytes)?;
+    // Owner-only ACL parity with auth.json and the Unix 0o600 path: config.json
+    // may carry a literal provider api_key. No-op on a non-Windows, non-Unix
+    // target (which can't enforce owner-only perms anyway).
+    #[cfg(windows)]
+    crate::auth::storage::restrict_to_owner_windows(path);
+    Ok(())
 }
 
 pub fn redacted_view(cfg: &Config) -> Config {

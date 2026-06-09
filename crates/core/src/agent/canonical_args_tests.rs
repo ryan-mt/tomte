@@ -358,6 +358,60 @@ fn history_tool_arguments_canonicalize_ask_question_booleans() {
 }
 
 #[test]
+fn goal_status_aliases_canonicalize_to_three_states() {
+    // The goal state machine keys off exactly `in_progress` / `complete` /
+    // `blocked`; a model may phrase the status many ways. Lock the alias families
+    // so a dropped spelling can't silently strand `/goal` (esp. the `blocked`
+    // family that pauses for user input).
+    let cases = [
+        ("stuck", "blocked"),
+        ("needs_input", "blocked"),
+        ("needs user input", "blocked"),
+        ("waiting_for_user", "blocked"),
+        ("continue", "in_progress"),
+        ("working", "in_progress"),
+        ("progress", "in_progress"),
+        ("done", "complete"),
+        ("succeeded", "complete"),
+        ("success", "complete"),
+    ];
+    for (input, expected) in cases {
+        let raw = history_tool_arguments("goal_update", &json!({ "status": input }));
+        let value: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["status"], expected, "status alias {input:?}");
+    }
+}
+
+#[test]
+fn dispatch_mode_aliases_drive_plan_mode_confinement() {
+    // A sub-agent's read-only confinement hinges on `plan_mode_required`; the
+    // model may name the spawn mode in several ways. Lock that read-only spellings
+    // confine (true) and edit/write spellings don't (false).
+    for mode in ["read_only", "readonly", "planning", "plan_mode"] {
+        let raw = history_tool_arguments(
+            "dispatch_agent",
+            &json!({ "instructions": "x", "mode": mode }),
+        );
+        let value: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            value["plan_mode_required"], true,
+            "mode {mode:?} must confine"
+        );
+    }
+    for mode in ["edit", "edits", "write", "auto", "default"] {
+        let raw = history_tool_arguments(
+            "dispatch_agent",
+            &json!({ "instructions": "x", "mode": mode }),
+        );
+        let value: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            value["plan_mode_required"], false,
+            "mode {mode:?} must not confine"
+        );
+    }
+}
+
+#[test]
 fn unsupported_tool_result_history_becomes_safe_user_message() {
     let registry = crate::tools::Registry::standard();
     let mut history = Vec::new();
