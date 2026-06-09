@@ -339,18 +339,20 @@ pub fn sessions(metas: &[tomte_core::session::SessionMeta]) -> Vec<PickerItem> {
         .collect()
 }
 
-/// Build picker rows from the session's rewind checkpoints, newest turn first so
-/// the most recent is the default selection. The `key` is the checkpoint's ordinal
-/// (its index in `Agent::checkpoints`) — exactly what `Agent::rewind_to` takes.
-pub fn rewind_points(points: &[tomte_core::tools::Checkpoint]) -> Vec<PickerItem> {
+/// Build picker rows from the session's rewind points, newest turn first so the
+/// most recent is the default selection. Each row shows its blast radius — how
+/// many later turns it drops and how many files it would revert — so the scope is
+/// legible before committing (Pillar 1). The `key` is the point's ordinal (its
+/// index in the preview) — exactly what `Agent::rewind_to` takes.
+pub fn rewind_points(points: &[tomte_core::tools::RewindPointView]) -> Vec<PickerItem> {
     let total = points.len();
     points
         .iter()
         .enumerate()
         .rev()
-        .map(|(ordinal, cp)| {
+        .map(|(ordinal, p)| {
             let later = total - 1 - ordinal;
-            let suffix = if later == 0 {
+            let turns = if later == 0 {
                 "the latest turn".to_string()
             } else {
                 format!(
@@ -360,8 +362,14 @@ pub fn rewind_points(points: &[tomte_core::tools::Checkpoint]) -> Vec<PickerItem
             };
             PickerItem {
                 key: ordinal.to_string(),
-                title: cp.label.clone(),
-                description: format!("{}  ·  {}", ago(cp.created_at_ms), suffix),
+                title: p.label.clone(),
+                description: format!(
+                    "{}  ·  {}  ·  reverts {} file{}",
+                    ago(p.created_at_ms),
+                    turns,
+                    p.files_to_revert,
+                    if p.files_to_revert == 1 { "" } else { "s" }
+                ),
             }
         })
         .collect()
@@ -493,14 +501,13 @@ mod slash_menu_tests {
     }
 
     #[test]
-    fn rewind_points_are_newest_first_keyed_by_ordinal() {
-        let cp = |label: &str| tomte_core::tools::Checkpoint {
-            history_index: 0,
-            edits_before: 0,
+    fn rewind_points_are_newest_first_keyed_by_ordinal_with_blast_radius() {
+        let p = |label: &str, files: usize| tomte_core::tools::RewindPointView {
             label: label.into(),
             created_at_ms: 0,
+            files_to_revert: files,
         };
-        let points = vec![cp("first turn"), cp("second turn"), cp("third turn")];
+        let points = vec![p("first turn", 2), p("second turn", 0), p("third turn", 1)];
         let items = rewind_points(&points);
         assert_eq!(items.len(), 3);
         // Newest turn first; the key is its ordinal in the original list, which is
@@ -508,8 +515,10 @@ mod slash_menu_tests {
         assert_eq!(items[0].title, "third turn");
         assert_eq!(items[0].key, "2");
         assert!(items[0].description.contains("the latest turn"));
+        assert!(items[0].description.contains("reverts 1 file"));
         assert_eq!(items[2].title, "first turn");
         assert_eq!(items[2].key, "0");
         assert!(items[2].description.contains("drops 2 later turns"));
+        assert!(items[2].description.contains("reverts 2 files"));
     }
 }

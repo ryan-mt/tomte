@@ -103,9 +103,10 @@ pub async fn main_loop(
         if app.can_run_deferred_agent_op() && std::mem::take(&mut app.pending_rewind_open) {
             let points = {
                 let g = agent.lock().await;
-                g.as_ref()
-                    .map(|a| a.checkpoints.clone())
-                    .unwrap_or_default()
+                match g.as_ref() {
+                    Some(a) => a.rewind_preview().await,
+                    None => Vec::new(),
+                }
             };
             if points.is_empty() {
                 app.blocks.push(Block::System(

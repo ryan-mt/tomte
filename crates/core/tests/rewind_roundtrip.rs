@@ -267,3 +267,39 @@ async fn rewind_to_an_invalid_ordinal_errors() {
         "got: {err}"
     );
 }
+
+#[tokio::test]
+async fn rewind_preview_reports_distinct_file_blast_radius_per_point() {
+    // The picker shows how many files each rewind point would revert, so the user
+    // sees the scope before committing. The count is DISTINCT files, even when one
+    // file was edited several times.
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path();
+    let mut agent = test_agent(cwd).await;
+    let ctx = ctx_for(&agent);
+
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        tokio::fs::write(cwd.join(name), b"v0").await.unwrap();
+        mark_read(&ctx, name).await;
+    }
+
+    // Turn 1: edit a.txt (twice — still ONE distinct file).
+    agent.record_checkpoint("turn 1").await;
+    agent.push_user_message("turn 1");
+    edit_file(&ctx, "a.txt", "v0", "v1").await;
+    edit_file(&ctx, "a.txt", "v1", "v2").await;
+    // Turn 2: edit b.txt and c.txt.
+    agent.record_checkpoint("turn 2").await;
+    agent.push_user_message("turn 2");
+    edit_file(&ctx, "b.txt", "v0", "v1").await;
+    edit_file(&ctx, "c.txt", "v0", "v1").await;
+
+    let preview = agent.rewind_preview().await;
+    assert_eq!(preview.len(), 2);
+    // To turn 1: a + b + c = 3 distinct files (a's two edits count once).
+    assert_eq!(preview[0].label, "turn 1");
+    assert_eq!(preview[0].files_to_revert, 3);
+    // To turn 2: just b + c = 2.
+    assert_eq!(preview[1].label, "turn 2");
+    assert_eq!(preview[1].files_to_revert, 2);
+}

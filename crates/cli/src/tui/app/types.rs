@@ -298,10 +298,10 @@ pub struct App {
     /// run `Agent::rewind_to()` and rebuild the transcript on the next tick —
     /// the same deferred pattern as `pending_resume_id`.
     pub pending_rewind_ordinal: Option<usize>,
-    /// Snapshot of the agent's checkpoints, copied here by main_loop just before
-    /// it opens the rewind picker — so `open_overlay` (which has no agent Arc) can
-    /// build the picker rows from it.
-    pub rewind_points: Vec<tomte_core::tools::Checkpoint>,
+    /// Picker-ready rewind points (label, age, blast radius), copied here by
+    /// main_loop just before it opens the rewind picker — so `open_overlay` (which
+    /// has no agent Arc) can build the rows from it.
+    pub rewind_points: Vec<tomte_core::tools::RewindPointView>,
     /// Set true by `/clear` so main_loop can invoke `Agent::clear_history()` on
     /// the next tick (slash handlers don't have the agent Arc). The transcript
     /// UI is cleared immediately in the handler; this resets the model's context.

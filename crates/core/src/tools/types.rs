@@ -127,6 +127,18 @@ pub struct Checkpoint {
     pub created_at_ms: u64,
 }
 
+/// A picker-ready view of one rewind point, including its blast radius (how many
+/// files reverting to it would touch) — surfaced BEFORE the user commits, so the
+/// choice is legible (Pillar 1). Built by [`crate::agent::Agent::rewind_preview`]
+/// under the session lock; the ordinal is the entry's index in the returned list.
+#[derive(Debug, Clone)]
+pub struct RewindPointView {
+    pub label: String,
+    pub created_at_ms: u64,
+    /// Distinct files reverting to this point would restore.
+    pub files_to_revert: usize,
+}
+
 /// What a `/rewind` actually did, for the calm end-of-rewind summary.
 #[derive(Debug, Clone, Default)]
 pub struct RewindOutcome {

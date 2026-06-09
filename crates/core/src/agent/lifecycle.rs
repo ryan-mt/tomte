@@ -110,6 +110,34 @@ impl Agent {
         });
     }
 
+    /// Picker-ready view of every rewind point, including each one's blast radius
+    /// (the distinct files reverting to it would touch) — so the user sees the
+    /// scope BEFORE committing (Pillar 1). The view's index is the ordinal
+    /// [`rewind_to`](Self::rewind_to) takes.
+    pub async fn rewind_preview(&self) -> Vec<crate::tools::RewindPointView> {
+        let session = self.session.lock().await;
+        self.checkpoints
+            .iter()
+            .map(|cp| {
+                let since = session.undo_pushed.saturating_sub(cp.edits_before);
+                let take = (since as usize).min(session.undo_stack.len());
+                let files = session
+                    .undo_stack
+                    .iter()
+                    .rev()
+                    .take(take)
+                    .map(|e| &e.path)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len();
+                crate::tools::RewindPointView {
+                    label: cp.label.clone(),
+                    created_at_ms: cp.created_at_ms,
+                    files_to_revert: files,
+                }
+            })
+            .collect()
+    }
+
     /// Restore the session to the `ordinal`-th rewind point: revert every file
     /// edit made since that turn (newest-first, skipping a file that changed
     /// outside tomte), truncate the conversation back to it, and drop the later
