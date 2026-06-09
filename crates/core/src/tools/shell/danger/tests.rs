@@ -275,6 +275,27 @@ fn classify_danger_flags_destructive_patterns() {
         "del c:\\* /q",
         "del /q C:\\*.*",
         "erase \\*",
+        // A destructive command fused to a control operator with NO surrounding
+        // space slipped past every command-name guard, because the whitespace-only
+        // tokenizer kept the command word glued inside one token (`ls;rm`). The
+        // operator-aware split must recover the fused command on every platform —
+        // it matters most on Windows, where the sandbox does not confine the FS.
+        "ls;rm -rf /",
+        "ls ;rm -rf /",
+        "true&&rm -rf /",
+        "false||rm -rf /",
+        "ls|rm -rf /",
+        "cd /tmp&&rm -rf /",
+        "x;git push --force origin main",
+        "echo hi;dd if=/dev/zero of=/dev/sda",
+        "(rm -rf /)",
+        "dir&del /s /q C:\\data",
+        "echo x;del c:\\* /q",
+        // Inline-interpreter flag glued to its program (`-c'…'`, `-e'…'`) is the
+        // same opaque-payload risk as the spaced form.
+        "python3 -c'import shutil; shutil.rmtree(\"/\")'",
+        "node -e'require(\"child_process\").execSync(\"rm -rf /\")'",
+        "perl -e'system(\"rm -rf /\")'",
     ] {
         assert!(classify_danger(cmd).is_some(), "expected `{cmd}` flagged");
     }
@@ -392,6 +413,13 @@ fn classify_danger_does_not_flag_common_commands() {
         // abbreviation rule (bare -f is not a distinctive PowerShell force flag).
         "rm -r -f node_modules",
         "rm -r -f build/cache",
+        // Benign commands joined by control operators must stay unflagged — the
+        // operator-aware split must not start over-flagging routine chains.
+        "ls;cd ..",
+        "cargo build && cargo test",
+        "git add -A && git commit -m wip",
+        "echo done|cat",
+        "mkdir build && cd build",
     ] {
         assert!(classify_danger(cmd).is_none(), "expected `{cmd}` safe");
     }

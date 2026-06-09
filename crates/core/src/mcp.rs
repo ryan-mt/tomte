@@ -309,17 +309,27 @@ impl McpClient {
         let mut state = self.state.lock().await;
         let resp = state.request("tools/call", params).await?;
         drop(state);
+        call_result(&self.name, tool_name, &resp)
+    }
+}
 
-        let is_error = resp
-            .get("isError")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let buf = flatten_tool_content(resp.get("content"), is_error);
-        if is_error {
-            Err(anyhow!(buf))
-        } else {
-            Ok(fence_mcp_output(&self.name, tool_name, &buf))
-        }
+/// Build the `call_tool` result from a `tools/call` response body. The joined
+/// content is fenced on BOTH the success and the `isError` path: a compromised
+/// server can return its injection payload either way, and the error branch used
+/// to surface the raw server text un-fenced — bypassing the very provenance fence
+/// the success path applies (see [`fence_mcp_output`]). Pure, so the fencing is
+/// unit-tested without a live server.
+fn call_result(server: &str, tool: &str, resp: &Value) -> Result<String> {
+    let is_error = resp
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let buf = flatten_tool_content(resp.get("content"), is_error);
+    let fenced = fence_mcp_output(server, tool, &buf);
+    if is_error {
+        Err(anyhow!(fenced))
+    } else {
+        Ok(fenced)
     }
 }
 

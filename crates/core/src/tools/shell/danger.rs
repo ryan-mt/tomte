@@ -4,8 +4,19 @@
 pub fn classify_danger(command: &str) -> Option<&'static str> {
     let lower = command.to_ascii_lowercase();
     let scan = normalize_shell_scan(&lower);
-    let tokens: Vec<&str> = scan.split_whitespace().collect();
-    let raw_tokens: Vec<&str> = lower.split_whitespace().collect();
+    // Tokenize on the shell control operators (`; & | newline ( )`) AS WELL AS
+    // whitespace, so a destructive command word fused to an operator with no
+    // surrounding space (`ls;rm -rf /`, `true&&rm -rf /`, `dir&del /s …`,
+    // `(rm -rf /)`) is still recognized as its own command. Splitting on
+    // whitespace alone hid that word inside one token (`ls;rm`), and every
+    // `has(...)`-based guard below — which compares against bare command names —
+    // silently missed it, letting the fused form slip past the override prompt.
+    let tokens: Vec<&str> = operator_split(&scan);
+    let raw_tokens: Vec<&str> = operator_split(&lower);
+    // Whitespace-only tokens, used solely for the redirect-to-block-device scan
+    // below, which parses glued `>`/`>|`/`|` inside a token (`>|/dev/sda`) and so
+    // must NOT have `|` split out from under it.
+    let ws_tokens: Vec<&str> = scan.split_whitespace().collect();
     let command_names: Vec<String> = tokens.iter().map(|t| shell_token_command_name(t)).collect();
     let raw_command_names: Vec<String> = raw_tokens
         .iter()
@@ -14,7 +25,7 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
     let has = |t: &str| command_names.iter().any(|name| name == t);
     // Case-preserving tokens for the few flags whose case matters (`git branch
     // -D` force-delete vs the benign `-d`), since `lower`/`tokens` are lowercased.
-    let orig_tokens: Vec<&str> = command.split_whitespace().collect();
+    let orig_tokens: Vec<&str> = operator_split(command);
     let stripped: String = scan.chars().filter(|c| !c.is_whitespace()).collect();
     if stripped.contains(":(){:|:&};:") {
         return Some("fork bomb pattern detected");
@@ -47,10 +58,10 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
     // (`> /dev/sda`, `&> /dev/sda`, `2> /dev/sda`). Only segments that follow a
     // redirect operator count, so a plain `/dev/sda` argument (e.g. `cat
     // /dev/sda`, a read) is not flagged.
-    let redirect_to_block_device = tokens
+    let redirect_to_block_device = ws_tokens
         .iter()
         .any(|t| t.split(['>', '|']).skip(1).any(is_raw_block_device))
-        || tokens
+        || ws_tokens
             .windows(2)
             .any(|w| is_redirect_op(w[0]) && is_raw_block_device(w[1]));
     if redirect_to_block_device {
@@ -322,6 +333,19 @@ pub fn classify_danger(command: &str) -> Option<&'static str> {
     None
 }
 
+/// Split a command string into command/argument words, treating the shell
+/// control operators `;`, `&`, `|`, newline, and `(`/`)` as word boundaries
+/// even when glued to an adjacent word, then splitting the pieces on whitespace.
+/// `ls;rm`, `true&&rm`, `dir&del`, and `(rm` all yield a bare `rm`/`del` word,
+/// so the command-name guards in `classify_danger` see the fused command. The
+/// returned slices borrow from `s`. Empty pieces (from `&&`, `||`, doubled
+/// separators) drop out via `split_whitespace`.
+fn operator_split(s: &str) -> Vec<&str> {
+    s.split([';', '&', '|', '\n', '(', ')'])
+        .flat_map(str::split_whitespace)
+        .collect()
+}
+
 /// A PowerShell parameter written as `-Name` or any prefix abbreviation down to
 /// `-` + one letter (PowerShell resolves `-Recurse` from `-r`/`-rec`/`-recurse`
 /// when unambiguous). `tok` and `full` are lowercase; `full` includes the dash.
@@ -524,12 +548,15 @@ fn runs_inline_interpreter_code(scan: &str) -> bool {
         };
         let name = shell_token_command_name(cmd);
         if let Some(flags) = inline_code_flags(&name) {
-            if words
-                .iter()
-                .copied()
-                .map(degroup)
-                .any(|w| flags.contains(&w))
-            {
+            // Match the flag as its own word (`python -c 'code'`) OR glued to its
+            // argument (`python -c'code'`, `node -e'…'`) — a single-letter flag
+            // (`-c`/`-e`) can carry the program with no space, which a plain
+            // equality test missed.
+            if words.iter().copied().map(degroup).any(|w| {
+                flags
+                    .iter()
+                    .any(|f| w == *f || (f.len() == 2 && w.len() > 2 && w.starts_with(f)))
+            }) {
                 return true;
             }
         }

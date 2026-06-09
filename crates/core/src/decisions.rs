@@ -73,8 +73,32 @@ pub(crate) fn append_at(path: &Path, record: &DecisionRecord) -> anyhow::Result<
         .append(true)
         .open(path)
         .with_context(|| format!("open {}", path.display()))?;
-    writeln!(f, "{line}").with_context(|| format!("append {}", path.display()))?;
+    // Write the record and its newline in ONE call: under POSIX `O_APPEND` a
+    // single small write lands atomically, so two tomte sessions appending to the
+    // same project trail can't interleave a half-line — a `writeln!` lowers to
+    // multiple writes and could. `sync_all` then flushes it so a crash right after
+    // we report a decision "recorded" can't drop it (the durability bar the
+    // session/config writers already hold); the dir fsync covers a freshly-created
+    // trail file's directory entry.
+    f.write_all(format!("{line}\n").as_bytes())
+        .with_context(|| format!("append {}", path.display()))?;
+    f.sync_all()
+        .with_context(|| format!("flush {}", path.display()))?;
+    if let Some(parent) = path.parent() {
+        fsync_dir(parent);
+    }
     Ok(())
+}
+
+/// Best-effort directory fsync so a preceding append/rename is durable across a
+/// crash. A no-op where directory fsync isn't supported (e.g. Windows std).
+fn fsync_dir(dir: &Path) {
+    #[cfg(unix)]
+    if let Ok(f) = std::fs::File::open(dir) {
+        let _ = f.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 /// Load the whole trail (oldest first). Malformed lines are skipped, not fatal,
@@ -341,7 +365,18 @@ pub(crate) fn reconcile_at(store: &Path, root: &Path) -> ReconcileReport {
     let mut records = load_at(store);
     let report = heal_locs(&mut records, root);
     if report.changed() {
-        if let Err(e) = save_all(store, &records) {
+        // Re-load and re-heal immediately before the rewrite. `heal_locs` scans the
+        // whole working tree, so the gap between the first `load_at` and the rename
+        // is wide; a decision another tomte session appends in that gap would be
+        // clobbered by our stale snapshot (the trail is shared per-project, and the
+        // moat must not silently lose an entry). Re-reading just before persisting
+        // carries any such append into the rewrite, shrinking the lost-append
+        // window to load→rename; `heal_locs` is deterministic, so re-healing the
+        // fresh set yields the same result. (A fully airtight fix needs a
+        // cross-process lock; this closes the realistic case without adding one.)
+        let mut fresh = load_at(store);
+        heal_locs(&mut fresh, root);
+        if let Err(e) = save_all(store, &fresh) {
             tracing::warn!("decision-trail reconcile could not persist healed locs: {e:#}");
         }
     }
@@ -414,8 +449,22 @@ fn save_all(path: &Path, records: &[DecisionRecord]) -> anyhow::Result<()> {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let tmp = path.with_extension(format!("jsonl.tmp.{}.{}", std::process::id(), nanos));
-    std::fs::write(&tmp, body).with_context(|| format!("write {}", tmp.display()))?;
+    // Stage → flush → atomic rename → flush the directory, so a crash leaves either
+    // the old trail or the whole new one, never a torn file (mirrors the session
+    // writer). `std::fs::write` alone left the staged bytes unflushed before the
+    // rename, so a crash could publish an empty/partial trail.
+    {
+        let mut f =
+            std::fs::File::create(&tmp).with_context(|| format!("write {}", tmp.display()))?;
+        f.write_all(body.as_bytes())
+            .with_context(|| format!("write {}", tmp.display()))?;
+        f.sync_all()
+            .with_context(|| format!("flush {}", tmp.display()))?;
+    }
     std::fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
+    if let Some(parent) = path.parent() {
+        fsync_dir(parent);
+    }
     Ok(())
 }
 

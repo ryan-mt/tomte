@@ -121,8 +121,7 @@ Parameters:\n\
         let original = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("read {}", path.display()))?;
-        let (old_string, new_string) = match_line_endings(&original, &a.old_string, &a.new_string);
-        let count = original.matches(&old_string).count();
+        let (old_string, new_string, count) = resolve_edit(&original, &a.old_string, &a.new_string);
         if count == 0 {
             return Err(anyhow!("old_string not found in {}", path.display()));
         }
@@ -286,9 +285,8 @@ Parameters:\n\
                     i + 1
                 ));
             }
-            let (old_string, new_string) =
-                match_line_endings(&content, &edit.old_string, &edit.new_string);
-            let count = content.matches(&old_string).count();
+            let (old_string, new_string, count) =
+                resolve_edit(&content, &edit.old_string, &edit.new_string);
             if count == 0 {
                 return Err(anyhow!(
                     "edit #{}: old_string not found in {}",
@@ -334,23 +332,39 @@ Parameters:\n\
     }
 }
 
-/// Reconcile an edit's line endings with the file's. `read_file` renders content
-/// through `str::lines`, which strips `\r`, so on a CRLF file the model can only
-/// build an `\n`-joined `old_string` that won't match the `\r\n` bytes on disk.
-/// When the haystack uses CRLF and the `\n`-joined `old_string` doesn't match
-/// verbatim, translate both strings to CRLF so the match succeeds and the file's
-/// endings are preserved. A file that is already LF — or an `old_string` that
-/// matches verbatim — is returned unchanged, so this never alters a working edit.
-fn match_line_endings(haystack: &str, old: &str, new: &str) -> (String, String) {
-    if haystack.contains("\r\n")
-        && old.contains('\n')
-        && !old.contains("\r\n")
-        && !haystack.contains(old)
-    {
-        (lf_to_crlf(old), lf_to_crlf(new))
-    } else {
-        (old.to_string(), new.to_string())
+/// Reconcile an edit's line endings with the file's and count how many places the
+/// resolved `old` occurs. `read_file` renders content through `str::lines`, which
+/// strips `\r`, so the model can only build an `\n`-joined `old_string`; on a CRLF
+/// file that won't match the `\r\n` bytes, so we translate to CRLF and match the
+/// real bytes (preserving the file's endings).
+///
+/// Returns `(resolved_old, resolved_new, count)` where `count` is the number of
+/// LOGICAL occurrences across BOTH encodings. In a MIXED-ending file the same
+/// text can exist as a CRLF region and an LF region; counting only the verbatim-LF
+/// form would report `1` and silently edit the LF occurrence even when the model
+/// meant the CRLF one. Summing both forms makes that ambiguity trip the caller's
+/// uniqueness gate (which then asks for more surrounding context) instead.
+fn resolve_edit(haystack: &str, old: &str, new: &str) -> (String, String, usize) {
+    let lf_count = haystack.matches(old).count();
+    // Only an LF-only `old` needs CRLF reconciliation; one that already carries
+    // CRLF, or has no newline at all, is matched as supplied.
+    if haystack.contains("\r\n") && old.contains('\n') && !old.contains("\r\n") {
+        let crlf_old = lf_to_crlf(old);
+        let crlf_count = haystack.matches(&crlf_old).count();
+        // The CRLF and LF forms are byte-disjoint, so their counts don't overlap.
+        return match (lf_count, crlf_count) {
+            // Only the CRLF region matches → edit it, preserving CRLF endings.
+            (0, c) => (crlf_old, lf_to_crlf(new), c),
+            // Only the LF region matches → edit it as supplied.
+            (l, 0) => (old.to_string(), new.to_string(), l),
+            // Both encodings match: the target is ambiguous. Report the combined
+            // count so a non-`replace_all` edit refuses rather than guessing the
+            // LF occurrence; `replace_all` ignores the count (it rewrites every
+            // verbatim-LF match, the long-standing behavior on such files).
+            (l, c) => (old.to_string(), new.to_string(), l + c),
+        };
     }
+    (old.to_string(), new.to_string(), lf_count)
 }
 
 /// Convert every line ending in `s` to CRLF without doubling an existing CRLF.

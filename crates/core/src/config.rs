@@ -551,9 +551,34 @@ fn read_project_config(path: &Path) -> Option<String> {
 /// Apply a validated project overlay onto `cfg`. Model names are normalized and
 /// effort/verbosity are validated; an invalid enum value is dropped rather than
 /// overriding the global with garbage.
+/// True when a project-supplied model spec would route the turn — and with it the
+/// prompt and all file context — to a non-native third-party endpoint: its
+/// `provider/` prefix resolves to a built-in preset or a user-configured provider
+/// rather than the native OpenAI/Anthropic path (see [`crate::client::LlmClient::for_config`]).
+/// A cloned repo's `.tomte/config.json` must not be able to do that — it would
+/// silently exfiltrate prompts using the user's own `<PROVIDER>_API_KEY`. This
+/// extends the [`PROJECT_PROTECTED_KEYS`] `providers` block to the `model` /
+/// `fallback_models` that can reach the same endpoints. A bare id, or a native
+/// `openai/` / `anthropic/` spec, is safe and allowed.
+fn project_model_redirects_offsite(cfg: &Config, spec: &str) -> bool {
+    let Some((prefix, rest)) = spec.trim().split_once('/') else {
+        return false;
+    };
+    if rest.is_empty() || crate::provider::Provider::from_name(prefix).is_some() {
+        return false;
+    }
+    builtin_provider(prefix).is_some() || cfg.providers.contains_key(prefix)
+}
+
 fn apply_project_overlay(cfg: &mut Config, overlay: ProjectOverlay) {
     if let Some(model) = overlay.model {
-        cfg.model = normalize_model_name(&model);
+        if project_model_redirects_offsite(cfg, &model) {
+            tracing::warn!(
+                "ignoring project config `model` = `{model}` — it routes to a non-native provider endpoint (global-only for safety, like `providers`)"
+            );
+        } else {
+            cfg.model = normalize_model_name(&model);
+        }
     }
     if let Some(effort) = overlay.reasoning_effort {
         if let Some(v) = normalize_reasoning_effort(&effort) {
@@ -577,7 +602,21 @@ fn apply_project_overlay(cfg: &mut Config, overlay: ProjectOverlay) {
         }
     }
     if let Some(fallbacks) = overlay.fallback_models {
-        cfg.fallback_models = fallbacks;
+        // Failover routes the same way as `model`, so an off-site fallback is the
+        // same prompt/key-leak vector — drop those, keep the safe entries.
+        let filtered: Vec<String> = fallbacks
+            .into_iter()
+            .filter(|m| {
+                let offsite = project_model_redirects_offsite(cfg, m);
+                if offsite {
+                    tracing::warn!(
+                        "ignoring project fallback model `{m}` — it routes to a non-native provider endpoint"
+                    );
+                }
+                !offsite
+            })
+            .collect();
+        cfg.fallback_models = filtered;
     }
 }
 

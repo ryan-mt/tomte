@@ -172,6 +172,34 @@ fn binary_on_path_finds_a_file_in_a_synthetic_path_dir() {
 }
 
 #[test]
+fn binary_in_paths_honors_pathext_extensions() {
+    // The Windows `.cmd`/`.bat` shim case (npx, prettier, pnpm): the runtime
+    // spawns these via PATH×PATHEXT, so the doctor's `which` must find a `.cmd`
+    // shim when the ext list includes `.cmd` — and must NOT when only `.exe` is
+    // searched (the old behavior, which falsely reported a valid command missing).
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("npx.cmd"), b"@echo off").unwrap();
+    let paths = std::env::join_paths([dir.path()]).unwrap();
+    let exe_only = vec![".exe".to_string()];
+    let with_cmd = vec![".exe".to_string(), ".cmd".to_string()];
+
+    assert!(
+        !binary_in_paths("npx", &paths, &exe_only),
+        "a .cmd shim must be missed when only .exe is searched"
+    );
+    assert!(
+        binary_in_paths("npx", &paths, &with_cmd),
+        "a .cmd shim must be found when .cmd is in the ext list"
+    );
+
+    // A bare (extensionless) executable is found regardless of the ext list.
+    std::fs::write(dir.path().join("tool"), b"#!/bin/sh").unwrap();
+    assert!(binary_in_paths("tool", &paths, &exe_only));
+    // An absent command is not found.
+    assert!(!binary_in_paths("definitely-absent-xyz", &paths, &with_cmd));
+}
+
+#[test]
 fn hook_program_extracts_first_program_skipping_env() {
     assert_eq!(hook_program("cargo fmt"), Some("cargo"));
     assert_eq!(

@@ -72,6 +72,38 @@ fn project_config_overrides_safe_fields_only() {
 }
 
 #[test]
+fn project_config_model_cannot_redirect_to_a_third_party_endpoint() {
+    // A cloned repo's `.tomte/config.json` setting a built-in-preset model
+    // (`openrouter/…`, `groq/…`) would route every prompt + file context to that
+    // endpoint using the user's `<PROVIDER>_API_KEY` — the same prompt/key leak the
+    // `providers` block prevents. The `model` and `fallback_models` overlays must
+    // reject an off-site prefix while keeping bare ids and native specs.
+    let tmp = tempfile::tempdir().unwrap();
+    write_project_config(
+        tmp.path(),
+        r#"{
+            "model": "openrouter/anthropic/claude-3-haiku",
+            "fallback_models": ["groq/llama-3.3-70b", "anthropic/claude-opus-4-8", "gpt-5"]
+        }"#,
+    );
+    let mut base = Config::default();
+    base.model = "gpt-5.5".into();
+    base.fallback_models = vec!["base-fallback".into()];
+    let cfg = overlay_project_config(base, tmp.path());
+    // The off-site model is rejected; the global model stands.
+    assert_eq!(
+        cfg.model, "gpt-5.5",
+        "a third-party-endpoint model must be ignored"
+    );
+    // Off-site fallbacks are dropped; native/bare ones are kept (verbatim).
+    assert_eq!(
+        cfg.fallback_models,
+        vec!["anthropic/claude-opus-4-8".to_string(), "gpt-5".to_string()],
+        "off-site fallback redirects must be filtered out"
+    );
+}
+
+#[test]
 fn missing_project_config_leaves_base_untouched() {
     let tmp = tempfile::tempdir().unwrap();
     let base = Config::default();

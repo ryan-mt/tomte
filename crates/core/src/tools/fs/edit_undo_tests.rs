@@ -283,6 +283,39 @@ async fn multi_edit_matches_across_crlf_line_endings() {
 }
 
 #[tokio::test]
+async fn edit_file_refuses_ambiguous_mixed_line_endings() {
+    // A mixed-ending file holds the same text once with CRLF and once with LF.
+    // read_file strips `\r`, so the model's LF old_string can't tell the two
+    // regions apart. Counting only the verbatim-LF form would report 1 and
+    // silently edit the LF occurrence; both forms must be counted so the edit
+    // refuses as ambiguous and asks for more context, leaving the file untouched.
+    let dir = tempfile::tempdir().unwrap();
+    let original = "a\r\nb\r\nMID\na\nb\nEND\n";
+    std::fs::write(dir.path().join("mixed.txt"), original).unwrap();
+    let ctx = ctx(dir.path().to_path_buf());
+    ReadFile
+        .execute(json!({"path": "mixed.txt"}), &ctx)
+        .await
+        .unwrap();
+    let err = EditFile
+        .execute(
+            json!({"path": "mixed.txt", "old_string": "a\nb", "new_string": "Z"}),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("occurs 2 times"),
+        "ambiguous cross-encoding target must be reported, got: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("mixed.txt")).unwrap(),
+        original,
+        "an ambiguous edit must not modify the file"
+    );
+}
+
+#[tokio::test]
 async fn edit_file_refuses_unread_file() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("e.txt"), "foo").unwrap();
