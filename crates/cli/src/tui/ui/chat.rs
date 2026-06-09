@@ -77,162 +77,111 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let expanded = app.expanded_tools;
     let show_thinking = app.config.show_thinking;
+    let stable = stable_boundary(&app.blocks, app.busy);
+    let welcome_fp = welcome_fp(app);
 
     // Re-wrapping every block on every frame is O(blocks * avg_text_len) of
-    // textwrap calls plus matching allocations. For a 500-block chat at
-    // 30Hz that's tens of thousands of textwrap invocations per second and
-    // shows up as visible CPU + lag. Skip the whole pass when nothing
-    // observable has changed since the previous frame.
-    let last_block_size = app.blocks.last().map(block_fingerprint).unwrap_or(0);
-    let cache_meta_matches = app.chat_render_cache.as_ref().is_some_and(|c| {
-        c.blocks_len == app.blocks.len()
-            && c.inner_width == inner_width
+    // textwrap + markdown + syntect work; for a long session that shows up as
+    // visible stutter on every agent event. Instead the STABLE prefix — every
+    // block before the live turn — is wrapped once and cached, and only the
+    // live tail (the turn that actually mutates) is re-wrapped per frame. The
+    // cache is validated here with a fingerprint fold, never invalidated by
+    // event handlers.
+    let taken = app.chat_render_cache.take();
+    let cached = taken.filter(|c| {
+        c.inner_width == inner_width
             && c.expanded_tools == expanded
             && c.show_thinking == show_thinking
+            && c.welcome_fp == welcome_fp
+            && c.stable_blocks <= stable
+            && fold_fp(0, &app.blocks[..c.stable_blocks]) == c.stable_fp
+            // A fresh build merges consecutive read_file blocks into one
+            // stanza; appending can't merge across the old boundary, so the
+            // rare group that spans it forces a rebuild instead.
+            && !read_group_crosses(&app.blocks, c.stable_blocks)
     });
-    if cache_meta_matches {
-        // Render straight from the cache without rebuilding — or cloning — the
-        // whole transcript. `render_window` materializes only the visible rows,
-        // so a cache-hit frame is O(viewport), not O(transcript). The cache
-        // borrow is confined to this block (it yields owned scalars), so the
-        // `app` mutation below doesn't overlap it.
-        let resolved: Option<(u16, bool)> = {
-            let c = app.chat_render_cache.as_ref().unwrap();
-            if c.last_block_size == last_block_size {
-                // Exact hit: nothing observable changed since last frame.
-                Some(render_window(
-                    f,
-                    area,
-                    &c.lines,
-                    &[],
-                    app.auto_scroll,
-                    app.scroll,
-                ))
-            } else if let (Some(split), Some(Block::Assistant { .. })) =
-                (c.prefix_split, app.blocks.last())
-            {
-                // Streaming fast path: only the final Assistant block grew.
-                // Reuse the cached prefix (`lines[..split]`, borrowed — not
-                // cloned) and re-wrap just that one block into the window's tail.
-                let mut tail: Vec<Line<'static>> = Vec::new();
-                push_assistant_lines(
-                    &mut tail,
-                    app.blocks.last().unwrap(),
-                    inner_width,
-                    show_thinking,
-                );
-                let head = &c.lines[..split.min(c.lines.len())];
-                Some(render_window(
-                    f,
-                    area,
-                    head,
-                    &tail,
-                    app.auto_scroll,
-                    app.scroll,
-                ))
-            } else {
-                None
-            }
-        };
-        if let Some((scroll, auto)) = resolved {
-            app.scroll = scroll;
-            app.auto_scroll = auto;
-            return;
-        }
-    }
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    // Records where the final block's lines begin, so a streaming frame can
-    // reuse everything before it. Set only when the last block renders as its
-    // own standalone stanza; left `None` when it merges into a read_file group.
-    let mut prefix_split: Option<usize> = None;
-    let mut i = 0;
-    while i < app.blocks.len() {
-        if i + 1 == app.blocks.len() {
-            prefix_split = Some(lines.len());
-        }
-        // Group consecutive read_file tool calls into a single block so a
-        // batch of reads doesn't dominate the chat with one stanza per file.
-        if matches!(&app.blocks[i], Block::Tool { name, .. } if name == "read_file") {
-            let mut j = i;
-            while j < app.blocks.len()
-                && matches!(&app.blocks[j], Block::Tool { name, .. } if name == "read_file")
-            {
-                j += 1;
-            }
-            // A group that reaches the end swallows the final block, so there
-            // is no standalone last-block stanza to split on.
-            if j == app.blocks.len() {
-                prefix_split = None;
-            }
-            render_read_group(&mut lines, &app.blocks[i..j], expanded);
-            i = j;
-            continue;
-        }
-        match &app.blocks[i] {
-            Block::Welcome => {
-                render_welcome(&mut lines, app);
-            }
-            Block::User(text) => push_user_lines(&mut lines, text, inner_width),
-            Block::Assistant { .. } => {
-                push_assistant_lines(&mut lines, &app.blocks[i], inner_width, show_thinking);
-            }
-            Block::Tool {
-                name,
-                args,
-                output,
-                error,
-                preflight,
-                ..
-            } => {
-                render_tool(
-                    &mut lines,
-                    name,
-                    args,
-                    output.as_deref(),
-                    *error,
-                    preflight.as_ref(),
-                    inner_width,
-                    expanded,
-                );
-            }
-            Block::System(text) => {
-                for l in wrap(text, inner_width.saturating_sub(2)) {
-                    lines.push(Line::from(Span::styled(
-                        format!("  {l}"),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    )));
-                }
-                lines.push(Line::raw(""));
-            }
-            // Pre-styled fixed-layout content (e.g. `/context`): pushed verbatim,
-            // no wrapping (the lines carry their own indent and colors).
-            Block::Rich(rich_lines) => {
-                for l in rich_lines {
-                    lines.push(l.clone());
-                }
-                lines.push(Line::raw(""));
-            }
-        }
-        i += 1;
-    }
-
-    // Render the visible window now (O(viewport)), then MOVE the freshly wrapped
-    // lines into the cache so the next frame can skip this rebuild. `prefix_split`
-    // is the index where the last block's lines begin (stored, not copied), so
-    // the transcript's lines live in memory once, not twice.
-    let (scroll, auto) = render_window(f, area, &lines, &[], app.auto_scroll, app.scroll);
-    app.scroll = scroll;
-    app.auto_scroll = auto;
-    app.chat_render_cache = Some(crate::tui::app::ChatRenderCache {
-        blocks_len: app.blocks.len(),
+    let mut cache = cached.unwrap_or(crate::tui::app::ChatRenderCache {
         inner_width,
         expanded_tools: expanded,
         show_thinking,
-        last_block_size,
-        lines,
-        prefix_split,
+        welcome_fp,
+        stable_blocks: 0,
+        stable_fp: 0,
+        lines: Vec::new(),
     });
+    if cache.stable_blocks < stable {
+        // The boundary moved forward (a turn settled): wrap the newly stable
+        // blocks once and append them; everything already cached is untouched.
+        let mut more = super::inline_blocks_to_lines(
+            &app.blocks[cache.stable_blocks..stable],
+            inner_width,
+            expanded,
+            app,
+        );
+        cache.stable_fp = fold_fp(cache.stable_fp, &app.blocks[cache.stable_blocks..stable]);
+        cache.stable_blocks = stable;
+        cache.lines.append(&mut more);
+    }
+    // The live tail — the streaming turn — re-wraps every frame; it's bounded
+    // by one turn, not the whole transcript.
+    let tail = super::inline_blocks_to_lines(&app.blocks[stable..], inner_width, expanded, app);
+    let (scroll, auto) = render_window(f, area, &cache.lines, &tail, app.auto_scroll, app.scroll);
+    app.scroll = scroll;
+    app.auto_scroll = auto;
+    app.chat_render_cache = Some(cache);
+}
+
+/// Index of the first LIVE block: while a turn streams, everything from the
+/// turn's User prompt onward keeps mutating (text deltas, tool args/results,
+/// assistant rotation) and must re-wrap per frame; everything before it
+/// settled when the previous turn ended. When idle the whole transcript is
+/// settled. The prompt itself never mutates, so it joins the stable prefix
+/// (+1) — re-wrapping a large pasted prompt every frame would defeat the
+/// cache. A missing User block (defensive) keeps the whole transcript live,
+/// which is merely slower, never wrong.
+pub(super) fn stable_boundary(blocks: &[Block], busy: bool) -> usize {
+    if !busy {
+        return blocks.len();
+    }
+    blocks
+        .iter()
+        .rposition(|b| matches!(b, Block::User(_)))
+        .map_or(0, |i| i + 1)
+}
+
+/// Order-sensitive fold of [`block_fingerprint`] over `blocks`, continuing
+/// from `seed` so an appended slice can extend a stored fold incrementally.
+pub(super) fn fold_fp(seed: u64, blocks: &[Block]) -> u64 {
+    blocks.iter().fold(seed, |acc, b| {
+        acc.rotate_left(7) ^ (block_fingerprint(b) as u64)
+    })
+}
+
+/// True when a run of consecutive `read_file` tool blocks spans `boundary` —
+/// the one shape an append-only cache extension would render differently from
+/// a fresh build (the group renders as a single merged stanza).
+pub(super) fn read_group_crosses(blocks: &[Block], boundary: usize) -> bool {
+    let is_read = |b: &Block| matches!(b, Block::Tool { name, .. } if name == "read_file");
+    boundary > 0
+        && boundary < blocks.len()
+        && is_read(&blocks[boundary - 1])
+        && is_read(&blocks[boundary])
+}
+
+/// Fold of the live App state the Welcome card renders from, so a `/model`
+/// switch, login, cwd change, or hatch refreshes the cached card. The
+/// filesystem probe (`has_rules`) is deliberately excluded — hashing it would
+/// cost the very per-frame syscalls the cache exists to avoid; that ○→✓ flip
+/// rides the next natural rebuild instead.
+fn welcome_fp(app: &App) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    app.config.model.hash(&mut h);
+    app.config.reasoning_effort.hash(&mut h);
+    (app.auth_mode as u8).hash(&mut h);
+    app.cwd.hash(&mut h);
+    app.buddy_pet.unwrap_or(app.welcome_pet).hash(&mut h);
+    h.finish()
 }
 
 /// Render a single `Assistant` block's wrapped lines into `lines`. Pulled out
@@ -464,7 +413,62 @@ fn resolve_scroll(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_scroll;
+    use super::{read_group_crosses, resolve_scroll, stable_boundary};
+    use crate::tui::app::Block;
+
+    fn read_tool(id: &str) -> Block {
+        Block::Tool {
+            call_id: id.to_string(),
+            name: "read_file".to_string(),
+            args: String::new(),
+            output: None,
+            error: false,
+            preflight: None,
+        }
+    }
+
+    #[test]
+    fn stable_boundary_covers_everything_when_idle() {
+        let blocks = vec![Block::Welcome, Block::User("hi".into()), read_tool("c1")];
+        assert_eq!(stable_boundary(&blocks, false), 3);
+    }
+
+    #[test]
+    fn stable_boundary_starts_the_live_turn_after_its_prompt() {
+        // Busy: the live turn begins right AFTER the last User block (the
+        // prompt itself never mutates, so it stays cached).
+        let blocks = vec![
+            Block::Welcome,
+            Block::User("first".into()),
+            Block::System("done".into()),
+            Block::User("second".into()),
+            read_tool("c1"),
+        ];
+        assert_eq!(stable_boundary(&blocks, true), 4);
+    }
+
+    #[test]
+    fn stable_boundary_without_a_prompt_keeps_everything_live() {
+        let blocks = vec![Block::Welcome, read_tool("c1")];
+        assert_eq!(stable_boundary(&blocks, true), 0);
+    }
+
+    #[test]
+    fn read_group_crossing_is_detected_only_inside_a_run() {
+        let blocks = vec![
+            Block::User("hi".into()),
+            read_tool("c1"),
+            read_tool("c2"),
+            Block::System("done".into()),
+        ];
+        // Boundary inside the read_file run → crossing.
+        assert!(read_group_crosses(&blocks, 2));
+        // Boundaries at the run's edges, the ends, or out of range → no crossing.
+        assert!(!read_group_crosses(&blocks, 0));
+        assert!(!read_group_crosses(&blocks, 1));
+        assert!(!read_group_crosses(&blocks, 3));
+        assert!(!read_group_crosses(&blocks, 4));
+    }
 
     #[test]
     fn auto_follow_pins_to_the_bottom_gap() {

@@ -9,7 +9,8 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, SetTitle,
+    disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, EndSynchronizedUpdate,
+    EnterAlternateScreen, LeaveAlternateScreen, SetTitle,
 };
 use futures_util::{FutureExt, StreamExt};
 use ratatui::backend::CrosstermBackend;
@@ -49,6 +50,12 @@ pub type ConscienceHandle = std::sync::Arc<
         >,
     >,
 >;
+
+/// The concrete terminal every TUI entry point shares: stdout behind a large
+/// BufWriter so a frame's escape stream reaches the terminal as one write —
+/// std's line-buffered Stdout otherwise dribbles a big diff out in chunks,
+/// which unsupported-DECSET-2026 terminals paint mid-frame as tearing.
+pub type Tty = Terminal<CrosstermBackend<io::BufWriter<io::Stdout>>>;
 
 /// Neutral window title shown before the first prompt and after `/clear`.
 pub(super) const BASE_WINDOW_TITLE: &str = "tomte";

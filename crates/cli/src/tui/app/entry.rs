@@ -42,6 +42,7 @@ pub async fn run_with(
         let _ = disable_raw_mode();
         let _ = execute!(
             io::stdout(),
+            EndSynchronizedUpdate,
             DisableBracketedPaste,
             LeaveAlternateScreen,
             DisableMouseCapture
@@ -64,9 +65,12 @@ pub async fn run_with(
     res
 }
 
-pub fn setup_terminal(mode: RenderMode) -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
+pub fn setup_terminal(mode: RenderMode) -> Result<Tty> {
     enable_raw_mode()?;
-    let mut out = io::stdout();
+    // A frame's worth of buffering: stdout's built-in LineWriter flushes a big
+    // diff in dribs, which terminals without synchronized output paint as
+    // tearing. One flush per frame (ratatui calls flush at the end of draw).
+    let mut out = io::BufWriter::with_capacity(256 * 1024, io::stdout());
     // Own the window title from the first frame so it reads `tomte` instead of a
     // stale shell/launcher title (e.g. "Windows PowerShell"); the first prompt
     // upgrades it to `tomte — <task>`. See `window_title_from_prompt`.
@@ -117,11 +121,11 @@ fn inline_viewport_height() -> u16 {
     (rows / 3).clamp(13, 16)
 }
 
-pub fn restore_terminal(
-    t: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    mode: RenderMode,
-) -> Result<()> {
+pub fn restore_terminal(t: &mut Tty, mode: RenderMode) -> Result<()> {
     disable_raw_mode()?;
+    // Defensive: if the loop bailed between Begin/EndSynchronizedUpdate, leave
+    // the terminal painting again (a stray End is ignored by terminals).
+    let _ = execute!(t.backend_mut(), EndSynchronizedUpdate);
     match mode {
         RenderMode::AltScreen => {
             execute!(

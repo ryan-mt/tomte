@@ -121,13 +121,8 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             // this, empty Assistant blocks accumulated between back-to-back
             // tool calls.
             rotate_assistant_block(&mut app.blocks);
-            // Invalidate the render cache: this event mutated a non-last block
-            // (the tool's output flipped None->Some) while `rotate_assistant_block`
-            // removed the empty open assistant and pushed a fresh one, leaving
-            // `blocks.len()` unchanged. The cache is keyed on (blocks_len, +
-            // last-block fingerprint), so without this the next frame would
-            // replay the stale lines where the tool still looked pending.
-            app.chat_render_cache = None;
+            // No render-cache work: the mutated tool block lives in the live
+            // tail (the current turn), which `render_chat` re-wraps every frame.
         }
         AgentEvent::PreFlight {
             call_id,
@@ -137,21 +132,19 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
         } => {
             // SOUL Pillar 1: attach the glass-box card to its tool block so the
             // next frame shows WHAT the call will do and HOW FAR it reaches,
-            // before its result lands. Mutates a (usually non-last) block in
-            // place, so invalidate the render cache like the ToolResult arm.
+            // before its result lands. The block lives in the live tail, which
+            // re-wraps every frame, so no render-cache work is needed.
             if let Some(Block::Tool { preflight, .. }) = find_tool_mut(&mut app.blocks, &call_id) {
                 *preflight = Some(PreFlight {
                     scope,
                     leash,
                     house_rules,
                 });
-                app.chat_render_cache = None;
             }
         }
         AgentEvent::CwdChanged { cwd } => {
             app.cwd = std::path::PathBuf::from(&cwd);
             app.blocks.push(Block::System(format!("cwd → {cwd}")));
-            app.chat_render_cache = None;
             app.auto_scroll = true;
         }
         AgentEvent::TurnComplete => {
@@ -164,11 +157,9 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             if let Some(receipt) = build_turn_summary(&app.blocks) {
                 app.blocks.push(receipt);
             }
-            // The render cache isn't updated during streaming (that would clone
-            // the whole transcript per frame), so the now-finalized last block
-            // leaves it stale. Invalidate so the next frame rebuilds the settled
-            // transcript once; idle frames after that hit the exact cache cheaply.
-            app.chat_render_cache = None;
+            // `busy` flipping false moves the stable boundary to the end of the
+            // transcript; the next frame wraps the settled turn once, appends it
+            // to the render cache, and idle frames after that are pure hits.
             app.busy = false;
             app.turn_started_at = None;
             app.status_line.clear();

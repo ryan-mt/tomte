@@ -21,7 +21,7 @@ const PASTE_BURST_MAX: usize = 200_000;
 const PASTE_COALESCE_GAP: Duration = Duration::from_millis(15);
 
 pub async fn main_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Tty,
     start_with_resume_picker: bool,
     resume_latest: bool,
     plan_mode_required: bool,
@@ -63,14 +63,22 @@ pub async fn main_loop(
         std::sync::Arc::new(tokio::sync::Mutex::new(None));
 
     // Cap redraws to a frame budget while a turn is streaming. The agent emits
-    // many token deltas per frame interval and each draw re-wraps the whole
-    // transcript; without the cap that runs hundreds of times/sec and shows up
-    // as visible jank. When idle (`!busy`) we draw immediately so keystrokes
-    // still echo without latency.
+    // many token deltas per frame interval; without the cap the redraw runs
+    // hundreds of times/sec and shows up as visible jank. When idle (`!busy`)
+    // we draw immediately so keystrokes still echo without latency.
     let frame_budget = Duration::from_millis(16);
     let mut last_draw = std::time::Instant::now()
         .checked_sub(frame_budget)
         .unwrap_or_else(std::time::Instant::now);
+    // State changed since the last draw (set by every select! arm that mutates
+    // what's on screen). While the budget skips a draw, this shortens the idle
+    // tick to the budget's remainder so the deferred frame paints on cadence —
+    // not up to 80ms late when the stream happens to go quiet.
+    let mut dirty = false;
+    // The just-processed events included user input: draw NOW, budget or not.
+    // A keystroke that waits behind a token burst's frame budget reads as a
+    // laggy composer; input echo always wins.
+    let mut input_dirty = false;
 
     loop {
         if app.should_exit {
@@ -326,6 +334,15 @@ pub async fn main_loop(
             finish_hatch(&mut app);
         }
 
+        // Batch this iteration's terminal writes — the scrollback commit and
+        // the frame diff — into one synchronized update (DECSET 2026) so the
+        // terminal paints them atomically. Without it a fast stream's big
+        // diffs (auto-follow shifts the whole chat region every frame) paint
+        // mid-write as tearing/shimmer. Best-effort: terminals without the
+        // mode ignore the markers, and errors are swallowed so a legacy
+        // console can't wedge the loop.
+        let _ = execute!(terminal.backend_mut(), BeginSynchronizedUpdate);
+
         // Inline mode (Pillar 4): push finished turns into the terminal's native
         // scrollback before drawing, so the slim live viewport only ever holds
         // the active turn. A no-op in alt-screen mode.
@@ -333,37 +350,67 @@ pub async fn main_loop(
             commit_finished_blocks(&mut app, terminal);
         }
 
-        if !app.busy || last_draw.elapsed() >= frame_budget {
-            let completed = terminal.draw(|f| {
-                app.last_width = f.area().width;
-                app.last_height = f.area().height;
-                match app.screen {
-                    Screen::Login => {
-                        if let Some((stage, login_err)) = login_render.as_ref() {
-                            login::render(f, f.area(), &app.login, stage, login_err.as_deref());
+        let mut draw_result = Ok(());
+        if !app.busy || input_dirty || last_draw.elapsed() >= frame_budget {
+            draw_result = terminal
+                .draw(|f| {
+                    app.last_width = f.area().width;
+                    app.last_height = f.area().height;
+                    match app.screen {
+                        Screen::Login => {
+                            if let Some((stage, login_err)) = login_render.as_ref() {
+                                login::render(f, f.area(), &app.login, stage, login_err.as_deref());
+                            }
+                        }
+                        Screen::Chat => {
+                            if app.render_mode == RenderMode::Inline {
+                                ui::render_inline(f, &mut app);
+                            } else {
+                                ui::render(f, &mut app);
+                            }
                         }
                     }
-                    Screen::Chat => {
-                        if app.render_mode == RenderMode::Inline {
-                            ui::render_inline(f, &mut app);
-                        } else {
-                            ui::render(f, &mut app);
-                        }
+                })
+                .map(|completed| {
+                    // While a drag is active, keep a copy of the rendered frame
+                    // so the selected text can be read back on release (cheap
+                    // no-op otherwise).
+                    if app.selection.is_some() {
+                        app.last_buffer = Some(completed.buffer.clone());
                     }
-                }
-            })?;
-            // While a drag is active, keep a copy of the rendered frame so the
-            // selected text can be read back on release (cheap no-op otherwise).
-            if app.selection.is_some() {
-                app.last_buffer = Some(completed.buffer.clone());
-            }
+                });
             last_draw = std::time::Instant::now();
+            dirty = false;
+            input_dirty = false;
         }
+        // Always close the synchronized update — even when the draw failed —
+        // before propagating the error, so the terminal is never left holding
+        // frames.
+        let _ = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
+        draw_result?;
+
+        // While a deferred frame is pending (busy + inside the budget), wake on
+        // the budget's remainder so it paints on cadence; otherwise the slow
+        // animation tick is enough.
+        let idle_tick = if app.hatch.is_some() {
+            Duration::from_millis(45)
+        } else {
+            Duration::from_millis(80)
+        };
+        let tick = if dirty {
+            idle_tick
+                .min(frame_budget.saturating_sub(last_draw.elapsed()))
+                .max(Duration::from_millis(1))
+        } else {
+            idle_tick
+        };
 
         tokio::select! {
             biased;
             maybe_ev = events.next() => {
                 let Some(ev0) = maybe_ev else { break; };
+                dirty = true;
+                input_dirty = true;
                 // Coalesce a burst of input events. The OS delivers a paste as a
                 // contiguous block of events arriving back-to-back; a human
                 // keystroke arrives alone. `pasting` (a burst of >1 event) tells
@@ -494,6 +541,7 @@ pub async fn main_loop(
                 if stop { break; }
             }
             Some(ev) = agent_rx.recv() => {
+                dirty = true;
                 apply_agent_event(&mut app, ev);
                 // Drain the rest of the burst so a fast token stream produces
                 // one redraw per frame, not one redraw per token.
@@ -512,12 +560,14 @@ pub async fn main_loop(
             Some(r) = bang_rx.recv() => {
                 // A background `!`-command finished; show its output and stage it
                 // as context for the next message.
+                dirty = true;
                 app.blocks.push(Block::System(r.display));
                 app.pending_shell_context.push(r.context);
                 app.auto_scroll = true;
             }
             Some(card) = prove_rx.recv() => {
                 // The background `/prove` collection finished; show the capsule.
+                dirty = true;
                 app.proving = false;
                 // `/prove explain`: hand the CLI-collected card to the agent to
                 // interpret — the card is on screen and in the prompt verbatim;
@@ -528,10 +578,11 @@ pub async fn main_loop(
                 app.blocks.push(Block::System(card));
                 app.auto_scroll = true;
             }
-            _ = tokio::time::sleep(Duration::from_millis(if app.hatch.is_some() { 45 } else { 80 })) => {
+            _ = tokio::time::sleep(tick) => {
                 // Wake periodically so the spinner redraws while a turn runs and
-                // no agent events arrive; the glyph itself advances on elapsed
-                // wall-clock time in render_spinner, not on a counter.
+                // no agent events arrive (and, when a deferred frame is pending,
+                // on the frame budget's remainder); the glyph itself advances on
+                // elapsed wall-clock time in render_spinner, not on a counter.
             }
         }
     }

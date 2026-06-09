@@ -33,7 +33,10 @@ bytes = "1"
 axum = { version = "0.7", features = ["ws"] }
 once_cell = "1"
 webbrowser = "1"
-ratatui = "0.29"
+# scrolling-regions: `insert_before` inserts via terminal scroll regions
+# instead of clear-and-redraw of the whole inline viewport — the redraw showed
+# as a visible blink on every scrollback commit in inline mode.
+ratatui = { version = "0.29", features = ["scrolling-regions"] }
 crossterm = { version = "0.28", features = ["event-stream", "bracketed-paste"] }
 textwrap = "0.16"
 unicode-width = "0.2"

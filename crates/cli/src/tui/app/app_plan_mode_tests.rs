@@ -408,12 +408,13 @@ async fn cancel_current_turn_clears_pending_approval_sender() {
 }
 
 #[test]
-fn tool_result_invalidates_render_cache() {
-    // A completed tool result mutates a non-last block (output None->Some)
-    // while rotate_assistant_block keeps blocks.len() constant, which the
-    // (blocks_len, last-block fingerprint) cache key alone misses. The
-    // handler must drop the cache so the finished tool re-renders instead
-    // of replaying the stale "pending" lines.
+fn tool_result_leaves_render_cache_alone() {
+    // Event handlers no longer manage the render cache: the mutated tool
+    // block lives in the live tail, which `render_chat` re-wraps every frame
+    // (correctness of the rendered output is covered by the cache-vs-fresh
+    // equivalence test in `ui::tests`). A handler that started clearing the
+    // cache again would silently reintroduce a full-transcript rebuild per
+    // tool event — the original streaming-jank bug.
     let mut app = App::new();
     apply_agent_event(
         &mut app,
@@ -431,13 +432,13 @@ fn tool_result_invalidates_render_cache() {
     );
     // Stand in for a frame the renderer already cached.
     app.chat_render_cache = Some(ChatRenderCache {
-        blocks_len: app.blocks.len(),
         inner_width: 80,
         expanded_tools: false,
         show_thinking: true,
-        last_block_size: 0,
+        welcome_fp: 0,
+        stable_blocks: 0,
+        stable_fp: 0,
         lines: Vec::new(),
-        prefix_split: None,
     });
     apply_agent_event(
         &mut app,
@@ -448,7 +449,7 @@ fn tool_result_invalidates_render_cache() {
         },
     );
     assert!(
-        app.chat_render_cache.is_none(),
-        "tool result must invalidate the stale render cache"
+        app.chat_render_cache.is_some(),
+        "tool result must not clear the render cache (the live tail re-wraps per frame)"
     );
 }

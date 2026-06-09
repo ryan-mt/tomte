@@ -402,35 +402,29 @@ pub struct App {
     pub window_titled: bool,
 }
 
-/// Snapshot of the last `render_chat` output along with the inputs that
-/// produced it. If `signature_matches(...)` returns true on the next frame
-/// the cached `lines` are returned verbatim, skipping the textwrap pass
-/// over every block. The cache is invalidated implicitly: a content change
-/// or width resize produces a new signature, never matches the old one.
+/// Wrapped lines of the transcript's STABLE prefix — every block before the
+/// live turn (all of them when idle). The live tail (the streaming turn, the
+/// only part that mutates) is re-wrapped every frame from scratch, so no event
+/// handler ever needs to invalidate this cache by hand: `render_chat` validates
+/// the prefix each frame with a cheap fingerprint fold and rebuilds or extends
+/// it as the boundary moves. Keyed on width and the display toggles; a
+/// `/thinking` or expanded-tools flip produces a new key and forces a re-wrap.
 #[derive(Clone)]
 pub struct ChatRenderCache {
-    pub blocks_len: usize,
     pub inner_width: usize,
     pub expanded_tools: bool,
-    /// Whether live reasoning was shown when these lines were wrapped. A
-    /// `/thinking` toggle flips it, so caching it here invalidates the cache and
-    /// forces a re-wrap even when no block content changed.
     pub show_thinking: bool,
-    /// Cheap fingerprint of the most recent block. During streaming the
-    /// last block's text grows; comparing its size detects deltas without
-    /// hashing every block. For non-streaming idle frames this stays
-    /// constant and the cache is hit cleanly.
-    pub last_block_size: usize,
+    /// Fold of the live App state the Welcome card renders from (model, effort,
+    /// auth, cwd, pet). The Welcome block itself never mutates, so without this
+    /// a `/model` switch or login would keep showing the stale card.
+    pub welcome_fp: u64,
+    /// `lines` covers `blocks[..stable_blocks]`.
+    pub stable_blocks: usize,
+    /// Order-sensitive fold of `block_fingerprint` over the covered prefix.
+    /// A mismatch on the next frame (e.g. `/resume`/`/rewind` replaced the
+    /// transcript wholesale) drops the cache.
+    pub stable_fp: u64,
     pub lines: Vec<ratatui::text::Line<'static>>,
-    /// Index into `lines` where the LAST block's wrapped lines begin, when the
-    /// last block renders as its own standalone stanza (the common streaming
-    /// case: a growing `Assistant` block). `None` when the last block has no
-    /// clean split point (e.g. it was merged into a grouped read_file stanza).
-    /// Lets a streaming frame reuse `lines[..prefix_split]` as the unchanged
-    /// prefix (borrowed, not cloned) and re-wrap only the final block —
-    /// O(last block) per token instead of O(transcript). Stored as an index,
-    /// not a copied Vec, so the transcript's lines live in memory once.
-    pub prefix_split: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
