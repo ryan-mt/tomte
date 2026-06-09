@@ -1,6 +1,6 @@
 /**
- * Inverted code block: a near-black terminal slab on the light Swiss canvas.
- * Shows real commands or config. Not a fake terminal with traffic lights.
+ * Code slab: the near-black terminal surface on the night canvas. Shows real
+ * commands or config. Quiet chrome, no fake traffic lights.
  */
 export function CodeBlock({
   label,
@@ -12,10 +12,10 @@ export function CodeBlock({
   className?: string;
 }) {
   return (
-    <div className={`border border-ink bg-code ${className}`}>
+    <div className={`overflow-hidden rounded-lg border border-line-2 bg-code ${className}`}>
       {label ? (
-        <div className="flex items-center border-b border-white/10 px-3.5 py-2">
-          <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-white/45">
+        <div className="flex items-center border-b border-line px-3.5 py-2">
+          <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-ink-3">
             {label}
           </span>
         </div>

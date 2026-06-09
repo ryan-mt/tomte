@@ -15,7 +15,7 @@ import { CodeBlock } from "@/components/CodeBlock";
 export const metadata: Metadata = {
   title: "Install",
   description:
-    "Install Tomte from source or a prebuilt binary, sign in with a subscription or an API key, and run it in the TUI or headless.",
+    "Install tomte from source or a prebuilt binary, sign in with a subscription or an API key, and run it in the TUI or headless.",
 };
 
 const loginCommands = `tomte login                                 # OpenAI OAuth (ChatGPT subscription)
@@ -45,10 +45,10 @@ export default function Install() {
       {/* Quickstart. */}
       <section className="border-b border-line">
         <div className="mx-auto max-w-[1200px] px-5 py-16 sm:px-8 sm:py-24">
-          <h2 className="font-display text-[2.2rem] font-extrabold leading-[0.95] tracking-[-0.03em] text-ink sm:text-[3rem]">
+          <h2 className="text-[2rem] sm:text-[2.6rem]">
             Sixty-second start
           </h2>
-          <div className="mt-10 border border-ink">
+          <div className="mt-10 overflow-hidden rounded-xl border border-line-2">
             {quickstart.map((q, i) => (
               <div
                 key={q.step}
@@ -61,7 +61,7 @@ export default function Install() {
                     {String(i + 1).padStart(2, "0")}
                   </span>
                   <div>
-                    <h3 className="font-display text-[1.4rem] font-bold leading-none text-ink">
+                    <h3 className="text-[1.3rem] leading-none">
                       {q.step}
                     </h3>
                     <p className="mt-2 text-[14px] leading-relaxed text-ink-2">{q.note}</p>
@@ -79,7 +79,7 @@ export default function Install() {
         <div className="mx-auto max-w-[1200px] px-5 py-16 sm:px-8 sm:py-24">
           <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
             <div className="max-w-xl">
-              <h2 className="font-display text-[2.2rem] font-extrabold leading-[0.95] tracking-[-0.03em] text-ink sm:text-[3rem]">
+              <h2 className="text-[2rem] sm:text-[2.6rem]">
                 Prefer a prebuilt binary
               </h2>
               <p className="mt-4 text-[1.0625rem] leading-relaxed text-ink-2">
@@ -90,19 +90,19 @@ export default function Install() {
               href={site.latestReleaseUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex shrink-0 items-center gap-2 border border-ink px-5 py-2.5 font-mono text-[12.5px] uppercase tracking-[0.12em] text-ink transition-colors hover:bg-ink hover:text-bg"
+              className="inline-flex shrink-0 items-center gap-2 rounded-md bg-hearth px-5 py-2.5 font-mono text-[12.5px] font-medium uppercase tracking-[0.12em] text-bg transition-colors hover:bg-ink"
             >
               <DownloadSimple size={15} weight="regular" />
               Latest release
             </a>
           </div>
-          <div className="mt-9 border-t-2 border-ink">
+          <div className="mt-9 border-t border-line-2">
             {binaries.map((b) => (
               <div
                 key={b.platform}
                 className="grid gap-2 border-b border-line py-4 sm:grid-cols-[1fr_2fr] sm:items-center"
               >
-                <span className="font-display text-[1.2rem] font-bold text-ink">{b.platform}</span>
+                <span className="font-display text-[1.15rem] text-ink">{b.platform}</span>
                 <code className="font-mono text-[13px] text-ink-2">{b.archive}</code>
               </div>
             ))}
@@ -114,16 +114,16 @@ export default function Install() {
       <section className="border-b border-line">
         <div className="mx-auto grid max-w-[1200px] gap-12 px-5 py-16 sm:px-8 sm:py-24 lg:grid-cols-[1fr_1.1fr] lg:gap-16">
           <div>
-            <h2 className="font-display text-[2.2rem] font-extrabold leading-[0.95] tracking-[-0.03em] text-ink sm:text-[3rem]">
+            <h2 className="text-[2rem] sm:text-[2.6rem]">
               Sign in your way
             </h2>
             <p className="mt-4 text-[1.0625rem] leading-relaxed text-ink-2">
               Four doors in: a subscription or an API key, OpenAI or Anthropic. OAuth uses PKCE and tokens refresh themselves.
             </p>
-            <div className="mt-7 border-t-2 border-ink">
+            <div className="mt-7 border-t border-line-2">
               {authMethods.map((a) => (
                 <div key={a.title} className="border-b border-line py-4">
-                  <h3 className="font-display text-[1.25rem] font-bold leading-snug text-ink">{a.title}</h3>
+                  <h3 className="text-[1.2rem] leading-snug">{a.title}</h3>
                   <p className="mt-1.5 text-[14px] leading-relaxed text-ink-2">{a.body}</p>
                 </div>
               ))}
@@ -139,7 +139,7 @@ export default function Install() {
       <section className="border-b border-line bg-bg-2">
         <div className="mx-auto grid max-w-[1200px] gap-12 px-5 py-16 sm:px-8 sm:py-24 lg:grid-cols-[1fr_1.1fr] lg:gap-16">
           <div>
-            <h2 className="font-display text-[2.2rem] font-extrabold leading-[0.95] tracking-[-0.03em] text-ink sm:text-[3rem]">
+            <h2 className="text-[2rem] sm:text-[2.6rem]">
               Two ways to talk to it
             </h2>
             <p className="mt-4 text-[1.0625rem] leading-relaxed text-ink-2">
@@ -159,13 +159,13 @@ export default function Install() {
       <section className="border-b border-line">
         <div className="mx-auto grid max-w-[1200px] gap-12 px-5 py-16 sm:px-8 sm:py-24 lg:grid-cols-[1.1fr_1fr] lg:gap-16">
           <div>
-            <h2 className="font-display text-[2.2rem] font-extrabold leading-[0.95] tracking-[-0.03em] text-ink sm:text-[3rem]">
+            <h2 className="text-[2rem] sm:text-[2.6rem]">
               Configuration
             </h2>
             <p className="mt-4 text-[1.0625rem] leading-relaxed text-ink-2">
               Settings live in config.json under your config directory. A project can override the safe behavioural fields with its own .tomte/config.json.
             </p>
-            <dl className="mt-7 border-t-2 border-ink">
+            <dl className="mt-7 border-t border-line-2">
               {configFields.map((f) => (
                 <div key={f.key} className="grid grid-cols-[10rem_1fr] gap-4 border-b border-line py-3">
                   <dt className="font-mono text-[13px] font-medium text-ink">{f.key}</dt>
@@ -188,7 +188,7 @@ export default function Install() {
         <div className="mx-auto max-w-[1200px] px-5 py-16 sm:px-8 sm:py-24">
           <div className="grid gap-10 lg:grid-cols-[1fr_1.1fr] lg:gap-16">
             <div>
-              <h2 className="font-display text-[2.2rem] font-extrabold leading-[0.95] tracking-[-0.03em] text-ink sm:text-[3rem]">
+              <h2 className="text-[2rem] sm:text-[2.6rem]">
                 Build from source
               </h2>
               <p className="mt-4 text-[1.0625rem] leading-relaxed text-ink-2">
@@ -197,7 +197,7 @@ export default function Install() {
               <div className="mt-8 flex flex-wrap gap-3">
                 <Link
                   href="/field-guide"
-                  className="inline-flex items-center gap-2 bg-ink px-7 py-3.5 font-mono text-[12.5px] uppercase tracking-[0.14em] text-bg transition-colors hover:bg-ink-2"
+                  className="inline-flex items-center gap-2 rounded-md bg-hearth px-7 py-3.5 font-mono text-[12.5px] font-medium uppercase tracking-[0.14em] text-bg transition-colors hover:bg-ink"
                 >
                   Read the field guide
                   <ArrowRight size={15} weight="bold" />
@@ -206,7 +206,7 @@ export default function Install() {
                   href={site.contributingUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-2 border border-ink px-7 py-3.5 font-mono text-[12.5px] uppercase tracking-[0.14em] text-ink transition-colors hover:bg-ink hover:text-bg"
+                  className="inline-flex items-center gap-2 rounded-md border border-line-2 px-7 py-3.5 font-mono text-[12.5px] uppercase tracking-[0.14em] text-ink-2 transition-colors hover:border-ink-3 hover:text-ink"
                 >
                   Contributing
                 </a>

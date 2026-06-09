@@ -1,34 +1,34 @@
 import type { Metadata, Viewport } from "next";
-import { Bricolage_Grotesque, Hanken_Grotesk, JetBrains_Mono } from "next/font/google";
+import { Fraunces, Spline_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { site } from "@/lib/content";
 import { Nav } from "@/components/Nav";
 import { Footer } from "@/components/Footer";
 
-const bricolage = Bricolage_Grotesque({
+const fraunces = Fraunces({
   subsets: ["latin"],
-  weight: ["400", "600", "700", "800"],
-  variable: "--font-bricolage",
+  variable: "--font-fraunces",
   display: "swap",
+  axes: ["opsz", "SOFT", "WONK"],
 });
 
-const hanken = Hanken_Grotesk({
+const spline = Spline_Sans({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
-  variable: "--font-hanken",
+  variable: "--font-spline",
   display: "swap",
 });
 
-const jetbrainsMono = JetBrains_Mono({
+const plexMono = IBM_Plex_Mono({
   subsets: ["latin"],
-  weight: ["400", "500", "700"],
-  variable: "--font-jetbrains",
+  weight: ["400", "500", "600"],
+  variable: "--font-plexmono",
   display: "swap",
 });
 
 export const metadata: Metadata = {
   title: {
-    default: "tomte: a calm, multi-model coding agent for your terminal",
+    default: "tomte: the coding agent that proves its work",
     template: "%s · tomte",
   },
   description: site.description,
@@ -39,10 +39,11 @@ export const metadata: Metadata = {
     "coding agent",
     "terminal",
     "Rust CLI",
+    "verified",
+    "proof capsule",
     "multi-model coding agent",
     "OpenAI",
     "Anthropic",
-    "provider-agnostic",
     "developer tools",
   ],
   openGraph: {
@@ -59,7 +60,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#f4f4f1",
+  themeColor: "#0c1216",
 };
 
 export default function RootLayout({
@@ -71,7 +72,7 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${bricolage.variable} ${hanken.variable} ${jetbrainsMono.variable}`}
+      className={`${fraunces.variable} ${spline.variable} ${plexMono.variable}`}
     >
       <body className="flex min-h-[100dvh] flex-col">
         <Nav />

@@ -1,5 +1,5 @@
 /**
- * content.ts: single source of truth for Tomte's website.
+ * content.ts: single source of truth for tomte's website.
  *
  * STABILITY CONTRACT: everything that changes between releases (version,
  * model catalogue, tool belt, slash commands, links) lives HERE and nowhere
@@ -7,47 +7,30 @@
  * components read from these exports and never hard-code volatile values.
  *
  * Copy style: no em-dashes anywhere (regular hyphen only), concrete language,
- * English throughout.
+ * English throughout. Every claim must trace to a shipped feature.
  */
 
 export const site = {
   name: "tomte",
   /** Wordmark as shown in the masthead. */
   wordmark: "tomte",
-  /** Latin-binomial conceit for the field-guide framing. */
-  binomial: "Tomte terminalis",
-  headline: "A calm, multi-model coding agent for your terminal.",
-  /** Hero subtext: <= 20 words, no em-dash. */
+  headline: "The coding agent that proves its work.",
+  /** Hero subtext: short, concrete, no em-dash. */
   subhead:
-    "Rust-fast and multi-model. One open-source binary, quiet and surgical, at home in any repository.",
+    "A calm, multi-model agent for your terminal. It maps the repository, remembers why, and never calls a thing done without evidence.",
   /** Longer one-paragraph description for meta + intro plates. */
   description:
-    "Tomte is a single-binary coding agent for your terminal. Point it at OpenAI or Anthropic, drop it into any repository, and it reads, writes, runs, searches, and reasons through real work with a full tool belt and a terminal UI that stays out of the way.",
+    "tomte is a single-binary coding agent for your terminal, named for the Nordic farm spirit who keeps the household in order overnight. Point it at OpenAI or Anthropic and it reads, writes, runs, and reasons through real work. What no other terminal agent ships together: a proof capsule built from your project's own checks, a decision trail that survives model switches, a verifiable map of the repository, and an agent tournament with a deterministic judge.",
   license: "MIT",
   language: "Rust",
-  /**
-   * Kept for completeness as the canonical version, but the UI prefers
-   * linking to the latest release rather than printing a fixed number.
-   */
-  version: "0.0.2",
+  /** Canonical version; the UI prefers linking to the latest release. */
+  version: "0.0.3",
   repoUrl: "https://github.com/ryan-mt/tomte",
   releasesUrl: "https://github.com/ryan-mt/tomte/releases",
   latestReleaseUrl: "https://github.com/ryan-mt/tomte/releases/latest",
   contributingUrl: "https://github.com/ryan-mt/tomte/blob/main/CONTRIBUTING.md",
   licenseUrl: "https://github.com/ryan-mt/tomte/blob/main/LICENSE",
 } as const;
-
-/** Field-guide "specimen card" facts. Creative framing over real attributes. */
-export const specimen: { label: string; value: string }[] = [
-  { label: "Genus / species", value: "Tomte terminalis" },
-  { label: "Class", value: "Coding agent" },
-  { label: "Order", value: "Terminal-dwelling" },
-  { label: "Habitat", value: "Your repository" },
-  { label: "Range", value: "OpenAI, Anthropic, OpenAI-compatible endpoints" },
-  { label: "Build", value: "Rust, single binary, no daemon" },
-  { label: "Diet", value: "Tokens" },
-  { label: "Status", value: "Open source (MIT)" },
-];
 
 export type NavItem = { label: string; href: string };
 
@@ -58,9 +41,165 @@ export const nav: NavItem[] = [
   { label: "Install", href: "/install" },
 ];
 
-/** Headline capabilities. Each is grounded in a real, shipped feature. */
+/**
+ * The four proofs: what only tomte ships together. Each card carries a REAL
+ * command and a REAL excerpt of its output (trimmed), so the site eats the
+ * same food the terminal serves. Update excerpts when output formats change.
+ */
+export type Proof = {
+  /** stable key for layout */
+  key: "prove" | "why" | "twin" | "race";
+  /** rubber-stamp label on the capsule */
+  stamp: string;
+  title: string;
+  body: string;
+  command: string;
+  /** trimmed, real output lines */
+  excerpt: string[];
+  /** one-line "why it cannot lie" note */
+  honest: string;
+};
+
+export const proofs: Proof[] = [
+  {
+    key: "prove",
+    stamp: "verified",
+    title: "Done means verified",
+    body: "/prove collects an evidence bundle the CLI gathers itself: the files git reports changed, plus the real exit codes of your project's own test, typecheck, lint, and build. tomte prove exits non-zero on failure, so it gates a commit hook or CI step.",
+    command: "tomte prove",
+    excerpt: [
+      "Proof Capsule  ·  2026-06-09 10:58",
+      "  files changed   1 (M README.md)",
+      "  ✅ test       passed   cargo test",
+      "  ✅ typecheck  passed   cargo check",
+      "  ✅ lint       passed   cargo clippy",
+      "  ✅ build      passed   cargo build",
+      "  reproduce: cargo test && cargo clippy",
+    ],
+    honest:
+      "The model never supplies these numbers. It cannot fabricate a green capsule, only explain one the CLI already collected.",
+  },
+  {
+    key: "why",
+    stamp: "on record",
+    title: "It remembers why, across models",
+    body: "record_decision appends the reasoning behind every non-obvious change to a decision trail that is re-injected each session. Next month's session, or a different model entirely, inherits the why and not just the diff. Drift Watch flags a decision the code has moved out from under.",
+    command: "tomte why src/parser.rs:88",
+    excerpt: [
+      "src/parser.rs:88",
+      "  decision  empty input returns Err, not a panic",
+      "  why       a library must never crash its caller",
+      "  rejected  panic: crashes callers",
+      "  recorded  gpt-5.5 · turn 5 · anchor fresh",
+    ],
+    honest:
+      "The trail is an append-only file in your project state. Overturning a decision is recorded as a supersede, never an erase.",
+  },
+  {
+    key: "twin",
+    stamp: "mapped",
+    title: "It knows the house",
+    body: "tomte twin builds five verifiable indexes straight from the source: import graph, symbol graph, test-to-source map, git recency, and project conventions. tomte why-context answers the question context-stuffing agents dodge: which files actually belong in context, and why.",
+    command: "tomte why-context classify_danger",
+    excerpt: [
+      "Context X-Ray for `classify_danger`",
+      "Selected (would pull into context):",
+      "  • tools/shell.rs",
+      "      because imports the seed [import]",
+      "  • race/judge.rs",
+      "      because judge.rs:6 references it [symbol]",
+      "Ignored (nearby but left out):",
+      "  • tools/web.rs — no path reaches it",
+    ],
+    honest:
+      "Every claim is grounded in a real import edge, definition, test, or commit. A generic name cannot manufacture a false reference.",
+  },
+  {
+    key: "race",
+    stamp: "measured",
+    title: "Don't trust one agent. Race them",
+    body: "tomte race runs a task as a tournament: contestants varying model, effort, and style, each in its own isolated git worktree. The judge is deterministic and measures evidence: the project's own checks, diff size, added tests, risky commands run. An LLM is never the referee.",
+    command: 'tomte race "fix the flaky retry test" --agents 4',
+    excerpt: [
+      "🏁 4 contestants · isolated worktrees",
+      "  1. minimal-patch   ✅ verified · +test · 38 lines",
+      "  2. gpt-5.5/high    ✅ verified · 112 lines",
+      "  3. opus-4-8/max    ⚠ checks failed (lint)",
+      "  4. gpt-5.5/low     ✖ no change",
+      "  winner: minimal-patch (smallest verified diff)",
+      "  patch saved · apply with --apply",
+    ],
+    honest:
+      "Ranking is tiered so a clever-but-broken patch can never beat a working one. Every reason on the card comes from measured numbers.",
+  },
+];
+
+/**
+ * The composed vitals: what the indexes unlock when they are real data.
+ * Pulse and Handoff render from the same twin the X-ray uses.
+ */
+export type Vital = {
+  key: "pulse" | "handoff";
+  title: string;
+  body: string;
+  command: string;
+  excerpt: string[];
+};
+
+export const vitals: Vital[] = [
+  {
+    key: "pulse",
+    title: "Repo Pulse",
+    body: "Which files are most likely to break next, with the formula printed on the card: commits in the recent window, times import fan-in plus one, doubled when no test covers the file. Rerun it, get the same card, argue with the numbers.",
+    command: "tomte pulse",
+    excerpt: [
+      "Repo Pulse — your/repo",
+      "  1. core/src/tools/mod.rs",
+      "     risk 124 = 31c × 2i × untested ⚠",
+      "  2. tui/app/types.rs",
+      "     risk 76 = 19c × 2i × untested ⚠",
+      "  hot & untested: 65 source files",
+    ],
+  },
+  {
+    key: "handoff",
+    title: "The Handoff capsule",
+    body: "One paste-ready markdown capsule: git standing, the newest recorded decisions with a drift-watch line, the map summary, and the pulse top. Built for the next session, whether that is a colleague, tomorrow's you, or a different model entirely.",
+    command: "tomte handoff --out HANDOFF.md",
+    excerpt: [
+      "# Handoff — your/repo",
+      "## Where the tree stands",
+      "- branch `0.0.3` · working tree clean",
+      "## Why things are the way they are",
+      "- `parser.rs:88` — Err, not panic",
+      "- drift watch: 4 hold · 2 healed · 1 needs eyes",
+      "_Before you call anything done: tomte prove._",
+    ],
+  },
+];
+
+/** The keeper's manner: the quieter habits wrapped around the four proofs. */
+export const manners: { title: string; body: string }[] = [
+  {
+    title: "Glass box, not black box",
+    body: "Before a write or shell command runs, one calm line states what it changes and how far it reaches. A file's recorded decisions surface as house rules so the agent re-reads its own constraints before it could break one.",
+  },
+  {
+    title: "An end-of-turn receipt",
+    body: "A turn that changes something closes with one line: files touched, tests run, and the why it recorded. The custodian leaves a note, every time.",
+  },
+  {
+    title: "A checkpoint every turn",
+    body: "/undo reverts the last file edit. /rewind restores the session to an earlier turn AND reverts the edits made since, each picker row showing its blast radius before you commit to it.",
+  },
+  {
+    title: "Quiet, surgical, cross-platform",
+    body: "One Rust binary on Linux, macOS, and Windows. No daemon, no telemetry, a terminal UI that stays out of the way, and a pixel companion that hatches from an egg if you want company.",
+  },
+];
+
+/** Headline capabilities (the table-stakes done well). */
 export type Capability = {
-  /** short specimen-style code, e.g. for figure labels */
   tag: string;
   title: string;
   body: string;
@@ -110,22 +249,14 @@ export const capabilities: Capability[] = [
 ];
 
 /**
- * Pillar 2, the decision trail ("memory of why"). Powers the moat demo on the
- * home page: every change is recorded with its reasoning and rejected
- * alternatives, and the record survives a mid-task switch to another model.
+ * Decision-trail demo data for the home page. Mirrors the real record shape.
  */
 export type Decision = {
-  /** file:line the decision lives at */
   loc: string;
-  /** the choice that was made */
   decision: string;
-  /** the reasoning behind it */
   why: string;
-  /** alternatives considered and dropped */
   rejected: string[];
-  /** the model that recorded it */
   model: string;
-  /** the turn it was decided on */
   turn: number;
 };
 
@@ -162,10 +293,10 @@ export const decisionTrail: Decision[] = [
   },
 ];
 
-/** Models offered in the moat demo's "model in play" toggle. */
+/** Models offered in the trail demo's "model in play" toggle. */
 export const trailModels: { id: string; accent: "oai" | "ant" }[] = [
   { id: "gpt-5.5", accent: "oai" },
-  { id: "claude-opus-4-8", accent: "ant" },
+  { id: "claude-fable-5", accent: "ant" },
 ];
 
 /** The tool belt, grouped exactly as the agent exposes it. 27 tools total. */
@@ -244,17 +375,17 @@ export const providers: Provider[] = [
     key: "anthropic",
     name: "Anthropic",
     accent: "ant",
-    tag: "Claude 4 family",
+    tag: "Claude families",
     signIn: "Claude subscription (OAuth) or API key",
-    body: "The Claude 4 family over the Messages API, with adaptive extended thinking on the newest models. A Claude Pro or Max subscription signs in over OAuth after a terms acknowledgement.",
+    body: "Claude Fable 5 and the Claude 4 family over the Messages API, with adaptive thinking on the newest models. A Claude Pro or Max subscription signs in over OAuth after a terms acknowledgement.",
   },
   {
     key: "compatible",
     name: "OpenAI-compatible",
     accent: "compat",
     tag: "Any endpoint",
-    signIn: "Custom base URL and key in config.json",
-    body: "Any OpenAI-compatible endpoint, hosted or local. Declare a base URL, key, and context limit under providers in config.json and address it as provider/model.",
+    signIn: "Built-in presets or config.json",
+    body: "Groq, OpenRouter, DeepSeek, xAI, Together, Fireworks, Cerebras, Mistral, and local Ollama or LM Studio work out of the box as provider/model. Anything else: declare a base URL and key under providers in config.json.",
   },
 ];
 
@@ -274,11 +405,12 @@ export const models: ModelRow[] = [
   { id: "gpt-5.4-nano", provider: "OpenAI", context: "200K", note: "Latency-sensitive, cheapest." },
   { id: "gpt-5.2", provider: "OpenAI", context: "400K", note: "Earlier frontier, still selectable." },
   { id: "gpt-5", provider: "OpenAI", context: "400K", note: "Earlier frontier, still selectable." },
-  { id: "claude-opus-4-8", provider: "Anthropic", context: "1M", note: "Adaptive extended thinking." },
+  { id: "claude-fable-5", provider: "Anthropic", context: "1M", note: "Top tier. Adaptive thinking, xhigh effort honoured." },
+  { id: "claude-opus-4-8", provider: "Anthropic", context: "1M", note: "Frontier Opus. Adaptive extended thinking." },
   { id: "claude-opus-4-7", provider: "Anthropic", context: "1M", note: "Adaptive extended thinking." },
   { id: "claude-opus-4-6", provider: "Anthropic", context: "1M", note: "Adaptive extended thinking." },
   { id: "claude-opus-4-5", provider: "Anthropic", context: "200K", note: "Prior Opus generation." },
-  { id: "claude-sonnet-4-6", provider: "Anthropic", context: "1M", note: "Adaptive extended thinking." },
+  { id: "claude-sonnet-4-6", provider: "Anthropic", context: "1M", note: "Balanced speed and capability." },
   { id: "claude-sonnet-4-5", provider: "Anthropic", context: "200K", note: "Prior Sonnet generation." },
   { id: "claude-haiku-4-5", provider: "Anthropic", context: "200K", note: "Fastest, lowest cost." },
 ];
@@ -299,19 +431,30 @@ export type CommandGroup = { group: string; items: { cmd: string; desc: string }
 
 export const slashCommands: CommandGroup[] = [
   {
+    group: "Evidence",
+    items: [
+      { cmd: "/prove", desc: "Run the project's own checks and show the proof capsule." },
+      { cmd: "/twin", desc: "The repo's five verifiable indexes, built and cached." },
+      { cmd: "/why-context <seed>", desc: "Which files belong in context for a file or symbol, and why." },
+      { cmd: "/pulse", desc: "The files most likely to break next, formula on the card." },
+      { cmd: "/handoff", desc: "The paste-ready shift report for the next session." },
+    ],
+  },
+  {
+    group: "The trail",
+    items: [
+      { cmd: "/why", desc: "Read the decision trail: why past changes were made." },
+      { cmd: "/blame <file>", desc: "One decision per line for a single file." },
+      { cmd: "/rewind", desc: "Restore an earlier turn and revert the edits made since." },
+    ],
+  },
+  {
     group: "Spend and context",
     items: [
       { cmd: "/usage", desc: "Live provider quota and rate-limit snapshot." },
       { cmd: "/cost", desc: "Per-model token tally and estimated dollars, cache-aware." },
       { cmd: "/context", desc: "Context-window usage and where the tokens are going." },
-    ],
-  },
-  {
-    group: "Source control",
-    items: [
-      { cmd: "/diff", desc: "Show the current git diff." },
-      { cmd: "/commit", desc: "Stage and commit with a Conventional-Commit message." },
-      { cmd: "/commit-push-pr", desc: "Commit, push the branch, and open a PR with gh." },
+      { cmd: "/compact <focus>", desc: "Compact the conversation, steering what the summary keeps." },
     ],
   },
   {
@@ -320,13 +463,6 @@ export const slashCommands: CommandGroup[] = [
       { cmd: "/model", desc: "Switch the active model mid-session." },
       { cmd: "/resume", desc: "Pick a previous session and continue it." },
       { cmd: "/plan", desc: "Enter read-only plan mode before acting." },
-    ],
-  },
-  {
-    group: "Workspace",
-    items: [
-      { cmd: "/worktree", desc: "Create or exit an isolated git worktree." },
-      { cmd: "/init", desc: "Create a CLAUDE.md for the project." },
       { cmd: "/buddy", desc: "Hatch the pixel companion, or reset and hide it." },
     ],
   },
@@ -374,11 +510,12 @@ export const binaries: { platform: string; archive: string }[] = [
 export const headlessExamples: string[] = [
   'tomte chat "write a fibonacci function in Python"',
   'tomte chat --model gpt-5.5-pro --reasoning high "refactor module X"',
-  'echo "read CLAUDE.md and summarize" | tomte chat',
+  "tomte prove --json   # gate CI on the project's own checks",
+  "tomte handoff --out HANDOFF.md   # the shift report, scripted",
   "tomte run --cwd /srv/project --prompt-file nightly-task.md",
 ];
 
-/** Security model. Honest about the no-sandbox tradeoff. */
+/** Security model. Honest about the Windows tradeoff. */
 export const security: { title: string; body: string }[] = [
   {
     title: "Commands run in an OS sandbox",
@@ -386,7 +523,7 @@ export const security: { title: string; body: string }[] = [
   },
   {
     title: "Secrets stay out of the shell",
-    body: "Environment variables that look like secrets, with names containing TOKEN, SECRET, KEY, OPENAI, AWS, or GITHUB, are stripped from the child process so the model cannot read them back.",
+    body: "Environment variables that look like secrets, with names containing TOKEN, SECRET, KEY, OPENAI, AWS, or GITHUB, plus connection strings and vendor prefixes, are stripped from child processes so the model cannot read them back.",
   },
   {
     title: "Writes are guarded",
@@ -394,13 +531,13 @@ export const security: { title: string; body: string }[] = [
   },
   {
     title: "Credentials are owner-only",
-    body: "OAuth uses PKCE and refreshes automatically. Tokens are written with owner-only permissions on Unix. Project permission allow-lists reject symlinked paths so an allow decision cannot be redirected.",
+    body: "OAuth uses PKCE and refreshes automatically. Tokens are written with owner-only permissions on Unix and an owner-only ACL on Windows. Project permission allow-lists reject symlinked paths so an allow decision cannot be redirected.",
   },
 ];
 
 /** Configuration summary. */
 export const configFields: { key: string; desc: string }[] = [
-  { key: "model", desc: "Default model, for example gpt-5.5 or claude-opus-4-8." },
+  { key: "model", desc: "Default model, for example gpt-5.5 or claude-fable-5." },
   { key: "reasoning_effort", desc: "none, minimal, low, medium, high, xhigh, or max." },
   { key: "verbosity", desc: "low, medium, or high." },
   { key: "auto_approve_read", desc: "Auto-approve read-only tools." },
@@ -410,8 +547,12 @@ export const configFields: { key: string; desc: string }[] = [
 
 export const faq: { q: string; a: string }[] = [
   {
+    q: "What does tomte do that other coding agents do not?",
+    a: "Four things ship together here and nowhere else: a proof capsule built from your project's own checks (the model cannot fabricate it), a decision trail that survives switching models mid-project, a verifiable map of the repository that answers which files belong in context and why, and an agent tournament judged deterministically on measured evidence. Pulse and Handoff compose those indexes into a risk card and a shift report.",
+  },
+  {
     q: "Will my Claude Code or Codex setup work?",
-    a: "Yes. Tomte keeps the muscle memory you know: a terminal UI, slash commands, plan mode, composer prefixes, and inherited AGENTS.md and CLAUDE.md memory. It works with your existing setup rather than replacing it, and adds what they do not: one Rust binary, genuinely multi-model, and quiet by design.",
+    a: "Yes. tomte keeps the muscle memory: a terminal UI, slash commands, plan mode, composer prefixes, and inherited AGENTS.md and CLAUDE.md memory. Your existing skills and sub-agents are discovered automatically.",
   },
   {
     q: "Do I need an API key?",
@@ -419,7 +560,7 @@ export const faq: { q: string; a: string }[] = [
   },
   {
     q: "Which providers and models are supported?",
-    a: "The OpenAI GPT-5 family, the Anthropic Claude 4 family, and any OpenAI-compatible endpoint you configure, including local ones. See the Models page for the current catalogue.",
+    a: "The OpenAI GPT-5 family, Anthropic's Claude Fable 5 and Claude 4 families, and any OpenAI-compatible endpoint including local Ollama and LM Studio. See the Models page for the current catalogue.",
   },
   {
     q: "Is my code sent anywhere, and is it sandboxed?",
@@ -430,7 +571,7 @@ export const faq: { q: string; a: string }[] = [
     a: "Prebuilt binaries cover Linux x86-64, macOS on Intel and Apple Silicon, and Windows x86-64. You can also build from source with stable Rust.",
   },
   {
-    q: "What is the pixel companion?",
-    a: "A small pixel-art creature that hatches from an egg and sits in the corner of the terminal UI. Its species is rarity-weighted and seeded from your account, so it is stable for you and only re-rolls when you switch accounts.",
+    q: "Why is it called tomte?",
+    a: "The tomte is the Nordic farm spirit who keeps the household in order overnight: meticulous, quiet, and intolerant of sloppy work. It also hatches a pixel companion in the corner of the terminal, because a night watch is better with company.",
   },
 ];

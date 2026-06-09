@@ -1,30 +1,40 @@
 @import "tailwindcss";
 
 /* ===========================================================================
-   Tomte website. Swiss / International-Typographic system.
-   One binary, any model. Monochrome canvas + semantic provider color.
-   Light-only by intent (a stark Swiss identity). No em-dashes in copy.
+   tomte website — "Nightwatch".
+   The Nordic farm at night: the keeper works while the house sleeps.
+   Deep spruce-night canvas, hearth-amber light, moss-green "verified".
+   Every claim on the site is dressed as evidence: capsules, receipts,
+   stamped verdicts. Dark-only by intent — the night IS the identity.
+   No em-dashes in copy (regular hyphens only).
    =========================================================================== */
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 
-  --bg: #f4f4f1;     /* cool off-white, not warm cream */
-  --bg-2: #ebebe6;   /* panel */
-  --bg-3: #e2e2db;   /* deeper panel */
-  --ink: #131312;    /* near-black */
-  --ink-2: #56564e;  /* secondary */
-  --ink-3: #8c8c82;  /* tertiary / mono labels */
-  --line: #dcdcd4;   /* hairline */
-  --line-2: #c6c6bb; /* rule */
+  --bg: #0c1216;      /* spruce night */
+  --bg-2: #11191f;    /* panel */
+  --bg-3: #16222a;    /* raised panel */
+  --ink: #e9e2d0;     /* candle-lit paper */
+  --ink-2: #a8a392;   /* secondary */
+  --ink-3: #6e6f64;   /* tertiary / labels */
+  --line: #1d2a32;    /* hairline */
+  --line-2: #2a3b45;  /* rule */
 
-  /* semantic provider accents (flat, meaning-bearing, never decoration) */
-  --oai: #0a7d6b;    /* teal */
-  --ant: #c0552d;    /* burnt clay */
-  --compat: #2f53d6; /* cobalt */
+  --hearth: #e2a14e;     /* the fire: primary accent */
+  --hearth-2: #c4622e;   /* embers */
+  --moss: #8fb573;       /* verified */
+  --moss-dim: #54704a;
+  --aurora: #3d8273;     /* the sky outside */
+  --rust: #c4502e;       /* failed / danger */
 
-  --code-bg: #131312;
-  --code-fg: #ededE6;
+  /* provider accents (meaning-bearing, never decoration) */
+  --oai: #5fb8a3;
+  --ant: #d98a62;
+  --compat: #7d9bd6;
+
+  --code-bg: #090e12;
+  --code-fg: #d8d2c0;
 }
 
 @theme inline {
@@ -36,71 +46,173 @@
   --color-ink-3: var(--ink-3);
   --color-line: var(--line);
   --color-line-2: var(--line-2);
+  --color-hearth: var(--hearth);
+  --color-hearth-2: var(--hearth-2);
+  --color-moss: var(--moss);
+  --color-moss-dim: var(--moss-dim);
+  --color-aurora: var(--aurora);
+  --color-rust: var(--rust);
   --color-oai: var(--oai);
   --color-ant: var(--ant);
   --color-compat: var(--compat);
   --color-code: var(--code-bg);
   --color-codefg: var(--code-fg);
 
-  --font-display: var(--font-bricolage);
-  --font-sans: var(--font-hanken);
-  --font-mono: var(--font-jetbrains);
+  --font-display: var(--font-fraunces);
+  --font-sans: var(--font-spline);
+  --font-mono: var(--font-plexmono);
 }
 
 @layer base {
   html {
-    color-scheme: light;
+    color-scheme: dark;
   }
   body {
     background: var(--bg);
     color: var(--ink);
-    font-family: var(--font-hanken), system-ui, sans-serif;
+    font-family: var(--font-spline), system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
   h1, h2, h3, h4 {
-    font-family: var(--font-bricolage), system-ui, sans-serif;
-    font-weight: 700;
-    letter-spacing: -0.025em;
-    line-height: 0.98;
+    font-family: var(--font-fraunces), Georgia, serif;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.02;
   }
   ::selection {
-    background: var(--ink);
+    background: var(--hearth);
     color: var(--bg);
   }
 }
 
-/* Swiss helpers */
+/* --- atmosphere ----------------------------------------------------------- */
+
+/* Snow-grain: a faint static noise so the dark never reads flat. */
+.grain {
+  position: relative;
+}
+.grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E");
+}
+
+/* Aurora: the sky over the farm. Two soft drifting glows, hero only. */
+.aurora {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.aurora::before,
+.aurora::after {
+  content: "";
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(90px);
+  opacity: 0.16;
+}
+.aurora::before {
+  width: 60rem;
+  height: 22rem;
+  left: -12rem;
+  top: -8rem;
+  background: radial-gradient(closest-side, var(--aurora), transparent);
+  animation: aurora-drift 26s ease-in-out infinite alternate;
+}
+.aurora::after {
+  width: 44rem;
+  height: 18rem;
+  right: -10rem;
+  top: 2rem;
+  background: radial-gradient(closest-side, var(--hearth-2), transparent);
+  opacity: 0.10;
+  animation: aurora-drift 32s ease-in-out infinite alternate-reverse;
+}
+@keyframes aurora-drift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(4rem, 1.5rem, 0) scale(1.08); }
+}
+
+/* --- the hearthfire ------------------------------------------------------- */
+
+/* tomte's real turn spinner: a flickering bar of firelight. Each bar holds
+   the glyph column; the stagger makes the flame breathe. */
+.hearthfire {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 1em;
+}
+.hearthfire span {
+  width: 3px;
+  background: var(--hearth);
+  border-radius: 1px;
+  animation: hearth-flicker 1.6s ease-in-out infinite;
+}
+.hearthfire span:nth-child(1) { height: 25%; animation-delay: 0s; }
+.hearthfire span:nth-child(2) { height: 45%; animation-delay: 0.18s; }
+.hearthfire span:nth-child(3) { height: 75%; animation-delay: 0.36s; }
+.hearthfire span:nth-child(4) { height: 100%; animation-delay: 0.54s; }
+.hearthfire span:nth-child(5) { height: 70%; animation-delay: 0.72s; }
+.hearthfire span:nth-child(6) { height: 40%; animation-delay: 0.9s; }
+@keyframes hearth-flicker {
+  0%, 100% { transform: scaleY(0.7); opacity: 0.7; }
+  50% { transform: scaleY(1.1); opacity: 1; }
+}
+
+/* --- evidence dressing ----------------------------------------------------- */
+
 .mono-label {
-  font-family: var(--font-mono);
+  font-family: var(--font-plexmono);
   text-transform: uppercase;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.18em;
   font-size: 0.6875rem;
   line-height: 1;
   color: var(--ink-3);
 }
 
-/* Faint blueprint grid, used deliberately on select sections. */
-.blueprint {
-  background-image:
-    linear-gradient(to right, var(--line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--line) 1px, transparent 1px);
-  background-size: 64px 64px;
+/* A capsule: the receipt-shaped panel every proof lives in. */
+.capsule {
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 18px 40px -28px rgba(0, 0, 0, 0.8);
 }
 
-/* Selection stays legible on dark surfaces: light highlight, dark text. */
+/* The perforated tear-line a paper receipt has. */
+.tear {
+  background-image: linear-gradient(to right, var(--line-2) 45%, transparent 45%);
+  background-size: 10px 1px;
+  background-repeat: repeat-x;
+  height: 1px;
+}
+
+/* Verified stamp: inked, slightly rotated, like a rubber stamp on paper. */
+.stamp {
+  display: inline-block;
+  font-family: var(--font-plexmono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--moss);
+  border: 1.5px solid var(--moss-dim);
+  border-radius: 4px;
+  padding: 0.3rem 0.55rem;
+  transform: rotate(-2deg);
+}
+
+/* Selection stays legible on the near-black code surface. */
 .bg-code ::selection,
-.bg-code::selection,
-.bg-ink ::selection,
-.bg-ink::selection {
+.bg-code::selection {
   background: var(--code-fg);
   color: var(--code-bg);
-}
-
-/* Connector draw-in for the switchboard. */
-@keyframes gf-draw {
-  from { stroke-dashoffset: var(--dash, 400); }
-  to { stroke-dashoffset: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
