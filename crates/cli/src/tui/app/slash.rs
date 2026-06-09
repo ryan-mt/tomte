@@ -40,6 +40,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  /blame <file>       the decision trail for one file (greppable)\n  \
                  /twin [--rebuild]   the Repo Twin: five verifiable indexes of this repo\n  \
                  /pulse              repo pulse: files most likely to break next, scored from the twin\n  \
+                 /handoff            the shift report: git + decisions + map, for the next session\n  \
                  /why-context <seed> context X-ray: which files belong in context, and why\n  \
                  /review             ask the agent to review uncommitted changes\n  \
                  /prove              verify the work — run test/typecheck/lint/build, show a proof capsule\n  \

@@ -57,6 +57,11 @@ pub fn slash_commands(cwd: &Path) -> Vec<PickerItem> {
             "repo pulse: the files most likely to break next, scored from the twin",
         ),
         item(
+            "handoff",
+            "/handoff",
+            "the shift report: git state + decisions + map, paste-ready for the next session",
+        ),
+        item(
             "why-context",
             "/why-context",
             "context X-ray: which files belong in context for a file/symbol, and why",

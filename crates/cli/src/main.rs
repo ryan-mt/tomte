@@ -219,6 +219,22 @@ enum Command {
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
     },
+    /// The shift report: one paste-ready markdown capsule — git state, the
+    /// newest recorded decisions with a drift-watch line, the Repo Twin
+    /// summary, and the top of the Repo Pulse — collected from real state, so
+    /// the next session (a colleague, tomorrow's you, or a different model
+    /// entirely) picks the house up where this one left it.
+    Handoff {
+        /// Emit the capsule as JSON instead of markdown.
+        #[arg(long)]
+        json: bool,
+        /// Write to a file (e.g. HANDOFF.md) instead of stdout.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
     /// Repo Pulse: which files are most likely to break next, scored from the
     /// Repo Twin's own indexes — commits in the recent git window × import
     /// fan-in × 2 when no test covers the file. Every number on the card is a
@@ -420,6 +436,7 @@ async fn async_main() -> Result<()> {
         Some(Command::Pulse { rebuild, json, cwd }) => {
             commands::pulse::run(rebuild, json, cwd).await
         }
+        Some(Command::Handoff { json, out, cwd }) => commands::handoff::run(json, out, cwd).await,
         Some(Command::WhyContext { seed, json, cwd }) => {
             commands::why_context::run(seed, json, cwd).await
         }

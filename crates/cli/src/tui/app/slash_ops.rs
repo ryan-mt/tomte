@@ -390,6 +390,23 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
             };
             app.blocks.push(Block::System(text));
         }
+        "handoff" => {
+            // The shift report: git state + newest decisions + drift watch +
+            // twin summary + pulse top, rendered as paste-ready markdown so
+            // the next session (or a different model) picks the house up where
+            // this one left it. Collection shells out to git and may build the
+            // twin, so it runs off the UI thread like /twin.
+            let cwd = app.cwd.clone();
+            let report = tokio::task::spawn_blocking(move || {
+                tomte_core::handoff::render_markdown(&tomte_core::handoff::collect(&cwd))
+            })
+            .await;
+            let text = match report {
+                Ok(md) => md,
+                Err(e) => format!("handoff: {e}"),
+            };
+            app.blocks.push(Block::System(text));
+        }
         "pulse" => {
             // The hearth report: which files are most likely to break next,
             // scored from the twin's own indexes (change heat × import fan-in

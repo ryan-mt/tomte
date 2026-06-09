@@ -10,6 +10,7 @@ pub mod context_report;
 pub mod decisions;
 pub mod doctor;
 pub mod fallback;
+pub mod handoff;
 pub mod hooks;
 pub mod mcp;
 pub mod memory;
