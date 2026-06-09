@@ -150,11 +150,7 @@ impl Agent {
                 ));
                 continue;
             }
-            let parsed: std::result::Result<Value, _> = if pc.args.text.trim().is_empty() {
-                Ok(Value::Object(Default::default()))
-            } else {
-                serde_json::from_str(&pc.args.text)
-            };
+            let parsed = parse_tool_call_arguments(&pc.args.text);
             match parsed {
                 Err(e) => {
                     // Surface enough detail that the model can self-correct
@@ -656,5 +652,73 @@ impl Agent {
             return TurnFlow::Done;
         }
         TurnFlow::Continue
+    }
+}
+
+/// Parse a tool call's raw `arguments` text into a JSON value.
+///
+/// Provider-agnostic tolerance, so a model quirk costs zero round-trips:
+/// - empty/whitespace arguments (some models send none for no-arg tools) → `{}`;
+/// - a double-encoded payload — a JSON *string* whose content is itself a JSON
+///   object — is unwrapped exactly one level (several providers/models emit
+///   that shape when they stringify the object twice).
+///
+/// Anything else (including a plain string that is not an object) is returned
+/// as parsed, so the caller's "arguments must be a JSON object" check still
+/// rejects genuinely wrong shapes with a self-correct hint.
+pub(super) fn parse_tool_call_arguments(text: &str) -> Result<Value, serde_json::Error> {
+    if text.trim().is_empty() {
+        return Ok(Value::Object(Default::default()));
+    }
+    let v: Value = serde_json::from_str(text)?;
+    if let Value::String(inner) = &v {
+        if let Ok(obj @ Value::Object(_)) = serde_json::from_str::<Value>(inner) {
+            return Ok(obj);
+        }
+    }
+    Ok(v)
+}
+
+#[cfg(test)]
+mod arg_parse_tests {
+    use super::parse_tool_call_arguments;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn empty_and_whitespace_arguments_become_an_empty_object() {
+        assert_eq!(parse_tool_call_arguments("").unwrap(), json!({}));
+        assert_eq!(parse_tool_call_arguments("  \n ").unwrap(), json!({}));
+    }
+
+    #[test]
+    fn double_encoded_object_is_unwrapped_one_level() {
+        // arguments = "\"{\\\"path\\\":\\\"a.rs\\\"}\"" — a string holding an object.
+        let outer = serde_json::to_string(&json!({"path": "a.rs"}).to_string()).unwrap();
+        assert_eq!(
+            parse_tool_call_arguments(&outer).unwrap(),
+            json!({"path": "a.rs"})
+        );
+    }
+
+    #[test]
+    fn plain_object_and_wrong_shapes_pass_through_unchanged() {
+        assert_eq!(
+            parse_tool_call_arguments(r#"{"a":1}"#).unwrap(),
+            json!({"a":1})
+        );
+        // A bare string that is NOT an object stays a string, so the caller's
+        // "must be a JSON object" rejection (with schema hint) still fires.
+        assert_eq!(
+            parse_tool_call_arguments(r#""hello""#).unwrap(),
+            Value::String("hello".into())
+        );
+        // A double-encoded ARRAY is not unwrapped — only objects are.
+        let arr = serde_json::to_string(&json!([1, 2]).to_string()).unwrap();
+        assert!(matches!(
+            parse_tool_call_arguments(&arr).unwrap(),
+            Value::String(_)
+        ));
+        // Truly invalid JSON still errors for the self-correct path.
+        assert!(parse_tool_call_arguments("{not json").is_err());
     }
 }

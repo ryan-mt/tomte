@@ -188,6 +188,7 @@ pub fn default_system_prompt() -> String {
   - `glob` — "which files match this pattern", path discovery
   - `read_file` — "what does this file actually say"
   - `list_dir` — only when you need a directory snapshot
+  - `why_context` — "which files matter for this seed" — call it FIRST when a task names a file, an error location (`file:line`), or a symbol in a large or unfamiliar codebase: one call returns the connected files with evidence (imports, tests, git, recorded decisions) and the nearby files to skip, replacing several exploratory greps
   - `run_shell` — builds, tests, formatters, git, one-shot commands (use `run_in_background: true` for dev servers/watchers)
   - `web_search` — find pages by query when you don't know the URL; pair with `web_fetch` to read the best hit
   - `web_fetch` — fetch a known URL's contents (upstream docs, a raw file, a public API)
@@ -326,6 +327,22 @@ mod tests {
         ] {
             assert!(p.contains(marker), "missing discipline marker: {marker}");
         }
+    }
+
+    #[test]
+    fn system_prompt_teaches_the_why_context_xray() {
+        // The Repo Twin X-ray only pays off if the model reaches for it at the
+        // right moment (task start, seeded by a file/line/symbol) — guard the
+        // tool-discipline line that teaches that timing.
+        let p = default_system_prompt();
+        assert!(
+            p.contains("`why_context`"),
+            "tool discipline must list why_context"
+        );
+        assert!(
+            p.contains("call it FIRST"),
+            "the timing guidance must survive"
+        );
     }
 
     #[test]

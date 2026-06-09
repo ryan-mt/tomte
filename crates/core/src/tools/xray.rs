@@ -17,6 +17,14 @@ pub struct WhyContext;
 
 #[derive(Deserialize)]
 struct Args {
+    /// Aliases cover the spellings other models plausibly reach for.
+    #[serde(
+        alias = "query",
+        alias = "file",
+        alias = "symbol",
+        alias = "path",
+        alias = "target"
+    )]
     seed: String,
 }
 
