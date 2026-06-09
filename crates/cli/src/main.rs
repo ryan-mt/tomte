@@ -250,6 +250,27 @@ enum Command {
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
     },
+    /// Night Rounds: the custodian's read-only inspection walk. Rebuilds the
+    /// Repo Twin, diffs the Pulse against the last walk (risk risers, newly
+    /// hot-and-untested files), reconciles the decision trail (drift watch),
+    /// surfaces TODO/FIXME marks added since last rounds, and re-runs the
+    /// project's own checks (the Proof Capsule pass — skip with `--no-proof`).
+    /// Exits non-zero only when something is red — a decision whose line is
+    /// gone, or a failed check — so it can run as a nightly CI morning gate.
+    Rounds {
+        /// Skip the proof pass (the project's test/typecheck/lint/build run).
+        #[arg(long)]
+        no_proof: bool,
+        /// Emit the report as JSON instead of the rendered card.
+        #[arg(long)]
+        json: bool,
+        /// Also write the rendered report to a file (e.g. rounds.md).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
     /// Context X-Ray: explain why a file or symbol is (or isn't) relevant. Pass a
     /// file (`src/auth/session.rs`), a stack-trace location (`src/x.rs:88`), or a
     /// symbol name (`createSession`). Prints the files the Repo Twin would pull
@@ -437,6 +458,12 @@ async fn async_main() -> Result<()> {
             commands::pulse::run(rebuild, json, cwd).await
         }
         Some(Command::Handoff { json, out, cwd }) => commands::handoff::run(json, out, cwd).await,
+        Some(Command::Rounds {
+            no_proof,
+            json,
+            out,
+            cwd,
+        }) => commands::rounds::run(no_proof, json, out, cwd).await,
         Some(Command::WhyContext { seed, json, cwd }) => {
             commands::why_context::run(seed, json, cwd).await
         }
@@ -627,6 +654,47 @@ mod tests {
             Some(Command::Blame { json, .. }) => assert!(json),
             other => panic!("expected blame command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rounds_flags_parse_and_default_to_proof_on() {
+        let cli = Cli::try_parse_from([
+            "tomte",
+            "rounds",
+            "--no-proof",
+            "--json",
+            "--out",
+            "r.md",
+            "--cwd",
+            "/p",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Rounds {
+                no_proof,
+                json,
+                out,
+                cwd,
+            }) => {
+                assert!(no_proof);
+                assert!(json);
+                assert_eq!(out, Some(std::path::PathBuf::from("r.md")));
+                assert_eq!(cwd, Some(std::path::PathBuf::from("/p")));
+            }
+            other => panic!("expected rounds command, got {other:?}"),
+        }
+
+        // Bare `tomte rounds` runs the proof pass — verification is the point.
+        let bare = Cli::try_parse_from(["tomte", "rounds"]).unwrap();
+        assert!(matches!(
+            bare.command,
+            Some(Command::Rounds {
+                no_proof: false,
+                json: false,
+                out: None,
+                cwd: None
+            })
+        ));
     }
 
     #[test]

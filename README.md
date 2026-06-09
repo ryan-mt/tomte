@@ -55,9 +55,13 @@ touch *before* it runs, recorded decisions resurfacing as house rules the agent 
 before it could break one, and an end-of-turn receipt — files touched, tests run, the why
 it recorded. And because the indexes are real data, they compose: `tomte pulse` scores
 which files are most likely to break next (change heat × import fan-in × missing tests,
-formula on the card), and `tomte handoff` renders the whole standing — git state, newest
+formula on the card), `tomte handoff` renders the whole standing — git state, newest
 decisions, drift watch, map, pulse — as one paste-ready capsule, so the next session
-(a colleague, tomorrow's you, or a different model entirely) starts where this one stopped.
+(a colleague, tomorrow's you, or a different model entirely) starts where this one stopped,
+and `tomte rounds` is the custodian's night walk: it re-checks all of it against the last
+walk — pulse risers, newly untested hot spots, decision anchors that drifted, TODO marks
+that appeared, the project's own checks re-run — and exits non-zero only when something is
+genuinely red, so a nightly CI job can run it as the morning gate.
 
 ## Why you might like it
 
@@ -146,6 +150,7 @@ tomte twin                               # build/inspect the repo's verifiable m
 tomte why-context src/auth/session.rs    # which files belong in context, and why
 tomte pulse                              # which files break next — scored, formula on the card
 tomte handoff --out HANDOFF.md           # the shift report for the next session (or model)
+tomte rounds                             # the night walk: what changed since last rounds; red exits 1
 tomte race "fix the flaky retry test" --agents 4   # tournament: isolated worktrees, measured judge
 ```
 

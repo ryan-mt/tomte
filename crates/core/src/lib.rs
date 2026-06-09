@@ -22,6 +22,7 @@ pub mod provider;
 pub mod race;
 pub mod repo_twin;
 mod retry;
+pub mod rounds;
 pub mod secret_env;
 mod sensitive;
 pub mod session;

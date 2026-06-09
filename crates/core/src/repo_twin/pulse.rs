@@ -61,18 +61,29 @@ pub struct WidestBlast {
     pub importers: usize,
 }
 
-/// Score the twin. Pure — reads only the already-built indexes, so it costs
-/// nothing beyond the cache load and never shells out.
-pub fn pulse(twin: &RepoTwin) -> PulseReport {
-    use std::collections::{HashMap, HashSet};
-
-    // Fan-in per file from resolved import edges.
-    let mut importers: HashMap<&str, HashSet<&str>> = HashMap::new();
+/// Fan-in per file from resolved import edges — shared by the score loop and
+/// the widest-blast vital.
+fn importer_map(
+    twin: &RepoTwin,
+) -> std::collections::HashMap<&str, std::collections::HashSet<&str>> {
+    let mut importers: std::collections::HashMap<&str, std::collections::HashSet<&str>> =
+        std::collections::HashMap::new();
     for e in &twin.imports {
         if let Some(to) = &e.to {
             importers.entry(to).or_default().insert(e.from.as_str());
         }
     }
+    importers
+}
+
+/// Score every source file in play — the full, uncapped list. `pulse` takes the
+/// top of it for the card; Night Rounds keeps the whole map so risk can be
+/// diffed run-to-run. Sorted by risk desc, ties by heat then path, so equal
+/// twins yield byte-identical output.
+pub fn score(twin: &RepoTwin) -> Vec<PulseEntry> {
+    use std::collections::{HashMap, HashSet};
+
+    let importers = importer_map(twin);
     // Covered files from the test map.
     let covered: HashSet<&str> = twin.tests.iter().map(|t| t.covers.as_str()).collect();
     // Git heat by file.
@@ -80,7 +91,6 @@ pub fn pulse(twin: &RepoTwin) -> PulseReport {
         twin.git.iter().map(|g| (g.file.as_str(), g)).collect();
 
     let mut entries: Vec<PulseEntry> = Vec::new();
-    let mut hot_untested = 0usize;
     for f in &twin.files {
         if !f.lang.is_source() || f.is_test {
             continue;
@@ -93,9 +103,6 @@ pub fn pulse(twin: &RepoTwin) -> PulseReport {
         }
         let fan_in = importers.get(f.path.as_str()).map_or(0, |s| s.len());
         let tested = covered.contains(f.path.as_str());
-        if stat.commits >= 2 && !tested {
-            hot_untested += 1;
-        }
         let untested_factor = if tested { 1 } else { 2 };
         let risk = stat.commits * (fan_in as u32 + 1) * untested_factor;
         entries.push(PulseEntry {
@@ -117,6 +124,18 @@ pub fn pulse(twin: &RepoTwin) -> PulseReport {
             .then(b.commits.cmp(&a.commits))
             .then(a.file.cmp(&b.file))
     });
+    entries
+}
+
+/// Score the twin. Pure — reads only the already-built indexes, so it costs
+/// nothing beyond the cache load and never shells out.
+pub fn pulse(twin: &RepoTwin) -> PulseReport {
+    let importers = importer_map(twin);
+    let mut entries = score(twin);
+    let hot_untested = entries
+        .iter()
+        .filter(|e| e.commits >= 2 && !e.tested)
+        .count();
     entries.truncate(MAX_ENTRIES);
 
     let widest_blast = {

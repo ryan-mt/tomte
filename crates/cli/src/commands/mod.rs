@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod prove;
 pub mod pulse;
 pub mod race;
+pub mod rounds;
 pub mod twin;
 pub mod why;
 pub mod why_context;
