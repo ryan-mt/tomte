@@ -1,8 +1,9 @@
 //! Agent tests (compaction_tests), split out of `agent`.
 
 use super::{
-    classify_input_tokens, clear_stale_tool_outputs, compacted_history, emit_usage,
+    classify_input_tokens, clear_stale_tool_outputs, compact_prompt, compacted_history, emit_usage,
     is_context_overflow_message, should_compact, CLEARED_TOOL_OUTPUT_MARKER, COMPACT_MIN_ITEMS,
+    COMPACT_PROMPT,
 };
 use crate::openai::{InputItem, MessageContent};
 use serde_json::json;
@@ -15,6 +16,25 @@ fn tool_output(call_id: &str, output: &str) -> InputItem {
         error: false,
         media: Vec::new(),
     }
+}
+
+#[test]
+fn compact_prompt_without_focus_is_the_base_prompt() {
+    assert_eq!(compact_prompt(None), COMPACT_PROMPT);
+    // A blank or whitespace-only focus is treated as no focus.
+    assert_eq!(compact_prompt(Some("")), COMPACT_PROMPT);
+    assert_eq!(compact_prompt(Some("   \t ")), COMPACT_PROMPT);
+}
+
+#[test]
+fn compact_prompt_with_focus_extends_the_base_prompt() {
+    let focused = compact_prompt(Some("  the auth refactor  "));
+    // The base contract is preserved verbatim as the prefix...
+    assert!(focused.starts_with(COMPACT_PROMPT));
+    // ...and the (trimmed) focus is woven in as an emphasis directive.
+    assert!(focused.contains("the auth refactor"));
+    assert!(!focused.contains("  the auth refactor  "));
+    assert!(focused.len() > COMPACT_PROMPT.len());
 }
 
 #[test]

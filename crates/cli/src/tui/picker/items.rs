@@ -65,9 +65,14 @@ pub fn slash_commands(cwd: &Path) -> Vec<PickerItem> {
         item(
             "compact",
             "/compact",
-            "ask the agent to compact the conversation",
+            "compact the conversation (add a focus: /compact <what to keep>)",
         ),
         item("todos", "/todos", "show the session todo list"),
+        item(
+            "thoughts",
+            "/thoughts",
+            "show or hide the model's live reasoning text (/thoughts on|off)",
+        ),
         item("about", "/about", "show tomte version + build info"),
         item("login", "/login", "sign in with ChatGPT"),
         item("apikey", "/apikey", "save an OpenAI API key"),

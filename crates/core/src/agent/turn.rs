@@ -30,7 +30,10 @@ impl Agent {
     /// On a trivially short history, an empty summary, or a stream error,
     /// `self.history` is left UNTOUCHED and an `Err` is returned. On success
     /// returns the number of history items that were compacted away.
-    pub async fn compact_history(&mut self) -> Result<usize> {
+    ///
+    /// `focus` is an optional user steer from `/compact <focus>`; when present it
+    /// nudges the summary to emphasize that topic without dropping the rest.
+    pub async fn compact_history(&mut self, focus: Option<&str>) -> Result<usize> {
         let original_len = self.history.len();
         if !should_compact(original_len) {
             return Err(anyhow::anyhow!(
@@ -44,7 +47,7 @@ impl Agent {
         let mut input = self.history.clone();
         input.push(InputItem::Message {
             role: "user".to_string(),
-            content: vec![MessageContent::text(COMPACT_PROMPT)],
+            content: vec![MessageContent::text(compact_prompt(focus))],
         });
         let request = ResponsesRequest::new(self.config.model.clone(), input)
             .with_instructions(self.system_prompt.clone())

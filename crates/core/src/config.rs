@@ -47,6 +47,14 @@ pub struct Config {
     /// runs. Pillar 2 — auto-capture.
     #[serde(default = "default_auto_capture")]
     pub auto_capture: bool,
+    /// Show the model's live reasoning/thinking text in the TUI while it thinks,
+    /// then collapse it to a compact "Thought for Xs" line once the answer
+    /// starts. On by default; `/thinking off` (or `show_thinking: false`) hides
+    /// the text and keeps only the spinner's "thinking" cue. Provider-agnostic —
+    /// it renders whatever reasoning the active model streams (Anthropic
+    /// thinking, OpenAI reasoning), so it carries across a model switch.
+    #[serde(default = "default_show_thinking")]
+    pub show_thinking: bool,
     /// Pillar 5 — the conscience around an edit to a file that has recorded
     /// decisions. `"off"` disables it; `"surface"` (default) shows the file's
     /// decisions as "house rules" in the pre-flight card (Tier 1, no model cost);
@@ -269,6 +277,9 @@ fn default_auto_compact() -> bool {
 fn default_auto_capture() -> bool {
     true
 }
+fn default_show_thinking() -> bool {
+    true
+}
 fn default_permission_mode() -> String {
     "default".to_string()
 }
@@ -336,6 +347,7 @@ impl Default for Config {
             verbosity: default_verbosity(),
             auto_compact: true,
             auto_capture: true,
+            show_thinking: true,
             conscience: default_conscience(),
             auto_approve_read: true,
             auto_approve_write: false,

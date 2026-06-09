@@ -76,6 +76,7 @@ pub(super) fn render_jump_to_bottom(f: &mut Frame, chat_area: Rect) -> Rect {
 pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let expanded = app.expanded_tools;
+    let show_thinking = app.config.show_thinking;
 
     // Re-wrapping every block on every frame is O(blocks * avg_text_len) of
     // textwrap calls plus matching allocations. For a 500-block chat at
@@ -87,6 +88,7 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
         c.blocks_len == app.blocks.len()
             && c.inner_width == inner_width
             && c.expanded_tools == expanded
+            && c.show_thinking == show_thinking
     });
     if cache_meta_matches {
         // Render straight from the cache without rebuilding — or cloning — the
@@ -113,7 +115,12 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
                 // Reuse the cached prefix (`lines[..split]`, borrowed — not
                 // cloned) and re-wrap just that one block into the window's tail.
                 let mut tail: Vec<Line<'static>> = Vec::new();
-                push_assistant_lines(&mut tail, app.blocks.last().unwrap(), inner_width);
+                push_assistant_lines(
+                    &mut tail,
+                    app.blocks.last().unwrap(),
+                    inner_width,
+                    show_thinking,
+                );
                 let head = &c.lines[..split.min(c.lines.len())];
                 Some(render_window(
                     f,
@@ -168,7 +175,7 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
             }
             Block::User(text) => push_user_lines(&mut lines, text, inner_width),
             Block::Assistant { .. } => {
-                push_assistant_lines(&mut lines, &app.blocks[i], inner_width);
+                push_assistant_lines(&mut lines, &app.blocks[i], inner_width, show_thinking);
             }
             Block::Tool {
                 name,
@@ -221,6 +228,7 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
         blocks_len: app.blocks.len(),
         inner_width,
         expanded_tools: expanded,
+        show_thinking,
         last_block_size,
         lines,
         prefix_split,
@@ -234,18 +242,48 @@ pub(super) fn push_assistant_lines(
     lines: &mut Vec<Line<'static>>,
     block: &Block,
     inner_width: usize,
+    show_thinking: bool,
 ) {
     let Block::Assistant {
         text,
+        reasoning,
         thought_for_secs,
         ..
     } = block
     else {
         return;
     };
+    // Live reasoning: while the model is thinking (reasoning is streaming and
+    // hasn't collapsed yet), show it muted + italic so the user can follow the
+    // thought, like Claude Code. It's cleared into the "Thought for Xs" line
+    // below the moment the answer starts, so the two are never shown together.
+    if show_thinking && !reasoning.is_empty() {
+        let think_style = Style::default()
+            .fg(palette::TEXT_MUTED)
+            .add_modifier(Modifier::ITALIC);
+        let marker_style = Style::default()
+            .fg(palette::INFO)
+            .add_modifier(Modifier::ITALIC);
+        let content_width = inner_width.saturating_sub(2);
+        let mut first = true;
+        for raw in reasoning.split('\n') {
+            for w in wrap(raw, content_width) {
+                let row = if first {
+                    vec![
+                        Span::styled("✦ ", marker_style),
+                        Span::styled(w, think_style),
+                    ]
+                } else {
+                    vec![Span::raw("  "), Span::styled(w, think_style)]
+                };
+                first = false;
+                lines.push(Line::from(row));
+            }
+        }
+        lines.push(Line::raw(""));
+    }
     // Compact "Thought for Xs" line once reasoning has completed for this
-    // assistant block. While reasoning is still streaming, we suppress it —
-    // the spinner row already communicates that the model is thinking.
+    // assistant block — it replaces the live reasoning text above.
     if let Some(secs) = thought_for_secs {
         lines.push(Line::from(vec![
             Span::styled("· ", Style::default().fg(palette::INFO)),

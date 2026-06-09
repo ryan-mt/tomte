@@ -200,6 +200,9 @@ pub fn start_compaction(
     if goal_snapshot.is_some() {
         app.pending_session_save = true;
     }
+    // Consume any `/compact <focus>` steer for this run (auto-compaction leaves
+    // it None); taking it here clears it so the next compaction starts fresh.
+    let focus = app.compact_focus.take();
     let agent = agent.clone();
     let tx = tx.clone();
     tokio::spawn(async move {
@@ -207,7 +210,7 @@ pub fn start_compaction(
             let mut guard = agent.lock().await;
             match guard.as_mut() {
                 Some(a) => {
-                    let r = a.compact_history().await;
+                    let r = a.compact_history(focus.as_deref()).await;
                     // Persist the compacted history so /resume picks up the
                     // smaller baseline (compaction runs outside the per-turn
                     // save path).

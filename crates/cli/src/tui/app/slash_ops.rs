@@ -41,6 +41,33 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
                 }
             )));
         }
+        "thoughts" | "showthinking" => {
+            let new_state = match arg {
+                "on" | "true" | "1" | "show" => true,
+                "off" | "false" | "0" | "hide" => false,
+                "" => !app.config.show_thinking,
+                other => {
+                    app.blocks.push(Block::System(format!(
+                        "Usage: /thoughts [on|off]  (current: {}). Got: {other}",
+                        if app.config.show_thinking {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    )));
+                    return;
+                }
+            };
+            app.config.show_thinking = new_state;
+            app.blocks.push(Block::System(format!(
+                "live thinking → {}",
+                if new_state {
+                    "on"
+                } else {
+                    "off (only a 'thinking' cue, then Thought for Xs)"
+                }
+            )));
+        }
         "undo" => {
             // main_loop drains this flag so the agent Arc stays out of
             // handle_slash (same pattern as `pending_resume_id`).
@@ -386,6 +413,9 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
             } else if app.compacting {
                 app.blocks.push(Block::System("Already compacting…".into()));
             } else {
+                // `/compact <focus>` steers the summary; a bare `/compact` clears
+                // any stale steer so it can't leak into this run.
+                app.compact_focus = (!arg.is_empty()).then(|| arg.to_string());
                 app.pending_compact = true;
             }
         }

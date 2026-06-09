@@ -208,6 +208,17 @@ fn auto_capture_defaults_on() {
 }
 
 #[test]
+fn show_thinking_defaults_on_and_honors_explicit_off() {
+    assert!(Config::default().show_thinking);
+    // A config.json predating the flag still deserializes with it enabled.
+    let cfg: Config = serde_json::from_str(r#"{"model":"gpt-5.5"}"#).unwrap();
+    assert!(cfg.show_thinking);
+    // An explicit opt-out is honored.
+    let cfg: Config = serde_json::from_str(r#"{"model":"gpt-5.5","show_thinking":false}"#).unwrap();
+    assert!(!cfg.show_thinking);
+}
+
+#[test]
 fn save_temp_paths_are_unique() {
     let path = PathBuf::from("config.json");
     assert_ne!(unique_tmp_path(&path), unique_tmp_path(&path));

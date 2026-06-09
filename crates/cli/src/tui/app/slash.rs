@@ -42,10 +42,11 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  /commit             stage & commit with a generated message\n  \
                  /commit-push-pr     commit, push a branch, and open a PR\n  \
                  /export [path]      save conversation as markdown\n  \
-                 /compact            ask the agent to compact the conversation\n  \
+                 /compact [focus]    compact the conversation (focus steers the summary)\n  \
                  /todos              show the session todo list\n  \
                  /about              show tomte version + build info\n  \
                  /perms [on|off]     toggle the approval modal for writes/shell\n  \
+                 /thoughts [on|off]  show/hide the model's live reasoning text\n  \
                  /undo               revert the most recent file edit\n  \
                  /rewind             restore an earlier turn (undo its file edits)\n  \
                  /quit               exit\n\n\

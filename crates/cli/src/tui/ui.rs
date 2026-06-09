@@ -229,7 +229,12 @@ pub fn inline_blocks_to_lines(
         match &blocks[i] {
             Block::Welcome => render_welcome(&mut lines, app),
             Block::User(text) => push_user_lines(&mut lines, text, inner_width),
-            Block::Assistant { .. } => push_assistant_lines(&mut lines, &blocks[i], inner_width),
+            Block::Assistant { .. } => push_assistant_lines(
+                &mut lines,
+                &blocks[i],
+                inner_width,
+                app.config.show_thinking,
+            ),
             Block::Tool {
                 name,
                 args,

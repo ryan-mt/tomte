@@ -310,6 +310,10 @@ pub struct App {
     /// `Agent::compact_history()` on the next tick (slash/event handlers don't
     /// have the agent Arc).
     pub pending_compact: bool,
+    /// Optional user steer from `/compact <focus>`, consumed by
+    /// `start_compaction` and passed to `Agent::compact_history`. `None` for an
+    /// auto-compact or a bare `/compact`.
+    pub compact_focus: Option<String>,
     /// Guards against repeated auto-compaction within one over-threshold
     /// window: set when the 85% trigger fires, cleared after a successful
     /// compaction so future windows can auto-compact again.
@@ -396,6 +400,10 @@ pub struct ChatRenderCache {
     pub blocks_len: usize,
     pub inner_width: usize,
     pub expanded_tools: bool,
+    /// Whether live reasoning was shown when these lines were wrapped. A
+    /// `/thinking` toggle flips it, so caching it here invalidates the cache and
+    /// forces a re-wrap even when no block content changed.
+    pub show_thinking: bool,
     /// Cheap fingerprint of the most recent block. During streaming the
     /// last block's text grows; comparing its size detects deltas without
     /// hashing every block. For non-streaming idle frames this stays

@@ -19,6 +19,53 @@ fn deferred_agent_ops_blocked_while_busy_or_compacting() {
     assert!(!app.can_run_deferred_agent_op());
 }
 
+// `/compact <focus>` records the steer for start_compaction; a bare `/compact`
+// clears any stale steer so it can't leak into the next summary.
+#[tokio::test]
+async fn compact_slash_captures_and_clears_focus() {
+    let mut app = App::new();
+    app.busy = false;
+    app.compacting = false;
+
+    handle_slash(&mut app, "compact the auth refactor").await;
+    assert!(app.pending_compact);
+    assert_eq!(app.compact_focus.as_deref(), Some("the auth refactor"));
+
+    // The queued run is consumed (start_compaction takes the focus); a bare
+    // `/compact` afterwards must reset it to None, not reuse the old steer.
+    app.pending_compact = false;
+    app.compact_focus = Some("stale".into());
+    handle_slash(&mut app, "compact").await;
+    assert!(app.pending_compact);
+    assert_eq!(app.compact_focus, None);
+}
+
+// Guard: `/compact` mid-turn neither queues nor records a steer.
+#[tokio::test]
+async fn compact_slash_is_a_noop_while_busy() {
+    let mut app = App::new();
+    app.busy = true;
+    handle_slash(&mut app, "compact focus ignored").await;
+    assert!(!app.pending_compact);
+    assert_eq!(app.compact_focus, None);
+}
+
+// `/thoughts [on|off]` toggles the live-reasoning display; bare `/thoughts` flips it.
+#[tokio::test]
+async fn thoughts_slash_toggles_show_thinking() {
+    let mut app = App::new();
+    app.config.show_thinking = true;
+    handle_slash(&mut app, "thoughts off").await;
+    assert!(!app.config.show_thinking);
+    handle_slash(&mut app, "thoughts on").await;
+    assert!(app.config.show_thinking);
+    handle_slash(&mut app, "thoughts").await;
+    assert!(
+        !app.config.show_thinking,
+        "bare /thoughts flips the current state"
+    );
+}
+
 #[test]
 fn subagent_fleet_row_tracks_tokens_not_steps() {
     let mut app = App::new();

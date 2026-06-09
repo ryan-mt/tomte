@@ -424,6 +424,22 @@ pub(super) const COMPACT_PROMPT: &str =
                               where we left off. Keep it under 30 lines. After this, treat the \
                               summary as the canonical context — earlier messages are gone.";
 
+/// Build the compaction instruction, optionally steered by a user-supplied
+/// focus (`/compact <focus>`). Without a focus this is exactly [`COMPACT_PROMPT`];
+/// with one, the focus is appended as an emphasis directive while the
+/// self-contained-summary contract is preserved (a blank/whitespace focus is
+/// treated as no focus, so `/compact   ` behaves like a bare `/compact`).
+pub(super) fn compact_prompt(focus: Option<&str>) -> String {
+    match focus.map(str::trim).filter(|f| !f.is_empty()) {
+        Some(f) => format!(
+            "{COMPACT_PROMPT}\n\nThe user asked you to pay particular attention to: {f}. \
+             Give that extra weight and detail in the summary, but still keep it \
+             self-contained so nothing else essential is lost."
+        ),
+        None => COMPACT_PROMPT.to_string(),
+    }
+}
+
 /// Appended after a file-changing turn to elicit an auto-captured decision. The
 /// model answers as itself (provider-agnostic); the harness parses the reply
 /// with [`crate::decisions::parse_captured`]. It asks for ONE JSON object or the

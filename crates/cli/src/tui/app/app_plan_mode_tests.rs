@@ -434,6 +434,7 @@ fn tool_result_invalidates_render_cache() {
         blocks_len: app.blocks.len(),
         inner_width: 80,
         expanded_tools: false,
+        show_thinking: true,
         last_block_size: 0,
         lines: Vec::new(),
         prefix_split: None,
