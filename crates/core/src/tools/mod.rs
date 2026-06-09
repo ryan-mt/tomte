@@ -30,6 +30,9 @@ pub use args::{
     deserialize_optional_u64, deserialize_optional_usize, parse_args,
 };
 pub use registry::Registry;
+// Shared with the race judge, so a replayed event stream resolves a model's
+// tool-name spelling (`bash`, `shell`, …) the same way execution did.
+pub(crate) use registry::canonical_tool_name;
 pub use types::{
     BackgroundShellState, BgStatus, Checkpoint, RewindOutcome, RewindPointView, SessionState,
     TodoItem, TodoStatus, UndoEntry, WorktreeState,

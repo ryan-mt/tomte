@@ -37,6 +37,9 @@ pub use defs::{
     context_window_label, is_context_overflow_message, model_context_limit, model_supports_1m,
     Agent, AgentEvent, ConscienceChoice,
 };
+// Shared with the race judge, so replayed event streams get the SAME argument
+// tolerance the live agent applied when it executed the calls.
+pub(crate) use toolphase::parse_tool_call_arguments;
 pub use usage::default_system_prompt;
 
 #[cfg(test)]

@@ -22,12 +22,7 @@ impl Agent {
             if !matches!(name, "edit_file" | "write_file" | "multi_edit") {
                 continue;
             }
-            let raw = if pc.args.text.trim().is_empty() {
-                "{}"
-            } else {
-                &pc.args.text
-            };
-            let Ok(args) = serde_json::from_str::<Value>(raw) else {
+            let Some(args) = conscience_change_args(name, &pc.args.text) else {
                 continue;
             };
             let Some((file, change)) = crate::conscience::change_summary(name, &args) else {
@@ -666,7 +661,7 @@ impl Agent {
 /// Anything else (including a plain string that is not an object) is returned
 /// as parsed, so the caller's "arguments must be a JSON object" check still
 /// rejects genuinely wrong shapes with a self-correct hint.
-pub(super) fn parse_tool_call_arguments(text: &str) -> Result<Value, serde_json::Error> {
+pub(crate) fn parse_tool_call_arguments(text: &str) -> Result<Value, serde_json::Error> {
     if text.trim().is_empty() {
         return Ok(Value::Object(Default::default()));
     }
@@ -677,6 +672,17 @@ pub(super) fn parse_tool_call_arguments(text: &str) -> Result<Value, serde_json:
         }
     }
     Ok(v)
+}
+
+/// Resolve one edit-class call's arguments for the conscience pre-check with
+/// the same tolerance the executing tool phase applies — the raw-text parse
+/// (empty → `{}`, double-encoded payload unwrapped) plus the alias fold the
+/// history uses (`filePath`/`file_path` → `path`, `oldString` → `old_string`,
+/// …). Without it, a call the tool phase happily executes can slip past the
+/// conscience purely on spelling.
+fn conscience_change_args(tool_name: &str, text: &str) -> Option<Value> {
+    let args = parse_tool_call_arguments(text).ok()?;
+    Some(canonical_history_arguments(tool_name, &args).unwrap_or(args))
 }
 
 #[cfg(test)]
@@ -720,5 +726,20 @@ mod arg_parse_tests {
         ));
         // Truly invalid JSON still errors for the self-correct path.
         assert!(parse_tool_call_arguments("{not json").is_err());
+    }
+
+    #[test]
+    fn conscience_args_get_the_same_tolerance_as_execution() {
+        // Double-encoded edit arguments with alias spellings: the tool phase
+        // unwraps them and the tool's serde aliases accept them, so the edit
+        // RUNS — the conscience must see the same resolved object, not skip.
+        let inner = json!({"filePath": "src/a.rs", "oldString": "x", "newString": "y"});
+        let outer = serde_json::to_string(&inner.to_string()).unwrap();
+        let args = super::conscience_change_args("edit_file", &outer).unwrap();
+        assert_eq!(args["path"], "src/a.rs");
+        assert_eq!(args["old_string"], "x");
+        assert_eq!(args["new_string"], "y");
+        // Unparseable arguments still skip (the call bounces before running).
+        assert!(super::conscience_change_args("edit_file", "{nope").is_none());
     }
 }

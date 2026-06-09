@@ -235,7 +235,7 @@ impl Registry {
 /// `tools: ["Read", "Grep", "Bash"]` resolves correctly). Returns `None` for
 /// names with no tomte equivalent. `Task` maps to `dispatch_agent`, which
 /// the caller always strips.
-fn canonical_tool_name(name: &str) -> Option<&'static str> {
+pub(crate) fn canonical_tool_name(name: &str) -> Option<&'static str> {
     let lowered = name.trim().to_ascii_lowercase();
     let name = strip_tool_namespace(&lowered);
     match name {
