@@ -288,6 +288,37 @@ fn command_uses_json_output(command: &Option<Command>) -> bool {
     )
 }
 
+/// True when a panic payload is the stdlib's print-macro abort after the read
+/// end of the pipe closed early (`tomte twin | head`). Unix says
+/// "Broken pipe (os error 32)"; Windows "The pipe is being closed. (os error
+/// 232)". A consumer closing the pipe means it has all the output it wanted —
+/// success for a CLI, not a crash.
+fn is_broken_pipe_panic(message: &str) -> bool {
+    message.contains("failed printing to")
+        && (message.contains("Broken pipe") || message.contains("os error 232"))
+}
+
+/// Exit 0 instead of aborting with a panic when stdout/stderr is a pipe the
+/// consumer closed early. Every evidence command (`twin`, `why-context`,
+/// `prove --json`, `why`, `blame`) is built to be piped into `head`/`Select-
+/// Object -First` in scripts and CI; without this they'd report a crash
+/// (exit -1/101) for a completely routine shell pattern. Any other panic falls
+/// through to the default hook untouched.
+fn install_broken_pipe_exit() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied());
+        if msg.is_some_and(is_broken_pipe_panic) {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() -> Result<()> {
     // If we were re-launched as the OS-sandbox helper (`__sandbox …`), apply the
     // sandbox to this process and exec the target command — this never returns on
@@ -295,6 +326,7 @@ fn main() -> Result<()> {
     // runtime starts: the helper restricts itself with Landlock/seccomp and execs,
     // which is only sound while the process is still single-threaded.
     tomte_core::tools::shell::sandbox::maybe_exec_helper();
+    install_broken_pipe_exit();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -388,6 +420,32 @@ async fn async_main() -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    // The broken-pipe classifier must catch the stdlib print-macro panic on
+    // every OS wording and nothing else — a real bug's panic must still abort.
+    #[test]
+    fn broken_pipe_panic_classifier_matches_only_pipe_aborts() {
+        // Unix wording (os error 32) and the Windows wording (os error 232).
+        assert!(is_broken_pipe_panic(
+            "failed printing to stdout: Broken pipe (os error 32)"
+        ));
+        assert!(is_broken_pipe_panic(
+            "failed printing to stdout: The pipe is being closed. (os error 232)"
+        ));
+        // eprintln!'s stderr variant.
+        assert!(is_broken_pipe_panic(
+            "failed printing to stderr: Broken pipe (os error 32)"
+        ));
+        // Real panics must NOT be swallowed.
+        assert!(!is_broken_pipe_panic("index out of bounds: the len is 3"));
+        assert!(!is_broken_pipe_panic(
+            "called `Option::unwrap()` on a `None` value"
+        ));
+        // A different printing failure (disk full) is not a pipe close.
+        assert!(!is_broken_pipe_panic(
+            "failed printing to stdout: No space left on device (os error 28)"
+        ));
+    }
 
     #[test]
     fn hidden_plan_mode_required_flag_parses_before_subcommand() {

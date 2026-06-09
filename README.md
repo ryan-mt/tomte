@@ -2,11 +2,11 @@
 
 # `tomte`
 
-**A calm, multi-model coding agent for your terminal.**
+**The coding agent that proves its work.**
 
-Rust-fast · runs any model · quiet and surgical — and it hatches a pixel companion.
+Calm, multi-model, Rust-fast · quiet and surgical — and it hatches a pixel companion.
 
-`0.0.2` · MIT · built in 🦀 Rust
+`0.0.3` · MIT · built in 🦀 Rust
 
 </div>
 
@@ -14,12 +14,46 @@ Rust-fast · runs any model · quiet and surgical — and it hatches a pixel com
 
 One binary. Point it at OpenAI or Anthropic, drop it into any repo, and it reads, writes,
 runs, searches, and *reasons* its way through real work — streaming, with a full tool belt
-and a terminal UI that stays out of the way.
+and a terminal UI that stays out of the way. Named for the Nordic farm spirit who keeps the
+household in order overnight: meticulous, quiet, and intolerant of sloppy work.
 
 ```bash
 tomte            # open the TUI and start working
 tomte chat "explain what this repo does, then add a test for the parser"
 ```
+
+## The tomte way
+
+Most coding agents *tell* you the work is done. tomte is built around four ideas no other
+terminal agent ships together — each one verifiable, none of them "trust me":
+
+- **Done means verified.** `/prove` (or `tomte prove`, exit-code-clean for CI and commit
+  hooks) collects an evidence bundle the CLI gathers *itself* — the files git reports
+  changed, plus the **real exit codes** of your project's own test / typecheck / lint /
+  build. The model never supplies those numbers, so it can't fabricate a green capsule;
+  a check your project could define but doesn't surfaces as ⚠ unverified, never silently
+  dropped.
+- **It remembers *why* — across models.** `record_decision` appends the reasoning behind
+  every non-obvious change to a decision trail that's re-injected each session, so next
+  month's session — or a different model entirely — inherits the *why*, not just the diff.
+  Read it back with `tomte why <loc>`, `tomte blame <file>`, or `/why`; the reconcile pass
+  flags a decision the code has since drifted out from under.
+- **It knows the house.** `tomte twin` builds a verifiable map of the repo — import graph,
+  symbol graph, test→source map, git recency, conventions — and `tomte why-context <seed>`
+  (or `/why-context` in a session) answers the question context-stuffing agents dodge:
+  *which files actually belong in context, and why*. Every claim is grounded in a real
+  import edge, definition, test, or commit, and the nearby files it leaves out are listed
+  with the reason each is unreachable.
+- **Don't trust one agent — race them.** `tomte race "<task>" --agents 4` runs the task as
+  a tournament: contestants varying model, effort, and style, each in its own isolated git
+  worktree, judged on *measured evidence* — the project's own checks, diff size, added
+  tests, risky commands run. The judge is deterministic (an LLM is never the referee), so
+  the verdict is reproducible; `--apply` lands the winning patch.
+
+Wrapped around those: a glass-box pre-flight that states what a write or shell command will
+touch *before* it runs, recorded decisions resurfacing as house rules the agent re-reads
+before it could break one, and an end-of-turn receipt — files touched, tests run, the why
+it recorded.
 
 ## Why you might like it
 
@@ -36,13 +70,9 @@ tomte chat "explain what this repo does, then add a test for the parser"
   worktree; `exit_worktree` cleans it up after a safety check so you never clobber main.
 - **Knows what it's spending.** `/usage` reads your provider's live quota, `/cost` tallies
   tokens and dollars, `/context` shows where the window is going.
-- **Remembers *why*, across models.** `record_decision` logs the reasoning behind a non-obvious
-  change to a decision trail that's re-injected every session, so a later session — or a
-  different model — inherits *why* it was done that way. Read it back with `tomte why <loc>`,
-  `tomte blame <file>`, or `/why`.
-- **Tells you before it acts.** A glass-box pre-flight states what a write or shell command will
-  change and how far it reaches before it runs, and a file's recorded decisions surface as house
-  rules so the agent re-reads its own constraints before it can break one.
+- **Recovers gracefully.** A checkpoint every turn: `/undo` reverts the last file edit,
+  `/rewind` restores the session to an earlier turn *and* reverts the edits made since —
+  each picker row showing its blast radius before you commit.
 
 ## 60-second start
 
@@ -104,6 +134,15 @@ echo "read CLAUDE.md and summarize" | tomte chat
 tomte run --cwd /srv/project --prompt-file nightly-task.md   # scheduler-friendly alias
 ```
 
+**And the evidence commands** — no model in the loop, safe anywhere:
+
+```bash
+tomte prove --json                       # run the project's own checks; non-zero exit on failure
+tomte twin                               # build/inspect the repo's verifiable map
+tomte why-context src/auth/session.rs    # which files belong in context, and why
+tomte race "fix the flaky retry test" --agents 4   # tournament: isolated worktrees, measured judge
+```
+
 ## The tool belt
 
 The model can reach for any of these — streamed, schema-validated, and executed in parallel
@@ -151,6 +190,10 @@ Inside the TUI:
 | `/worktree create [name]` · `/worktree exit keep\|remove [--discard]` | isolated git worktrees |
 | `/commit` · `/commit-push-pr` | Conventional-Commit generation, push, and PR via `gh` |
 | `/why` | read back the decision trail — *why* past changes were made (`tomte why <loc>` / `tomte blame <file>` from the CLI; add `--json` for machine-readable output) |
+| `/prove` | verify the work — run the project's own test/typecheck/lint/build and show the proof capsule (`tomte prove` headless; non-zero exit gates CI) |
+| `/twin` · `/why-context <seed>` | the Repo Twin and the context X-ray — five verifiable indexes of the repo, and which files belong in context for a file/symbol, with why |
+| `/rewind` | restore the session to an earlier turn and revert the file edits made since (each row shows its blast radius first); `/undo` reverts just the last edit |
+| `/compact <focus>` | compact the conversation, steering the summary toward what you name |
 | `/buddy` | hatch a pixel companion — a rarity-weighted species seeded from your account, so it's stable for you and only re-rolls on an account switch (`/buddy off`, `/buddy reset`) |
 
 **Composer prefixes** — typed right in the chat input: `@<path>` attaches a file via gitignore-aware
@@ -198,9 +241,14 @@ approval prompts or redirect the model endpoint.
 | `gpt-5.4-mini` | Fast and cheaper, still strong for routine code |
 | `gpt-5.4-nano` | Latency-sensitive, cheapest |
 | `gpt-5.2` · `gpt-5` | Earlier frontier generations, still selectable |
+| `claude-fable-5` | Anthropic's top tier — 1M context, adaptive thinking, `xhigh` effort |
+| `claude-opus-4-8` | Frontier Opus — most capable Opus, 1M context |
+| `claude-sonnet-4-6` | Balanced speed/capability |
+| `claude-haiku-4-5` | Fast and cheap for routine work |
 
 Retired ids (`gpt-5.1`, `gpt-5.3`, `gpt-5-pro`, `gpt-5-mini`, `gpt-5-nano`) auto-migrate to
-their current equivalent on startup, so an existing `config.json` keeps working.
+their current equivalent on startup, so an existing `config.json` keeps working. Earlier
+Claude tiers (Opus 4.5–4.7, dated snapshots) stay selectable and price correctly in `/cost`.
 
 **Other providers.** Any OpenAI-compatible endpoint works via a `<id>/<model>` spec. The common
 ones are built in — `groq`, `openrouter`, `deepseek`, `xai`, `together`, `fireworks`, `cerebras`,
