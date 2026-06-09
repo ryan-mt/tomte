@@ -366,6 +366,56 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
                 app.blocks.push(Block::System(report));
             }
         }
+        "twin" => {
+            // The Repo Twin from inside a session — the same five verifiable
+            // indexes `tomte twin` builds (imports, symbols, test map, git
+            // recency, conventions), cached beside the project state and
+            // rebuilt when the tree changes. The first scan walks the whole
+            // tree, so it runs on a blocking task off the UI thread.
+            let cwd = app.cwd.clone();
+            let rebuild = arg.trim() == "--rebuild";
+            let report = tokio::task::spawn_blocking(move || {
+                let twin = if rebuild {
+                    tomte_core::repo_twin::rebuild(&cwd)
+                } else {
+                    tomte_core::repo_twin::load_or_build(&cwd)
+                };
+                twin.map(|t| t.render_summary())
+            })
+            .await;
+            let text = match report {
+                Ok(Ok(card)) => card,
+                Ok(Err(e)) => format!("twin: {e}"),
+                Err(e) => format!("twin: {e}"),
+            };
+            app.blocks.push(Block::System(text));
+        }
+        "why-context" | "xray" => {
+            // The Context X-Ray query: which files belong in context for this
+            // seed (a file, a stack-trace `file:line`, or a symbol), each
+            // claim grounded in a real import/symbol/test/git/decision edge —
+            // and which nearby files are left out, with the reason.
+            let seed = arg.trim().to_string();
+            if seed.is_empty() {
+                app.blocks.push(Block::System(
+                    "Usage: /why-context <file|symbol|file:line>  — which files belong in context, and why".into(),
+                ));
+            } else {
+                let cwd = app.cwd.clone();
+                let report = tokio::task::spawn_blocking(move || {
+                    let twin = tomte_core::repo_twin::load_or_build(&cwd)?;
+                    let sel = tomte_core::repo_twin::select::why_context(&twin, &cwd, &seed);
+                    anyhow::Ok(tomte_core::repo_twin::select::render(&sel))
+                })
+                .await;
+                let text = match report {
+                    Ok(Ok(card)) => card,
+                    Ok(Err(e)) => format!("why-context: {e}"),
+                    Err(e) => format!("why-context: {e}"),
+                };
+                app.blocks.push(Block::System(text));
+            }
+        }
         "review" => {
             let prompt = "Review the uncommitted changes in this repository. Run `git diff` (or \
                           the run_shell tool) to see them, then assess for correctness, security \

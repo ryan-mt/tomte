@@ -47,6 +47,16 @@ pub fn slash_commands(cwd: &Path) -> Vec<PickerItem> {
             "the decision trail for one file (greppable)",
         ),
         item(
+            "twin",
+            "/twin",
+            "the Repo Twin: five verifiable indexes of this repo (--rebuild)",
+        ),
+        item(
+            "why-context",
+            "/why-context",
+            "context X-ray: which files belong in context for a file/symbol, and why",
+        ),
+        item(
             "review",
             "/review",
             "ask the agent to review uncommitted changes",

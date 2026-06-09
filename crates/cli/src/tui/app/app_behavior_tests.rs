@@ -76,6 +76,19 @@ async fn prove_slash_arms_collection_and_guards_double_run() {
     );
 }
 
+// `/why-context` with no seed prints usage instead of building the twin —
+// the X-ray needs a file/symbol to trace, so a bare call must stay instant.
+#[tokio::test]
+async fn why_context_slash_without_seed_prints_usage() {
+    let mut app = App::new();
+    handle_slash(&mut app, "why-context").await;
+    let last = app.blocks.last().expect("a note");
+    assert!(
+        matches!(last, Block::System(s) if s.contains("Usage: /why-context")),
+        "bare /why-context should print usage"
+    );
+}
+
 // `/thoughts [on|off]` toggles the live-reasoning display; bare `/thoughts` flips it.
 #[tokio::test]
 async fn thoughts_slash_toggles_show_thinking() {

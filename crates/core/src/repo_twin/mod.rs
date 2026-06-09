@@ -191,6 +191,32 @@ impl RepoTwin {
             rule_docs: self.rules.len(),
         }
     }
+
+    /// The one-glance text card `tomte twin` and `/twin` share — counts for the
+    /// five indexes plus the truncation note, ending with the why-context hint.
+    pub fn render_summary(&self) -> String {
+        let s = self.summary();
+        let mut out = String::new();
+        out.push_str(&format!("Repo Twin — {}\n", self.root));
+        if self.truncated {
+            out.push_str("  (index truncated: the repo exceeds the file cap)\n");
+        }
+        out.push_str(&format!("  files            {}\n", s.files));
+        out.push_str(&format!("    source         {}\n", s.source_files));
+        out.push_str(&format!("    tests          {}\n", s.test_files));
+        out.push_str(&format!(
+            "  import edges     {} ({} resolved inside the repo)\n",
+            s.import_edges, s.resolved_imports
+        ));
+        out.push_str(&format!("  symbols          {}\n", s.symbols));
+        out.push_str(&format!("  test→source map  {} edges\n", s.test_edges));
+        out.push_str(&format!("  git-tracked      {} files\n", s.tracked_by_git));
+        out.push_str(&format!("  convention docs  {}\n", s.rule_docs));
+        out.push_str(
+            "\nAsk why a file/symbol is (or isn't) relevant:  tomte why-context <file|symbol>",
+        );
+        out
+    }
 }
 
 /// Counts surfaced by `tomte twin map [--json]`.
