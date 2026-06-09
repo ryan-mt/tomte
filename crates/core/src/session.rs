@@ -280,6 +280,14 @@ pub fn list(cwd: &Path) -> Vec<SessionMeta> {
     out
 }
 
+/// The id of the most recently updated session for `cwd`, or `None` if this
+/// directory has no saved sessions. Backs `tomte --continue`, which resumes it
+/// directly without opening the picker. Relies on [`list`] being sorted
+/// newest-first.
+pub fn latest_id(cwd: &Path) -> Option<String> {
+    list(cwd).into_iter().next().map(|m| m.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::unique_tmp_path;

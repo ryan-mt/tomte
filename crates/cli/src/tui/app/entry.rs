@@ -3,24 +3,35 @@
 use super::*;
 
 pub async fn run() -> Result<()> {
-    run_with(false, false).await
+    run_with(false, false, false).await
 }
 
 pub async fn run_plan_mode_required() -> Result<()> {
-    run_with(false, true).await
+    run_with(false, false, true).await
 }
 
 /// Same as [`run`] but opens the resume-session picker on first frame so
 /// `tomte resume` lands the user directly on the session list.
 pub async fn run_resume() -> Result<()> {
-    run_with(true, false).await
+    run_with(true, false, false).await
 }
 
 pub async fn run_resume_plan_mode_required() -> Result<()> {
-    run_with(true, true).await
+    run_with(true, false, true).await
 }
 
-pub async fn run_with(start_with_resume_picker: bool, plan_mode_required: bool) -> Result<()> {
+/// Same as [`run`] but resumes the most recent session in this directory on the
+/// first frame, no picker (`tomte --continue`). Falls back to a fresh session,
+/// with a note, when the directory has none.
+pub async fn run_continue() -> Result<()> {
+    run_with(false, true, false).await
+}
+
+pub async fn run_with(
+    start_with_resume_picker: bool,
+    resume_latest: bool,
+    plan_mode_required: bool,
+) -> Result<()> {
     let mode = RenderMode::from_env();
     // Install a panic hook that restores the terminal before unwinding, so a
     // panic inside main_loop (or any library it pulls in) doesn't leave the
@@ -42,7 +53,13 @@ pub async fn run_with(start_with_resume_picker: bool, plan_mode_required: bool) 
     // SessionStart hook (best-effort, once per interactive session). Spawned so a
     // slow hook can't delay the first frame; its output/exit code is ignored.
     tokio::spawn(async { tomte_core::hooks::load().fire_session_start().await });
-    let res = main_loop(&mut terminal, start_with_resume_picker, plan_mode_required).await;
+    let res = main_loop(
+        &mut terminal,
+        start_with_resume_picker,
+        resume_latest,
+        plan_mode_required,
+    )
+    .await;
     restore_terminal(&mut terminal, mode)?;
     res
 }

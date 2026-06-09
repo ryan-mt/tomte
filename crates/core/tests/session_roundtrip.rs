@@ -143,6 +143,18 @@ fn session_save_load_list_and_missing_id() {
     );
     assert_eq!(list[0].id, "beta", "got: {list:#?}");
 
+    // --- latest_id backs `tomte --continue` ------------------------------
+    assert_eq!(
+        session::latest_id(&cwd_a).as_deref(),
+        Some("beta"),
+        "latest_id is the newest-updated session"
+    );
+    assert_eq!(
+        session::latest_id(&PathBuf::from("/tmp/tomte-test-proj-empty")),
+        None,
+        "a directory with no sessions has no latest id"
+    );
+
     // --- cwd isolation ---------------------------------------------------
     session::save(&record(&cwd_b, "delta", 5_000)).expect("save delta");
     let la = session::list(&cwd_a);

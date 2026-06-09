@@ -23,6 +23,7 @@ const PASTE_COALESCE_GAP: Duration = Duration::from_millis(15);
 pub async fn main_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     start_with_resume_picker: bool,
+    resume_latest: bool,
     plan_mode_required: bool,
 ) -> Result<()> {
     let mut app = App::new();
@@ -31,6 +32,18 @@ pub async fn main_loop(
     }
     if start_with_resume_picker && app.screen == Screen::Chat {
         app.start_with_resume_picker = true;
+    }
+    // `tomte --continue`: seed the most recent session id so the deferred resume
+    // path (further down the loop) loads it on the first eligible frame — the
+    // same mechanism the picker uses, minus the picker. A directory with no
+    // saved session starts fresh with a one-line note.
+    if resume_latest && app.screen == Screen::Chat {
+        match tomte_core::session::latest_id(&app.cwd) {
+            Some(id) => app.pending_resume_id = Some(id),
+            None => app.blocks.push(Block::System(
+                "No previous session in this directory to continue — starting fresh.".into(),
+            )),
+        }
     }
     // First-run setup card: if an important external tool (git) is missing, drop
     // a one-time block with the OS-specific install command. We only show the

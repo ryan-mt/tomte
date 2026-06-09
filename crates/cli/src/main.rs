@@ -15,6 +15,11 @@ struct Cli {
     /// teammate/spawn flows that pass it.
     #[arg(long, hide = true, global = true)]
     plan_mode_required: bool,
+    /// Resume the most recent session in this directory without the picker
+    /// (like `claude --continue`). Ignored when a subcommand is given; starts
+    /// fresh if the directory has no saved session.
+    #[arg(long = "continue", short = 'c')]
+    continue_session: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -238,6 +243,7 @@ async fn async_main() -> Result<()> {
     init_tracing(!tui_mode && !json_output_mode);
 
     match cli.command {
+        None if cli.continue_session => tui::run_continue().await,
         None if cli.plan_mode_required => tui::run_plan_mode_required().await,
         None => tui::run().await,
         Some(Command::Login {
@@ -322,6 +328,22 @@ mod tests {
             Cli::try_parse_from(["tomte", "chat", "--plan-mode-required", "inspect"]).unwrap();
 
         assert!(cli.plan_mode_required);
+    }
+
+    #[test]
+    fn continue_flag_parses_with_no_subcommand() {
+        let cli = Cli::try_parse_from(["tomte", "--continue"]).unwrap();
+        assert!(cli.continue_session);
+        assert!(cli.command.is_none());
+
+        // Short form `-c`.
+        let cli = Cli::try_parse_from(["tomte", "-c"]).unwrap();
+        assert!(cli.continue_session);
+        assert!(cli.command.is_none());
+
+        // Off by default.
+        let cli = Cli::try_parse_from(["tomte"]).unwrap();
+        assert!(!cli.continue_session);
     }
 
     #[test]

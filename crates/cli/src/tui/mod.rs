@@ -10,4 +10,6 @@ mod picker;
 mod selection;
 mod ui;
 
-pub use app::{run, run_plan_mode_required, run_resume, run_resume_plan_mode_required};
+pub use app::{
+    run, run_continue, run_plan_mode_required, run_resume, run_resume_plan_mode_required,
+};
