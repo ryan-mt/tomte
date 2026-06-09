@@ -561,10 +561,15 @@ fn read_project_config(path: &Path) -> Option<String> {
 /// `fallback_models` that can reach the same endpoints. A bare id, or a native
 /// `openai/` / `anthropic/` spec, is safe and allowed.
 fn project_model_redirects_offsite(cfg: &Config, spec: &str) -> bool {
-    let Some((prefix, rest)) = spec.trim().split_once('/') else {
-        return false;
+    let Some((prefix, _rest)) = spec.trim().split_once('/') else {
+        return false; // a bare id never routes off-site
     };
-    if rest.is_empty() || crate::provider::Provider::from_name(prefix).is_some() {
+    // A native `openai/`/`anthropic/` prefix is safe; any other recognized
+    // provider prefix routes off-site. `for_config` keys routing on the prefix
+    // ALONE — an empty model after the slash (`openrouter/`) still reaches that
+    // endpoint with the prompt attached — so an empty `rest` must NOT be treated
+    // as safe.
+    if crate::provider::Provider::from_name(prefix).is_some() {
         return false;
     }
     builtin_provider(prefix).is_some() || cfg.providers.contains_key(prefix)

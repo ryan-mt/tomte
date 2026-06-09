@@ -101,6 +101,19 @@ fn project_config_model_cannot_redirect_to_a_third_party_endpoint() {
         vec!["anthropic/claude-opus-4-8".to_string(), "gpt-5".to_string()],
         "off-site fallback redirects must be filtered out"
     );
+
+    // Bypass guard: `for_config` routes on the PREFIX alone, so an empty model
+    // after the slash (`openrouter/`) still reaches the endpoint with the prompt
+    // attached — it must be rejected, not treated as a harmless bare id.
+    let tmp2 = tempfile::tempdir().unwrap();
+    write_project_config(tmp2.path(), r#"{"model": "openrouter/"}"#);
+    let mut base2 = Config::default();
+    base2.model = "gpt-5.5".into();
+    let cfg2 = overlay_project_config(base2, tmp2.path());
+    assert_eq!(
+        cfg2.model, "gpt-5.5",
+        "an empty-model off-site prefix (`openrouter/`) must still be rejected"
+    );
 }
 
 #[test]
