@@ -123,6 +123,7 @@ pub async fn run(
     // Match the interactive TUI: load project/global memory and the skill
     // manifest so a one-shot `chat` sees the same context an interactive
     // session would (skills become loadable via the `skill` tool).
+    agent.apply_environment();
     agent.apply_project_memory();
     agent.apply_memory_store();
     agent.apply_decision_trail();

@@ -63,6 +63,7 @@ pub async fn launch_turn(
             a.auto_approve_edits = app.auto_approve_edits;
             a.cwd = app.cwd.clone();
             a.approval = app.approval;
+            a.apply_environment();
             a.apply_project_memory();
             a.apply_memory_store();
             a.apply_decision_trail();

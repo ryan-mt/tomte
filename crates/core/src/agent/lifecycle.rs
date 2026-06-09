@@ -295,6 +295,16 @@ impl Agent {
         self.checkpoints.clear();
     }
 
+    /// Inject the runtime environment facts (cwd, git standing, platform, the
+    /// shell behind `run_shell`, today's date) the model would otherwise guess
+    /// — and guess wrong: bash syntax sent to cmd.exe, "latest" reasoning from
+    /// a stale training cutoff. Range-replaces in place (marker block), so it
+    /// is safe to re-apply; call it FIRST, before the memory/trail/skill
+    /// blocks, so it sits with the base prompt.
+    pub fn apply_environment(&mut self) {
+        crate::agent::apply_environment_block(&mut self.system_prompt, &self.cwd);
+    }
+
     /// Append inherited memory files to the system prompt (Codex / Claude Code /
     /// tomte). At most one file per directory (`AGENTS.override.md` >
     /// `AGENTS.md` > `CLAUDE.md`), project scope is limited to the git root
@@ -362,6 +372,7 @@ impl Agent {
     /// changes. Conversation history and session state are intentionally kept.
     pub fn refresh_system_context(&mut self) {
         self.system_prompt = default_system_prompt();
+        self.apply_environment();
         self.apply_project_memory();
         self.apply_memory_store();
         self.apply_decision_trail();

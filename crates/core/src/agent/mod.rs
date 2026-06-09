@@ -41,6 +41,7 @@ pub use defs::{
 // tolerance the live agent applied when it executed the calls.
 pub(crate) use toolphase::parse_tool_call_arguments;
 pub use usage::default_system_prompt;
+pub use usage::{apply_environment_block, environment_block, ENV_BLOCK_BEGIN, ENV_BLOCK_END};
 
 #[cfg(test)]
 mod agent_test_support;
