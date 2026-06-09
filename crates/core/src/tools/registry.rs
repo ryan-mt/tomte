@@ -6,7 +6,7 @@ use crate::openai::Tool;
 
 use super::{
     ask, decision, dispatch, fs, goal, lsp, memory, notebook, plan, search, shell, skill, todo,
-    tool_search, wait, web, worktree, BuiltinTool,
+    tool_search, wait, web, worktree, xray, BuiltinTool,
 };
 
 pub struct Registry {
@@ -44,6 +44,7 @@ impl Registry {
                 Box::new(lsp::Lsp),
                 Box::new(memory::Memory),
                 Box::new(decision::RecordDecision),
+                Box::new(xray::WhyContext),
                 Box::new(notebook::NotebookEdit),
                 Box::new(plan::EnterPlanMode),
                 Box::new(plan::ExitPlanMode),
@@ -170,6 +171,7 @@ impl Registry {
                 "skill" => Box::new(skill::LoadSkill),
                 "ask_user_question" => Box::new(ask::AskUserQuestion),
                 "record_decision" => Box::new(decision::RecordDecision),
+                "why_context" => Box::new(xray::WhyContext),
                 "wait" => Box::new(wait::Wait),
                 _ => continue,
             };
@@ -270,6 +272,7 @@ fn canonical_tool_name(name: &str) -> Option<&'static str> {
         "skill" | "load_skill" | "loadskill" => Some("skill"),
         "ask_user_question" | "askuserquestion" => Some("ask_user_question"),
         "record_decision" | "recorddecision" => Some("record_decision"),
+        "why_context" | "whycontext" | "why-context" | "xray" => Some("why_context"),
         "wait" | "sleep" => Some("wait"),
         "dispatch_agent" | "dispatchagent" | "agent" | "task" => Some("dispatch_agent"),
         _ => None,

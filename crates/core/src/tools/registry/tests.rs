@@ -21,6 +21,19 @@ fn def_names(reg: &Registry) -> Vec<String> {
         .collect()
 }
 
+/// `why_context` (the Repo Twin X-ray) is a standard tool, resolvable by its
+/// aliases, and whitelistable for subagents (it's read-only, so Explore-style
+/// agents can map a codebase with it).
+#[test]
+fn why_context_is_standard_aliased_and_subagent_whitelistable() {
+    let std_reg = Registry::standard();
+    assert!(names(&std_reg).contains(&"why_context"));
+    assert!(std_reg.find("xray").is_some(), "alias resolves");
+    assert!(std_reg.find("why-context").is_some(), "alias resolves");
+    let filtered = Registry::filtered(&["why_context".to_string()]);
+    assert!(filtered.find("why_context").is_some());
+}
+
 /// Minimal fake MCP tool so registry tests don't need a live server.
 struct FakeMcp(&'static str, &'static str);
 #[async_trait::async_trait]

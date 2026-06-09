@@ -15,6 +15,7 @@ pub mod tool_search;
 pub mod wait;
 pub mod web;
 pub mod worktree;
+pub mod xray;
 
 mod validate;
 pub use validate::{schema_hint, suggest_tool_names, ArgSchemaError};
