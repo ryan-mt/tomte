@@ -34,7 +34,7 @@ pub(super) fn diff_line<'a>(
 /// costs two columns, so counting code points the way a `chars().take(n)` cut
 /// does would let a wide-character line overflow its budget and spill past the
 /// gutter. A `max_cols` of 0 means there is no room for text, so return nothing.
-pub(super) fn truncate_to_width(text: &str, max_cols: usize) -> String {
+pub(crate) fn truncate_to_width(text: &str, max_cols: usize) -> String {
     use unicode_width::UnicodeWidthChar;
     if max_cols == 0 {
         return String::new();
@@ -424,13 +424,10 @@ pub(super) fn compact_args(s: &str) -> String {
                 .iter()
                 .map(|(k, val)| {
                     let pretty = match val {
+                        // Width-based cut (not chars): CJK/emoji args cost two
+                        // columns each, same as every other TUI truncation.
                         serde_json::Value::String(s) => {
-                            let trimmed: String = s.chars().take(50).collect();
-                            format!(
-                                "\"{}{}\"",
-                                trimmed,
-                                if s.chars().count() > 50 { "…" } else { "" }
-                            )
+                            format!("\"{}\"", truncate_to_width(s, 50))
                         }
                         _ => val.to_string(),
                     };
@@ -440,19 +437,7 @@ pub(super) fn compact_args(s: &str) -> String {
                 .join(" ");
         }
     }
-    let mut s = s.replace('\n', " ");
-    if s.len() > 100 {
-        // String::truncate panics if the byte index isn't on a char boundary
-        // (Vietnamese/emoji/CJK in tool args). Walk back to the previous
-        // valid boundary before slicing.
-        let mut cut = 100;
-        while cut > 0 && !s.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        s.truncate(cut);
-        s.push('…');
-    }
-    s
+    truncate_to_width(&s.replace('\n', " "), 100)
 }
 
 pub(super) fn input_height(app: &App) -> u16 {

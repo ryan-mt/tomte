@@ -31,64 +31,62 @@ use status::*;
 use tools::*;
 use util::*;
 
+// Shared with sibling tui modules (picker) so every truncation in the TUI
+// goes through the one display-width-aware helper.
+pub(super) use util::truncate_to_width;
+
 #[cfg(test)]
 mod tests;
 
-pub fn render(f: &mut Frame, app: &mut App) {
-    // The same one-row slot shows the turn spinner OR the compaction progress
-    // bar — they never run at once (compaction only starts once a turn ends).
+/// The seven-slot vertical layout both renderers share. The same one-row slot
+/// shows the turn spinner OR the compaction progress bar — they never run at
+/// once (compaction only starts once a turn ends). Only the chat slot's
+/// minimum differs: the alt screen reserves 5 rows for the transcript, the
+/// inline viewport lets the live tail shrink to nothing.
+fn split_frame(f: &Frame, app: &App, chat_min: u16) -> std::rc::Rc<[Rect]> {
     let spinner_h: u16 = if app.busy || app.compacting { 1 } else { 0 };
-    let queue_h: u16 = queued_height(app);
-    let fleet_h: u16 = fleet_height(app);
-    let todos_h: u16 = todos_height(app);
-    let layout = Layout::default()
+    Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(5),                    // chat            [0]
-            Constraint::Length(spinner_h),         // spinner         [1]
-            Constraint::Length(queue_h),           // queued messages [2]
-            Constraint::Length(fleet_h),           // sub-agent fleet [3]
-            Constraint::Length(todos_h),           // todos           [4]
-            Constraint::Length(input_height(app)), // input           [5]
-            Constraint::Length(1),                 // status line     [6]
+            Constraint::Min(chat_min),              // chat            [0]
+            Constraint::Length(spinner_h),          // spinner         [1]
+            Constraint::Length(queued_height(app)), // queued messages [2]
+            Constraint::Length(fleet_height(app)),  // sub-agent fleet [3]
+            Constraint::Length(todos_height(app)),  // todos           [4]
+            Constraint::Length(input_height(app)),  // input           [5]
+            Constraint::Length(1),                  // status line     [6]
         ])
-        .split(f.area());
+        .split(f.area())
+}
 
-    render_chat(f, layout[0], app);
-    // render_chat reconciles auto_scroll (it flips back on once the user scrolls
-    // to the tail). Only when the user is parked above the tail do we offer the
-    // clickable jump-to-bottom bar; otherwise clear its hit-test rect.
-    if !app.auto_scroll && layout[0].height > 0 {
-        app.jump_to_bottom_hint = Some(render_jump_to_bottom(f, layout[0]));
-    } else {
-        app.jump_to_bottom_hint = None;
-    }
+/// Everything below the chat slot — spinner/compaction row, queued messages,
+/// fleet, todos, input, status. Identical in both renderers; the chat slot
+/// itself (and anything painted over it) is the caller's.
+fn render_panels(f: &mut Frame, layout: &[Rect], app: &mut App) {
     if app.busy {
         render_spinner(f, layout[1], app);
     } else if app.compacting {
         render_compact_progress(f, layout[1], app);
     }
-    if queue_h > 0 {
+    if layout[2].height > 0 {
         render_queue(f, layout[2], app);
     }
-    if fleet_h > 0 {
+    if layout[3].height > 0 {
         render_fleet(f, layout[3], app);
     } else {
         app.subagent_rows.clear();
     }
-    if todos_h > 0 {
+    if layout[4].height > 0 {
         render_todos(f, layout[4], app);
     }
     render_input(f, layout[5], app);
     render_status(f, layout[6], app);
+}
 
-    // Paint the left-drag text selection over the rendered content (below the
-    // buddy / overlay drawn next, which should stay legible on top).
-    if let Some(sel) = app.selection {
-        let area = f.area();
-        super::selection::highlight(f.buffer_mut(), &sel, area);
-    }
-
+/// The top layer both renderers share, drawn last so it stays legible over
+/// everything: the hatch animation / corner buddy over the chat area, then the
+/// overlay picker and the approval/conscience modals anchored above the input.
+fn render_overlays(f: &mut Frame, layout: &[Rect], app: &mut App) {
     // Buddy companion: the hatch animation takes over the chat area; otherwise
     // the adopted pet tucks into the bottom-right corner.
     if app.hatch.is_some() {
@@ -96,8 +94,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
     } else if let (Some(pet), false) = (app.buddy_pet, app.buddy_hidden) {
         render_corner_buddy(f, layout[0], pet);
     }
-
-    // Overlay popup — drawn above the input.
     if let Some((_, picker)) = &app.overlay {
         super::picker::render(f, layout[5], picker);
     }
@@ -109,6 +105,30 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 }
 
+pub fn render(f: &mut Frame, app: &mut App) {
+    let layout = split_frame(f, app, 5);
+
+    render_chat(f, layout[0], app);
+    // render_chat reconciles auto_scroll (it flips back on once the user scrolls
+    // to the tail). Only when the user is parked above the tail do we offer the
+    // clickable jump-to-bottom bar; otherwise clear its hit-test rect.
+    if !app.auto_scroll && layout[0].height > 0 {
+        app.jump_to_bottom_hint = Some(render_jump_to_bottom(f, layout[0]));
+    } else {
+        app.jump_to_bottom_hint = None;
+    }
+    render_panels(f, &layout, app);
+
+    // Paint the left-drag text selection over the rendered content (below the
+    // buddy / overlay drawn next, which should stay legible on top).
+    if let Some(sel) = app.selection {
+        let area = f.area();
+        super::selection::highlight(f.buffer_mut(), &sel, area);
+    }
+
+    render_overlays(f, &layout, app);
+}
+
 /// Inline-viewport render (SOUL Pillar 4 — the calm, tidy terminal). Unlike
 /// [`render`], which paints the whole transcript into an alternate-screen
 /// layout, this paints only the LIVE part of the session: the active
@@ -117,60 +137,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
 /// `insert_before` (see `app::commit_finished_blocks`), so they are not redrawn
 /// here — the terminal's own scroll and copy keep working on that history.
 pub fn render_inline(f: &mut Frame, app: &mut App) {
-    let spinner_h: u16 = if app.busy || app.compacting { 1 } else { 0 };
-    let queue_h = queued_height(app);
-    let fleet_h = fleet_height(app);
-    let todos_h = todos_height(app);
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(0),                    // live turn tail  [0]
-            Constraint::Length(spinner_h),         // spinner         [1]
-            Constraint::Length(queue_h),           // queued messages [2]
-            Constraint::Length(fleet_h),           // sub-agent fleet [3]
-            Constraint::Length(todos_h),           // todos           [4]
-            Constraint::Length(input_height(app)), // input           [5]
-            Constraint::Length(1),                 // status line     [6]
-        ])
-        .split(f.area());
-
+    let layout = split_frame(f, app, 0);
     render_inline_tail(f, layout[0], app);
-    if app.busy {
-        render_spinner(f, layout[1], app);
-    } else if app.compacting {
-        render_compact_progress(f, layout[1], app);
-    }
-    if queue_h > 0 {
-        render_queue(f, layout[2], app);
-    }
-    if fleet_h > 0 {
-        render_fleet(f, layout[3], app);
-    } else {
-        app.subagent_rows.clear();
-    }
-    if todos_h > 0 {
-        render_todos(f, layout[4], app);
-    }
-    render_input(f, layout[5], app);
-    render_status(f, layout[6], app);
-
-    // Hatch animation / corner buddy share the live area, same as full mode.
-    if app.hatch.is_some() {
-        render_hatch(f, layout[0], app);
-    } else if let (Some(pet), false) = (app.buddy_pet, app.buddy_hidden) {
-        render_corner_buddy(f, layout[0], pet);
-    }
-
-    // Overlay popup + approval modal anchor above the input, same as full mode.
-    if let Some((_, picker)) = &app.overlay {
-        super::picker::render(f, layout[5], picker);
-    }
-    if app.pending_approval.is_some() {
-        render_approval(f, layout[5], app);
-    }
-    if app.pending_conscience.is_some() {
-        render_conscience(f, layout[5], app);
-    }
+    render_panels(f, &layout, app);
+    render_overlays(f, &layout, app);
 }
 
 /// Render the live (uncommitted) tail — usually just the streaming block —

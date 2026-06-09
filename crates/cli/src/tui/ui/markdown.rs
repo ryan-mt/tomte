@@ -3,22 +3,25 @@
 use super::*;
 
 /// Very small inline markdown renderer: handles `` `code` ``, **bold**,
-/// *italic*, and `[text](http…)` links. Only a *matched* pair styles its span —
-/// an unmatched marker (a glob like `*.rs`, a multiplication `2 * 3`, or an
-/// unterminated `` `code ``) is emitted literally instead of swallowing the
-/// rest of the line. Emphasis follows CommonMark's flanking rule loosely: a
-/// marker only opens when the character after it is non-whitespace, and only
-/// closes when the character before it is non-whitespace, so a spaced asterisk
-/// stays a plain asterisk.
+/// *italic*, `~~strikethrough~~`, and `[text](http…)` links. Only a *matched*
+/// pair styles its span — an unmatched marker (a glob like `*.rs`, a
+/// multiplication `2 * 3`, or an unterminated `` `code ``) is emitted literally
+/// instead of swallowing the rest of the line. Emphasis follows CommonMark's
+/// flanking rule loosely: a marker only opens when the character after it is
+/// non-whitespace, and only closes when the character before it is
+/// non-whitespace, so a spaced asterisk stays a plain asterisk.
 pub(super) fn render_markdown_inline(line: &str) -> Vec<Span<'static>> {
     let chars: Vec<char> = line.chars().collect();
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut buf = String::new();
     let code_style = Style::default()
-        .fg(Color::Rgb(255, 184, 108))
-        .bg(Color::Rgb(40, 30, 18));
+        .fg(palette::INLINE_CODE)
+        .bg(palette::INLINE_CODE_BG);
     let bold_style = Style::default().add_modifier(Modifier::BOLD);
     let italic_style = Style::default().add_modifier(Modifier::ITALIC);
+    let strike_style = Style::default()
+        .fg(palette::TEXT_MUTED)
+        .add_modifier(Modifier::CROSSED_OUT);
     let link_style = Style::default()
         .fg(palette::ACCENT)
         .add_modifier(Modifier::UNDERLINED);
@@ -84,6 +87,31 @@ pub(super) fn render_markdown_inline(line: &str) -> Vec<Span<'static>> {
                     // lone `*` (e.g. the `*` in a `**/*.ts` glob), re-introducing
                     // the runaway this guards against.
                     buf.push_str("**");
+                    i += 2;
+                }
+            }
+            // Strikethrough: `~~x~~` where `x` is non-empty and not
+            // space-flanked — same matched-pair rule as bold, so a lone `~` (a
+            // home path `~/src`) or an unterminated `~~` stays literal.
+            '~' if chars.get(i + 1) == Some(&'~') => {
+                let start = i + 2;
+                let close = chars
+                    .get(start)
+                    .filter(|c| !c.is_whitespace())
+                    .and_then(|_| {
+                        (start + 1..chars.len()).find(|&j| {
+                            chars[j] == '~'
+                                && chars.get(j + 1) == Some(&'~')
+                                && !chars[j - 1].is_whitespace()
+                        })
+                    });
+                if let Some(k) = close {
+                    flush(&mut buf, &mut spans);
+                    let strike: String = chars[start..k].iter().collect();
+                    spans.push(Span::styled(strike, strike_style));
+                    i = k + 2;
+                } else {
+                    buf.push_str("~~");
                     i += 2;
                 }
             }
@@ -198,6 +226,20 @@ pub(super) fn render_assistant_md(text: &str, content_width: usize) -> Vec<Vec<S
             i = if closed { j + 1 } else { j };
             continue;
         }
+        // Thematic break: a line of only `-`/`*`/`_` (3+ of one kind, spaces
+        // allowed) renders as a faint horizontal rule instead of literal
+        // dashes. Checked AFTER the fence (``` opens a block) and BEFORE the
+        // table look-ahead, but never when the NEXT line makes this a table
+        // separator's header (that can't happen: a `---` line under a `|` row
+        // is consumed by the table branch below via lines[i+1]).
+        if is_thematic_break(trimmed) {
+            out.push(vec![Span::styled(
+                "─".repeat(content_width.clamp(1, 80)),
+                Style::default().fg(palette::TEXT_FAINT),
+            )]);
+            i += 1;
+            continue;
+        }
         // GFM table: a row containing `|` immediately followed by a separator
         // row (`|---|:--:|` …).
         if line.contains('|') && i + 1 < lines.len() && is_table_separator(lines[i + 1]) {
@@ -234,13 +276,39 @@ fn parse_heading(s: &str) -> Option<&str> {
     None
 }
 
-/// A leading list marker: a `-`/`*`/`+` bullet (normalized to `•`) or an
-/// ordered `1.`/`1)` item (number kept). Returns the marker to render plus the
-/// item body. The trailing space is required, so `*emphasis*` and `3.14` are
-/// not treated as list items.
+/// A thematic break (`---`, `***`, `___`, also spaced `- - -`): one marker kind
+/// only, at least three of it, nothing else but spaces. Rendered as a faint
+/// horizontal rule. The single-kind requirement keeps mixed runs (`-*-`) and
+/// the empty string literal.
+fn is_thematic_break(trimmed: &str) -> bool {
+    for marker in ['-', '*', '_'] {
+        let n = trimmed.chars().filter(|&c| c == marker).count();
+        if n >= 3 && trimmed.chars().all(|c| c == marker || c == ' ') {
+            return true;
+        }
+    }
+    false
+}
+
+/// A leading list marker: a `-`/`*`/`+` bullet (normalized to `•`, or to a
+/// `☐`/`✓` checkbox for a GFM task item `- [ ]` / `- [x]`) or an ordered
+/// `1.`/`1)` item (number kept). Returns the marker to render plus the item
+/// body. The trailing space is required, so `*emphasis*` and `3.14` are not
+/// treated as list items.
 fn parse_list_marker(s: &str) -> Option<(String, &str)> {
     for bullet in ["- ", "* ", "+ "] {
         if let Some(rest) = s.strip_prefix(bullet) {
+            // GFM task-list item: render the checkbox as a glyph instead of
+            // literal brackets, mirroring the todo panel's done/pending marks.
+            if let Some(body) = rest.strip_prefix("[ ] ") {
+                return Some(("☐ ".to_string(), body));
+            }
+            if let Some(body) = rest
+                .strip_prefix("[x] ")
+                .or_else(|| rest.strip_prefix("[X] "))
+            {
+                return Some(("✓ ".to_string(), body));
+            }
             return Some(("• ".to_string(), rest));
         }
     }

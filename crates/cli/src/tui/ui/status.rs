@@ -187,8 +187,16 @@ pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
         format!("  {cwd} "),
         Style::default().fg(palette::TEXT_MUTED),
     ));
-    let right_text: String = right_spans.iter().map(|s| s.content.as_ref()).collect();
-    let right_width = unicode_width::UnicodeWidthStr::width(right_text.as_str()) as u16;
+    // Narrow terminal: degrade the right side gracefully instead of letting it
+    // clip mid-text. Spans were pushed in priority order (auth dot, model,
+    // effort, context gauge, cwd), so popping from the tail drops cwd first,
+    // then the gauge, then effort — the auth dot and model always survive.
+    let span_width = |s: &Span| unicode_width::UnicodeWidthStr::width(s.content.as_ref()) as u16;
+    let mut right_width: u16 = right_spans.iter().map(span_width).sum();
+    while right_width > area.width && right_spans.len() > 2 {
+        let dropped = right_spans.pop().map(|s| span_width(&s)).unwrap_or(0);
+        right_width -= dropped;
+    }
     let total = area.width;
     let left_width = total.saturating_sub(right_width).saturating_sub(1);
 

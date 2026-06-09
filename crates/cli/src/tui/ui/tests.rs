@@ -637,6 +637,17 @@ mod markdown_inline_tests {
     }
 
     #[test]
+    fn strikethrough_styles_matched_pairs_and_keeps_lone_tildes() {
+        assert_eq!(joined("a ~~gone~~ b"), "a gone b");
+        assert!(has_modifier("a ~~gone~~ b", Modifier::CROSSED_OUT));
+        // A home path and an unterminated marker stay literal.
+        for s in ["see ~/src/main.rs", "~~never closed", "a ~ b ~ c"] {
+            assert_eq!(joined(s), s);
+            assert!(!has_modifier(s, Modifier::CROSSED_OUT));
+        }
+    }
+
+    #[test]
     fn bracket_pairs_without_a_link_scheme_stay_literal() {
         // Indexing, footnotes, and scheme-less targets are prose, not links.
         for s in [
@@ -724,6 +735,28 @@ mod markdown_block_tests {
     fn ordered_item_keeps_its_number() {
         let r = rows("1. first\n2. second", 40);
         assert_eq!(r, vec!["1. first".to_string(), "2. second".to_string()]);
+    }
+
+    #[test]
+    fn thematic_break_renders_as_a_rule_not_dashes() {
+        // `---`, `***`, and a spaced `- - -` each become one faint rule row.
+        for hr in ["---", "***", "- - -", "_____"] {
+            let r = rows(hr, 20);
+            assert_eq!(r.len(), 1, "{hr:?} must be one row");
+            assert!(r[0].chars().all(|c| c == '─'), "{hr:?} → {:?}", r[0]);
+        }
+        // Two dashes and mixed markers are prose, not rules.
+        assert_eq!(rows("--", 20), vec!["--".to_string()]);
+        assert_eq!(rows("-*-", 20), vec!["-*-".to_string()]);
+    }
+
+    #[test]
+    fn task_list_items_render_checkbox_glyphs() {
+        assert_eq!(rows("- [ ] write tests", 40), vec!["☐ write tests"]);
+        assert_eq!(rows("- [x] ship it", 40), vec!["✓ ship it"]);
+        assert_eq!(rows("- [X] ship it", 40), vec!["✓ ship it"]);
+        // A bracket body that is not a checkbox keeps the plain bullet.
+        assert_eq!(rows("- [WIP] thing", 40), vec!["• [WIP] thing"]);
     }
 
     #[test]

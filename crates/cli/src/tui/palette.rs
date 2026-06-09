@@ -10,7 +10,8 @@
 //!
 //! Deliberately kept *out* of this calm flattening, because they encode meaning
 //! or character rather than chrome: the per-provider auth dots (status line), the
-//! context-usage category swatches (`context_view`), and the `/buddy` pet sprite.
+//! context-usage category swatches (`context_view`), the `/buddy` pet sprite,
+//! and the warm inline-code ink below (one hue, one purpose: "this is code").
 
 use ratatui::style::Color;
 
@@ -66,3 +67,12 @@ pub const DIFF_DEL_FG: Color = Color::Rgb(206, 138, 134);
 
 /// Left-drag text-selection highlight background.
 pub const SELECTION_BG: Color = Color::Rgb(44, 56, 80);
+
+// === Documented exception: inline `code` spans in chat prose ===
+// A warm amber on its own dark bed — deliberately NOT the accent, so code
+// fragments read as a different *material* than links/selection chrome.
+
+/// Inline-code ink.
+pub const INLINE_CODE: Color = Color::Rgb(255, 184, 108);
+/// Inline-code bed.
+pub const INLINE_CODE_BG: Color = Color::Rgb(40, 30, 18);

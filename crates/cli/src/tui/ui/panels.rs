@@ -202,20 +202,27 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
             None => s.activity.clone(),
             Some(_) => fleet_idle_verb(&s.id).to_string(),
         };
+        // Budget the row: the metrics tail is the live signal, so it gets its
+        // full width and the prompt absorbs the squeeze — otherwise a long
+        // prompt pushed the tail off the right edge with no ellipsis.
+        let tail = format!(
+            "  · {} · {} tokens · {}",
+            activity_label,
+            format_tokens(s.tokens),
+            format_elapsed(s.started_at.elapsed())
+        );
+        let kind_label = format!("{}  ", s.kind);
+        let fixed = 3 + unicode_width::UnicodeWidthStr::width(kind_label.as_str()); // " " + dot
+        let tail_w = unicode_width::UnicodeWidthStr::width(tail.as_str());
+        let prompt_budget = (area.width as usize)
+            .saturating_sub(fixed + tail_w)
+            .clamp(8, prompt_max);
         lines.push(Line::from(vec![
             Span::raw(" "),
             dot,
-            Span::styled(format!("{}  ", s.kind), kind_style),
-            Span::styled(truncate_chars(&s.prompt, prompt_max), dim),
-            Span::styled(
-                format!(
-                    "  · {} · {} tokens · {}",
-                    activity_label,
-                    format_tokens(s.tokens),
-                    format_elapsed(s.started_at.elapsed())
-                ),
-                dim,
-            ),
+            Span::styled(kind_label, kind_style),
+            Span::styled(truncate_chars(&s.prompt, prompt_budget), dim),
+            Span::styled(tail, dim),
         ]));
         if s.expanded {
             lines.push(Line::from(vec![

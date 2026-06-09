@@ -49,11 +49,15 @@ impl Picker {
         if q.is_empty() {
             return (0..self.items.len()).collect();
         }
+        // Description matches too, so typing what a command DOES finds it
+        // (`/eff` by name, but also "reasoning" finding the effort picker row).
         self.items
             .iter()
             .enumerate()
             .filter(|(_, it)| {
-                it.title.to_lowercase().contains(&q) || it.key.to_lowercase().contains(&q)
+                it.title.to_lowercase().contains(&q)
+                    || it.key.to_lowercase().contains(&q)
+                    || it.description.to_lowercase().contains(&q)
             })
             .map(|(i, _)| i)
             .collect()
@@ -191,12 +195,26 @@ pub fn render(f: &mut Frame, anchor_area: Rect, picker: &Picker) {
             } else {
                 dim
             };
+            // Budget the row to the popup's inner width: the title is never
+            // cut below its own length, the description absorbs the squeeze
+            // with an ellipsis (it used to clip dead at the border).
+            let inner_w = inner_rect.width as usize;
+            let marker_w = 2usize;
+            let title = crate::tui::ui::truncate_to_width(
+                &it.title,
+                inner_w.saturating_sub(marker_w).max(1),
+            );
+            let title_w = unicode_width::UnicodeWidthStr::width(title.as_str());
             let mut spans = vec![
                 Span::styled(marker.to_string(), title_style),
-                Span::styled(it.title.clone(), title_style),
+                Span::styled(title, title_style),
             ];
             if !it.description.is_empty() {
-                spans.push(Span::styled(format!("  {}", it.description), desc_style));
+                let desc_budget = inner_w.saturating_sub(marker_w + title_w + 2);
+                let desc = crate::tui::ui::truncate_to_width(&it.description, desc_budget);
+                if !desc.is_empty() {
+                    spans.push(Span::styled(format!("  {desc}"), desc_style));
+                }
             }
             lines.push(Line::from(spans));
         }
@@ -204,6 +222,33 @@ pub fn render(f: &mut Frame, anchor_area: Rect, picker: &Picker) {
 
     let para = Paragraph::new(lines).style(bg);
     f.render_widget(para, inner_rect);
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::{Picker, PickerItem};
+
+    #[test]
+    fn query_matches_description_too() {
+        let picker = Picker {
+            title: "t".into(),
+            items: vec![
+                PickerItem {
+                    key: "effort".into(),
+                    title: "effort".into(),
+                    description: "pick the reasoning depth".into(),
+                },
+                PickerItem {
+                    key: "model".into(),
+                    title: "model".into(),
+                    description: "switch the active model".into(),
+                },
+            ],
+            selected: 0,
+            query: "reasoning".into(),
+        };
+        assert_eq!(picker.filtered_indices(), vec![0]);
+    }
 }
 
 #[cfg(test)]
