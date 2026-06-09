@@ -101,7 +101,7 @@ pub(super) async fn emit_usage(
         .get("usage")
         .and_then(|usage| usage.get("total_tokens"))
         .and_then(|v| v.as_u64())
-        .unwrap_or(i.saturating_add(o));
+        .unwrap_or_else(|| i.saturating_add(o));
     let _ = tx
         .send(AgentEvent::Usage {
             input_tokens: i,

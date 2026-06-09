@@ -73,7 +73,7 @@ pub async fn handle_key(
             app.blocks
                 .push(Block::System(format!("conscience: {label} — {}", p.file)));
             if let Some(handle) = app.conscience_handle.clone() {
-                let call_id = p.call_id.clone();
+                let call_id = p.call_id;
                 tokio::spawn(async move {
                     let sender = {
                         let mut map = handle.lock().await;
@@ -146,7 +146,7 @@ pub async fn handle_key(
             // holds it for the entire turn and is itself awaiting this
             // approval. Use the handle Arc captured at turn start instead.
             if let Some(handle) = app.approval_handle.clone() {
-                let call_id = p.call_id.clone();
+                let call_id = p.call_id;
                 tokio::spawn(async move {
                     let sender = {
                         let mut map = handle.lock().await;

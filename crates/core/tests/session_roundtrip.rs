@@ -166,7 +166,7 @@ fn session_save_load_list_and_missing_id() {
     // --- legacy records without persisted state still load ----------------
     let legacy = serde_json::json!({
         "id": "legacy",
-        "cwd": cwd_a.clone(),
+        "cwd": cwd_a,
         "model": "gpt-5",
         "created_at_ms": 7_000,
         "updated_at_ms": 7_000,

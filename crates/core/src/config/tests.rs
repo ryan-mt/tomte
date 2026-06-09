@@ -315,7 +315,7 @@ fn effective_context_limit_uses_builtin_then_user_override() {
         DEFAULT_PROVIDER_CONTEXT_LIMIT
     );
     // A user-declared provider wins, and its explicit context_limit is honored.
-    let mut overridden = cfg.clone();
+    let mut overridden = cfg;
     overridden.providers.insert(
         "groq".into(),
         ProviderConfig {

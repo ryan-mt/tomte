@@ -621,6 +621,71 @@ mod markdown_inline_tests {
         assert_eq!(joined("**a*b** tail"), "a*b tail");
         assert!(has_modifier("**a*b** tail", Modifier::BOLD));
     }
+
+    #[test]
+    fn http_link_styles_label_and_keeps_target_visible() {
+        // `[text](http…)` renders as an underlined label with the url in dim
+        // parens — a terminal can't click, so the target must stay readable.
+        assert_eq!(
+            joined("see [the docs](https://example.com/a) now"),
+            "see the docs (https://example.com/a) now"
+        );
+        assert!(has_modifier(
+            "see [the docs](https://example.com/a) now",
+            Modifier::UNDERLINED
+        ));
+    }
+
+    #[test]
+    fn bracket_pairs_without_a_link_scheme_stay_literal() {
+        // Indexing, footnotes, and scheme-less targets are prose, not links.
+        for s in [
+            "use arr[i](x) here",
+            "see note [1] below",
+            "open [rel](./local/path) maybe",
+            "broken [label](https://no-close",
+            "empty [](https://example.com)",
+        ] {
+            assert_eq!(joined(s), s, "literal text must be preserved for {s:?}");
+            assert!(!has_modifier(s, Modifier::UNDERLINED));
+        }
+    }
+}
+
+#[cfg(test)]
+mod choice_modal_tests {
+    use super::super::truncate_line_to_width;
+    use ratatui::style::{Color, Style};
+    use ratatui::text::{Line, Span};
+
+    fn flat(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn truncate_line_keeps_fitting_spans_and_cuts_the_overflow() {
+        let line = Line::from(vec![
+            Span::styled("  Tool: ", Style::default().fg(Color::Gray)),
+            Span::raw("a-very-long-tool-name"),
+        ]);
+        let cut = truncate_line_to_width(line, 14);
+        assert_eq!(flat(&cut), "  Tool: a-ver…");
+        // The first span survives with its own style.
+        assert_eq!(cut.spans[0].style.fg, Some(Color::Gray));
+    }
+
+    #[test]
+    fn truncate_line_passes_short_lines_through() {
+        let line = Line::from(vec![Span::raw("ok")]);
+        assert_eq!(flat(&truncate_line_to_width(line, 10)), "ok");
+    }
+
+    #[test]
+    fn truncate_line_is_display_width_aware() {
+        // Two CJK glyphs cost four columns; a budget of 3 fits one glyph + `…`.
+        let line = Line::from(vec![Span::raw("日本")]);
+        assert_eq!(flat(&truncate_line_to_width(line, 3)), "日…");
+    }
 }
 
 #[cfg(test)]

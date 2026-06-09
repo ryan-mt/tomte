@@ -270,78 +270,75 @@ pub(super) fn context_gauge(tokens_used: u64, limit: u64) -> Option<(String, Col
     Some((format!("{pct}% ctx"), color))
 }
 
-pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App) {
-    use ratatui::widgets::{Block as RBlock, BorderType, Borders, Clear};
-    let Some(p) = app.pending_approval.as_ref() else {
-        return;
-    };
+/// Shared engine for the two bottom-anchored choice modals (tool approval and
+/// the conscience card). Every row is pre-truncated to the popup's content
+/// width and the popup is sized to its real row count, so the options can never
+/// be pushed off-frame (the old per-modal code counted *logical* lines while
+/// `Wrap` produced more *visual* rows — a long args/decision line clipped the
+/// options and the key hint off the bottom). When the terminal is too short for
+/// everything, context rows are trimmed first; the options and hint always win.
+struct ChoiceModal<'a> {
+    title: &'a str,
+    /// Rows shown above the options (already styled; truncated here).
+    context: Vec<Line<'static>>,
+    options: &'a [String],
+    selected: usize,
+    hint: &'a str,
+}
 
+fn render_choice_modal(f: &mut Frame, anchor_area: ratatui::layout::Rect, modal: ChoiceModal) {
+    use ratatui::widgets::{Block as RBlock, BorderType, Borders, Clear};
     let dim = Style::default().fg(palette::TEXT_MUTED);
     let bg = Style::default().bg(palette::SURFACE);
-    let accent = Style::default()
-        .fg(palette::ACCENT)
-        .add_modifier(Modifier::BOLD);
     let warn = Style::default()
         .fg(palette::WARNING)
         .add_modifier(Modifier::BOLD);
 
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("  Tool: ", dim),
-        Span::styled(p.tool_name.clone(), accent),
-    ]));
-    let args_preview = condense_args(&p.args_json);
-    if !args_preview.is_empty() {
-        lines.push(Line::from(Span::styled(
-            format!("  args: {args_preview}"),
-            dim,
-        )));
-    }
-    if let Some(d) = p.diff_preview.as_ref() {
-        lines.push(Line::from(Span::styled("  ─ preview ─", dim)));
-        for raw in d.lines().take(8) {
-            lines.push(Line::from(Span::styled(
-                format!("  {raw}"),
-                Style::default().fg(palette::TEXT),
-            )));
-        }
-        if d.lines().count() > 8 {
-            lines.push(Line::from(Span::styled("  …", dim)));
-        }
-    }
-    lines.push(Line::from(""));
-    // Option 1 persists a per-project allow-rule (a "don't ask again" scoped to
-    // this project): the label names exactly what gets allowed.
-    let allow_label = {
-        let args_val: serde_json::Value =
-            serde_json::from_str(&p.args_json).unwrap_or(serde_json::Value::Null);
-        format!(
-            "Allow {} in this project",
-            tomte_core::permissions::rule_label(&p.tool_name, &args_val)
-        )
-    };
-    let opts = ["Allow once".to_string(), allow_label, "Deny".to_string()];
+    let width = 72u16.min(anchor_area.width.saturating_sub(4));
+    let content_w = width.saturating_sub(2) as usize; // inside the borders
+
+    // The mandatory tail: a blank spacer, one row per option, the key hint.
     let sel_style = Style::default()
         .fg(palette::TEXT_BRIGHT)
         .bg(palette::ACCENT_DEEP)
         .add_modifier(Modifier::BOLD);
     let opt_style = Style::default().fg(palette::TEXT);
-    for (i, label) in opts.iter().enumerate() {
-        let is_sel = i == p.selected;
+    let mut tail: Vec<Line<'static>> = vec![Line::from("")];
+    for (i, label) in modal.options.iter().enumerate() {
+        let is_sel = i == modal.selected;
         let marker = if is_sel { "  ❯ " } else { "    " };
         let style = if is_sel { sel_style } else { opt_style };
-        lines.push(Line::from(vec![
+        tail.push(Line::from(vec![
             Span::styled(marker, style),
-            Span::styled(label.clone(), style),
+            Span::styled(truncate_to_width(label, content_w.saturating_sub(4)), style),
         ]));
     }
-    lines.push(Line::from(Span::styled(
-        "  ↑/↓ select · enter confirm · y/n/esc",
+    tail.push(Line::from(Span::styled(
+        truncate_to_width(modal.hint, content_w),
         dim,
     )));
 
-    let height = (lines.len() as u16).min(14) + 2;
-    let width = 72u16.min(anchor_area.width.saturating_sub(4));
+    // Trim context rows when context + tail won't fit above the anchor, keeping
+    // the leading rows (tool name / file) and marking the cut.
+    let avail_rows = anchor_area.y.saturating_sub(2) as usize; // minus the borders
+    let mut context: Vec<Line<'static>> = modal
+        .context
+        .into_iter()
+        .map(|l| truncate_line_to_width(l, content_w))
+        .collect();
+    if context.len() + tail.len() > avail_rows {
+        let keep = avail_rows.saturating_sub(tail.len());
+        if keep == 0 {
+            context.clear();
+        } else if keep < context.len() {
+            context.truncate(keep - 1);
+            context.push(Line::from(Span::styled("  …", dim)));
+        }
+    }
+
+    let mut lines = context;
+    lines.extend(tail);
+    let height = (lines.len() as u16).saturating_add(2);
     let x = anchor_area.x + 1;
     let bottom = anchor_area.y;
     let y = bottom.saturating_sub(height);
@@ -366,13 +363,91 @@ pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect,
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(palette::WARNING))
-        .title(Span::styled(" Approve tool call? ", warn))
+        .title(Span::styled(format!(" {} ", modal.title), warn))
         .style(bg);
     let inner = block.inner(popup);
     f.render_widget(block, popup);
-    f.render_widget(
-        Paragraph::new(lines).style(bg).wrap(Wrap { trim: false }),
-        inner,
+    f.render_widget(Paragraph::new(lines).style(bg), inner);
+}
+
+/// Truncate a styled line to `max_cols`, span-aware: spans that fit pass
+/// through untouched; the first span that overflows is cut with an ellipsis and
+/// the rest are dropped. Keeps each modal row exactly one terminal row tall.
+pub(super) fn truncate_line_to_width(line: Line<'static>, max_cols: usize) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr;
+    let mut used = 0usize;
+    let mut out: Vec<Span<'static>> = Vec::new();
+    for span in line.spans {
+        let w = UnicodeWidthStr::width(span.content.as_ref());
+        if used + w <= max_cols {
+            used += w;
+            out.push(span);
+            continue;
+        }
+        let cut = truncate_to_width(span.content.as_ref(), max_cols.saturating_sub(used));
+        if !cut.is_empty() {
+            out.push(Span::styled(cut, span.style));
+        }
+        break;
+    }
+    Line::from(out)
+}
+
+pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App) {
+    let Some(p) = app.pending_approval.as_ref() else {
+        return;
+    };
+
+    let dim = Style::default().fg(palette::TEXT_MUTED);
+    let accent = Style::default()
+        .fg(palette::ACCENT)
+        .add_modifier(Modifier::BOLD);
+
+    let mut context: Vec<Line<'static>> = Vec::new();
+    context.push(Line::from(vec![
+        Span::styled("  Tool: ", dim),
+        Span::styled(p.tool_name.clone(), accent),
+    ]));
+    let args_preview = condense_args(&p.args_json);
+    if !args_preview.is_empty() {
+        context.push(Line::from(Span::styled(
+            format!("  args: {args_preview}"),
+            dim,
+        )));
+    }
+    if let Some(d) = p.diff_preview.as_ref() {
+        context.push(Line::from(Span::styled("  ─ preview ─", dim)));
+        for raw in d.lines().take(8) {
+            context.push(Line::from(Span::styled(
+                format!("  {raw}"),
+                Style::default().fg(palette::TEXT),
+            )));
+        }
+        if d.lines().count() > 8 {
+            context.push(Line::from(Span::styled("  …", dim)));
+        }
+    }
+    // Option 1 persists a per-project allow-rule (a "don't ask again" scoped to
+    // this project): the label names exactly what gets allowed.
+    let allow_label = {
+        let args_val: serde_json::Value =
+            serde_json::from_str(&p.args_json).unwrap_or(serde_json::Value::Null);
+        format!(
+            "Allow {} in this project",
+            tomte_core::permissions::rule_label(&p.tool_name, &args_val)
+        )
+    };
+    let opts = ["Allow once".to_string(), allow_label, "Deny".to_string()];
+    render_choice_modal(
+        f,
+        anchor_area,
+        ChoiceModal {
+            title: "Approve tool call?",
+            context,
+            options: &opts,
+            selected: p.selected,
+            hint: "  ↑/↓ select · enter confirm · y/n/esc",
+        },
     );
 }
 
@@ -380,91 +455,61 @@ pub(super) fn render_approval(f: &mut Frame, anchor_area: ratatui::layout::Rect,
 /// self-check judged to contradict a recorded decision, with the three-way
 /// abort / supersede / edit-anyway choice. Mirrors [`render_approval`].
 pub(super) fn render_conscience(f: &mut Frame, anchor_area: ratatui::layout::Rect, app: &App) {
-    use ratatui::widgets::{Block as RBlock, BorderType, Borders, Clear};
     let Some(p) = app.pending_conscience.as_ref() else {
         return;
     };
 
     let dim = Style::default().fg(palette::TEXT_MUTED);
-    let bg = Style::default().bg(palette::SURFACE);
-    let warn = Style::default()
-        .fg(palette::WARNING)
-        .add_modifier(Modifier::BOLD);
     let accent = Style::default()
         .fg(palette::ACCENT)
         .add_modifier(Modifier::BOLD);
+    let body = Style::default().fg(palette::TEXT);
 
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![
+    // The decision text and the conflict reason are the substance of this card —
+    // wrap them (capped) instead of cutting them to one row, so the user can
+    // actually read what they are about to overturn.
+    let width = 72u16.min(anchor_area.width.saturating_sub(4));
+    let content_w = (width.saturating_sub(2) as usize).saturating_sub(2).max(1);
+
+    let mut context: Vec<Line<'static>> = Vec::new();
+    context.push(Line::from(vec![
         Span::styled("  Edit conflicts with a decision in ", dim),
         Span::styled(p.file.clone(), accent),
     ]));
-    lines.push(Line::from(Span::styled(
+    context.push(Line::from(Span::styled(
         format!("  #{} by {}", p.ts, p.prev_model),
         dim,
     )));
-    lines.push(Line::from(Span::styled(
-        format!("  \"{}\"", p.prev_decision),
-        Style::default().fg(palette::TEXT),
-    )));
-    lines.push(Line::from(vec![
-        Span::styled("  conflict: ", dim),
-        Span::styled(p.reason.clone(), Style::default().fg(palette::TEXT)),
-    ]));
-    lines.push(Line::from(""));
-    let opts = [
-        "Abort (keep the decision)",
-        "Supersede (edit + record the override)",
-        "Edit anyway (proceed, logged)",
-    ];
-    let sel_style = Style::default()
-        .fg(palette::TEXT_BRIGHT)
-        .bg(palette::ACCENT_DEEP)
-        .add_modifier(Modifier::BOLD);
-    let opt_style = Style::default().fg(palette::TEXT);
-    for (i, label) in opts.iter().enumerate() {
-        let is_sel = i == p.selected;
-        let marker = if is_sel { "  ❯ " } else { "    " };
-        let style = if is_sel { sel_style } else { opt_style };
-        lines.push(Line::from(vec![
-            Span::styled(marker, style),
-            Span::styled((*label).to_string(), style),
-        ]));
+    for w in wrap(&format!("\"{}\"", p.prev_decision), content_w)
+        .into_iter()
+        .take(3)
+    {
+        context.push(Line::from(Span::styled(format!("  {w}"), body)));
     }
-    lines.push(Line::from(Span::styled(
-        "  ↑/↓ select · enter confirm · a/s/e · esc abort",
-        dim,
-    )));
+    for (i, w) in wrap(&format!("conflict: {}", p.reason), content_w)
+        .into_iter()
+        .take(2)
+        .enumerate()
+    {
+        let style = if i == 0 { dim } else { body };
+        context.push(Line::from(Span::styled(format!("  {w}"), style)));
+    }
 
-    let height = (lines.len() as u16).min(14) + 2;
-    let width = 72u16.min(anchor_area.width.saturating_sub(4));
-    let x = anchor_area.x + 1;
-    let bottom = anchor_area.y;
-    let y = bottom.saturating_sub(height);
-    let popup = ratatui::layout::Rect {
-        x,
-        y,
-        width,
-        height,
-    };
-    let clear_area = ratatui::layout::Rect {
-        x: anchor_area.x,
-        y,
-        width: anchor_area.width,
-        height,
-    };
-    f.render_widget(Clear, clear_area);
-    let block = RBlock::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(palette::WARNING))
-        .title(Span::styled(" Conscience — overturn a decision? ", warn))
-        .style(bg);
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
-    f.render_widget(
-        Paragraph::new(lines).style(bg).wrap(Wrap { trim: false }),
-        inner,
+    let opts = [
+        "Abort (keep the decision)".to_string(),
+        "Supersede (edit + record the override)".to_string(),
+        "Edit anyway (proceed, logged)".to_string(),
+    ];
+    render_choice_modal(
+        f,
+        anchor_area,
+        ChoiceModal {
+            title: "Conscience — overturn a decision?",
+            context,
+            options: &opts,
+            selected: p.selected,
+            hint: "  ↑/↓ select · enter confirm · a/s/e · esc abort",
+        },
     );
 }
 

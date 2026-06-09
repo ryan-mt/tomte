@@ -198,16 +198,16 @@ async fn delete_and_rename() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     cmd_create(root, Some("a.md"), Some("x")).await.unwrap();
-    cmd_rename(root, Some("a.md"), Some("b.md")).await.unwrap();
+    cmd_rename(root, Some("a.md"), Some("b.md")).unwrap();
     assert!(cmd_view(root, Some("b.md"), None).is_ok());
     assert!(cmd_view(root, Some("a.md"), None).is_err());
     // rename onto an existing target fails
     cmd_create(root, Some("c.md"), Some("y")).await.unwrap();
-    assert!(cmd_rename(root, Some("b.md"), Some("c.md")).await.is_err());
+    assert!(cmd_rename(root, Some("b.md"), Some("c.md")).is_err());
     // delete
-    cmd_delete(root, Some("b.md")).await.unwrap();
+    cmd_delete(root, Some("b.md")).unwrap();
     assert!(cmd_view(root, Some("b.md"), None).is_err());
-    assert!(cmd_delete(root, Some("b.md")).await.is_err());
+    assert!(cmd_delete(root, Some("b.md")).is_err());
 }
 
 #[tokio::test]

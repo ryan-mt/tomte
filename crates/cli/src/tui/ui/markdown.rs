@@ -2,13 +2,14 @@
 
 use super::*;
 
-/// Very small inline markdown renderer: handles `` `code` ``, **bold**, and
-/// *italic*. Only a *matched* pair styles its span — an unmatched marker (a glob
-/// like `*.rs`, a multiplication `2 * 3`, or an unterminated `` `code ``) is
-/// emitted literally instead of swallowing the rest of the line. Emphasis
-/// follows CommonMark's flanking rule loosely: a marker only opens when the
-/// character after it is non-whitespace, and only closes when the character
-/// before it is non-whitespace, so a spaced asterisk stays a plain asterisk.
+/// Very small inline markdown renderer: handles `` `code` ``, **bold**,
+/// *italic*, and `[text](http…)` links. Only a *matched* pair styles its span —
+/// an unmatched marker (a glob like `*.rs`, a multiplication `2 * 3`, or an
+/// unterminated `` `code ``) is emitted literally instead of swallowing the
+/// rest of the line. Emphasis follows CommonMark's flanking rule loosely: a
+/// marker only opens when the character after it is non-whitespace, and only
+/// closes when the character before it is non-whitespace, so a spaced asterisk
+/// stays a plain asterisk.
 pub(super) fn render_markdown_inline(line: &str) -> Vec<Span<'static>> {
     let chars: Vec<char> = line.chars().collect();
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -18,6 +19,9 @@ pub(super) fn render_markdown_inline(line: &str) -> Vec<Span<'static>> {
         .bg(Color::Rgb(40, 30, 18));
     let bold_style = Style::default().add_modifier(Modifier::BOLD);
     let italic_style = Style::default().add_modifier(Modifier::ITALIC);
+    let link_style = Style::default()
+        .fg(palette::ACCENT)
+        .add_modifier(Modifier::UNDERLINED);
     let plain = Style::default().fg(palette::TEXT_MUTED);
     let flush = |buf: &mut String, spans: &mut Vec<Span<'static>>| {
         if !buf.is_empty() {
@@ -28,6 +32,22 @@ pub(super) fn render_markdown_inline(line: &str) -> Vec<Span<'static>> {
     let mut i = 0;
     while i < chars.len() {
         match chars[i] {
+            // Link: `[text](url)` where the url carries a real scheme. The
+            // label renders accent + underlined, the target stays visible in
+            // dim parens (a terminal can't click, so hiding the url would lose
+            // the one thing the reader needs). Anything else — `arr[i](x)`,
+            // footnote `[1]`, a bare bracket — stays literal.
+            '[' => {
+                if let Some((label, url, after)) = parse_md_link(&chars, i) {
+                    flush(&mut buf, &mut spans);
+                    spans.push(Span::styled(label, link_style));
+                    spans.push(Span::styled(format!(" ({url})"), plain));
+                    i = after;
+                } else {
+                    buf.push('[');
+                    i += 1;
+                }
+            }
             // Code span: style only when a closing backtick exists on the line.
             '`' => {
                 if let Some(close) = (i + 1..chars.len()).find(|&j| chars[j] == '`') {
@@ -98,6 +118,28 @@ pub(super) fn render_markdown_inline(line: &str) -> Vec<Span<'static>> {
         spans.push(Span::raw(""));
     }
     spans
+}
+
+/// Parse a markdown link `[text](url)` starting at `chars[open]` (the `[`).
+/// Returns `(label, url, index_after)` only for the safe shape: a closing `]`
+/// immediately followed by `(`, a closing `)`, a non-empty label, and a url
+/// with a real link scheme (`http://`, `https://`, `mailto:`). The scheme
+/// requirement keeps prose like `arr[i](x)` or footnote `[1]` literal.
+fn parse_md_link(chars: &[char], open: usize) -> Option<(String, String, usize)> {
+    let label_end = (open + 1..chars.len()).find(|&j| chars[j] == ']')?;
+    if label_end == open + 1 || chars.get(label_end + 1) != Some(&'(') {
+        return None;
+    }
+    let url_start = label_end + 2;
+    let url_end = (url_start..chars.len()).find(|&j| chars[j] == ')')?;
+    let label: String = chars[open + 1..label_end].iter().collect();
+    let url: String = chars[url_start..url_end].iter().collect();
+    let linky =
+        url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:");
+    if !linky {
+        return None;
+    }
+    Some((label, url, url_end + 1))
 }
 
 /// Lazily-loaded syntect assets (syntax definitions + a dark theme). Loading
@@ -246,7 +288,10 @@ fn push_prose_line(out: &mut Vec<Vec<Span<'static>>>, line: &str, content_width:
             content_width,
             Some(style),
         );
-    } else if let Some(body) = rest.strip_prefix("> ").or((rest == ">").then_some("")) {
+    } else if let Some(body) = rest
+        .strip_prefix("> ")
+        .or_else(|| (rest == ">").then_some(""))
+    {
         let mut first = ind();
         first.push(Span::styled("│ ", faint));
         let mut cont = ind();
@@ -473,7 +518,7 @@ pub(super) fn md_cell_width(s: &str) -> usize {
 pub(super) fn render_md_table(tbl: &[&str], content_width: usize) -> Vec<Vec<Span<'static>>> {
     let border = Style::default().fg(palette::BORDER);
     let header_style = Style::default()
-        .fg(Color::Rgb(235, 235, 240))
+        .fg(palette::TEXT_BRIGHT)
         .add_modifier(Modifier::BOLD);
 
     // tbl[0] = header, tbl[1] = separator, tbl[2..] = body.

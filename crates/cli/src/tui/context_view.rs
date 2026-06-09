@@ -37,7 +37,7 @@ fn dim() -> Style {
     Style::default().fg(palette::TEXT_MUTED)
 }
 fn bright() -> Style {
-    Style::default().fg(Color::Rgb(230, 230, 235))
+    Style::default().fg(palette::TEXT_BRIGHT)
 }
 
 /// Render the report into colored scrollback lines (indent already baked in, so

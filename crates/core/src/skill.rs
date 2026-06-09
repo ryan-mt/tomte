@@ -293,7 +293,7 @@ mod tests {
             triggers: vec!["commit".into(), "RELEASE".into()],
             body: "x".into(),
         };
-        let all = vec![s.clone()];
+        let all = vec![s];
         assert!(select_triggered(&all, "build the project").is_empty());
         assert!(!select_triggered(&all, "let's COMMIT this").is_empty());
         assert!(!select_triggered(&all, "release notes").is_empty());

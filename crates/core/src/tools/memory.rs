@@ -155,8 +155,8 @@ Writes are disabled in unattended headless runs (pass `--dangerously-skip-permis
                     .await
             }
             "insert" => cmd_insert(&root, a.path.as_deref(), a.insert_line, a.new_text.as_deref()).await,
-            "delete" => cmd_delete(&root, a.path.as_deref()).await,
-            "rename" => cmd_rename(&root, a.old_path.as_deref(), a.new_path.as_deref()).await,
+            "delete" => cmd_delete(&root, a.path.as_deref()),
+            "rename" => cmd_rename(&root, a.old_path.as_deref(), a.new_path.as_deref()),
             other => bail!("unknown memory command {other:?}. Use view, create, str_replace, insert, delete, or rename."),
         }
     }
@@ -376,14 +376,14 @@ async fn cmd_insert(
     Ok(format!("Inserted into memory note {path} at line {idx}."))
 }
 
-async fn cmd_delete(root: &Path, path: Option<&str>) -> Result<String> {
+fn cmd_delete(root: &Path, path: Option<&str>) -> Result<String> {
     let path = path.ok_or_else(|| anyhow!("delete requires `path`"))?;
     let file = resolve_file(root, path)?;
     std::fs::remove_file(&file).map_err(|_| anyhow!("memory note {path:?} not found."))?;
     Ok(format!("Deleted memory note {path}."))
 }
 
-async fn cmd_rename(root: &Path, old_path: Option<&str>, new_path: Option<&str>) -> Result<String> {
+fn cmd_rename(root: &Path, old_path: Option<&str>, new_path: Option<&str>) -> Result<String> {
     let old = old_path.ok_or_else(|| anyhow!("rename requires `old_path`"))?;
     let new = new_path.ok_or_else(|| anyhow!("rename requires `new_path`"))?;
     let from = resolve_file(root, old)?;

@@ -148,7 +148,7 @@ pub fn collect(cwd: &Path) -> Handoff {
         Ok(t) => {
             let mut p = crate::repo_twin::pulse::pulse(&t).entries;
             p.truncate(MAX_PULSE);
-            (Some(t.summary()), p, t.root.clone())
+            (Some(t.summary()), p, t.root)
         }
         Err(_) => (None, Vec::new(), cwd.display().to_string()),
     };

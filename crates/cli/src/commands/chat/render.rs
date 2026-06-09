@@ -40,7 +40,7 @@ pub(crate) fn render_text_event<W: Write>(
                 return TextEventOutcome::Continue;
             }
             let pretty = serde_json::from_str::<serde_json::Value>(&arguments)
-                .map(|v| serde_json::to_string_pretty(&v).unwrap_or(arguments.clone()))
+                .map(|v| serde_json::to_string_pretty(&v).unwrap_or_else(|_| arguments.clone()))
                 .unwrap_or(arguments);
             let pretty = sanitize_terminal_text(&pretty);
             writeln!(stdout, "\x1b[2m  args:\x1b[0m {pretty}").ok();

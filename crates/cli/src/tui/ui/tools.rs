@@ -455,12 +455,7 @@ pub(super) fn friendly_header(name: &str, args: &serde_json::Value) -> (String, 
             // `command` (heredocs, pasted multi-line commands) must not break or
             // desync the single-line header the way the unsanitized value did.
             let cmd = sanitize_display(&s("command")).replace('\n', " ");
-            let short = if cmd.chars().count() > 80 {
-                format!("{}…", cmd.chars().take(80).collect::<String>())
-            } else {
-                cmd
-            };
-            ("Bash".into(), short)
+            ("Bash".into(), truncate_to_width(&cmd, 80))
         }
         other => (other.to_string(), compact_args(&args.to_string())),
     }

@@ -328,7 +328,7 @@ fn native_grep_search(
     let prefix = normalize_path_separators(&rel_root.to_string_lossy());
     let mut files: Vec<String> = Vec::new();
     if abs_root.is_file() {
-        files.push(prefix.clone());
+        files.push(prefix);
     } else {
         let mut found = Vec::new();
         walk_files_relative(&abs_root, &mut found);

@@ -74,20 +74,9 @@ pub(super) fn render_queue(f: &mut Frame, area: Rect, app: &App) {
     let total = app.message_queue.len();
     for msg in show {
         let one_line = msg.replace('\n', " ");
-        let truncated: String = if width > 0 && one_line.chars().count() > width {
-            format!(
-                "{}…",
-                one_line
-                    .chars()
-                    .take(width.saturating_sub(1))
-                    .collect::<String>()
-            )
-        } else {
-            one_line
-        };
         lines.push(Line::from(vec![
             Span::styled(" ⤴ ", chev),
-            Span::styled(truncated, dim),
+            Span::styled(truncate_to_width(&one_line, width), dim),
         ]));
     }
     if total > 4 {
@@ -142,20 +131,12 @@ pub(super) fn todos_height_for_count(count: usize) -> u16 {
     (1 + visible + overflow) as u16
 }
 
-/// Truncate `s` to `max` display-ish chars with an ellipsis (char-based, so it
-/// never splits a UTF-8 codepoint).
+/// Truncate `s` to `max` terminal columns with an ellipsis. Display-width
+/// aware (delegates to [`truncate_to_width`]): a wide CJK/emoji glyph costs two
+/// columns, so the old char-count cut let wide text overrun its row and spill
+/// into the next column (fleet prompts, todo labels, queued messages).
 pub(super) fn truncate_chars(s: &str, max: usize) -> String {
-    if max == 0 {
-        return String::new();
-    }
-    if s.chars().count() > max {
-        format!(
-            "{}…",
-            s.chars().take(max.saturating_sub(1)).collect::<String>()
-        )
-    } else {
-        s.to_string()
-    }
+    truncate_to_width(s, max)
 }
 
 /// Live fleet view: a list of the sub-agents `dispatch_agent` spawned this turn,

@@ -51,7 +51,7 @@ fn walk_up_picks_ancestor_then_project_with_correct_ordering() {
     })
     .unwrap();
     let mut agent = Agent::new(client, Config::default());
-    agent.cwd = pkg.clone();
+    agent.cwd = pkg;
 
     let baseline_len = agent.system_prompt.len();
     apply_memory(&mut agent);
