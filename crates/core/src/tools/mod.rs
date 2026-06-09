@@ -30,7 +30,8 @@ pub use args::{
 };
 pub use registry::Registry;
 pub use types::{
-    BackgroundShellState, BgStatus, SessionState, TodoItem, TodoStatus, UndoEntry, WorktreeState,
+    BackgroundShellState, BgStatus, Checkpoint, RewindOutcome, SessionState, TodoItem, TodoStatus,
+    UndoEntry, WorktreeState,
 };
 
 use std::sync::Arc;

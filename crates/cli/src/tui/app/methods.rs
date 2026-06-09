@@ -72,6 +72,9 @@ impl App {
             should_exit: false,
             pending_resume_id: None,
             pending_undo: false,
+            pending_rewind_open: false,
+            pending_rewind_ordinal: None,
+            rewind_points: Vec::new(),
             pending_clear: false,
             pending_compact: false,
             auto_compact_done_this_window: false,
@@ -296,6 +299,10 @@ impl App {
                 let metas = tomte_core::session::list(&self.cwd);
                 Picker::new("resume session", picker::sessions(&metas))
             }
+            OverlayKind::RewindPicker => Picker::new(
+                "rewind to an earlier turn",
+                picker::rewind_points(&self.rewind_points),
+            ),
             OverlayKind::LogoutPicker => {
                 Picker::new("log out — pick a credential", picker::logout_targets())
             }

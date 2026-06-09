@@ -607,6 +607,11 @@ pub struct Agent {
     /// `/cost` survives a `/resume`. Keyed by model so a mid-session `/model`
     /// switch bills each model at its own rate.
     pub cost_usage: Vec<crate::session::ModelUsage>,
+    /// Rewind points, one per user turn (chronological). Each records where the
+    /// conversation and the undo stack stood as the turn began, so `/rewind` can
+    /// restore both. In-memory only (it indexes the non-persisted undo stack);
+    /// reset on `/resume` and `/clear`, and dropped past the rewound-to point.
+    pub checkpoints: Vec<crate::tools::Checkpoint>,
 }
 
 #[cfg(test)]

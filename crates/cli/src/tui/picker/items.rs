@@ -103,6 +103,11 @@ pub fn slash_commands(cwd: &Path) -> Vec<PickerItem> {
             "toggle the approval modal for writes/shell",
         ),
         item("undo", "/undo", "revert the most recent file edit"),
+        item(
+            "rewind",
+            "/rewind",
+            "restore an earlier turn (undo its file edits)",
+        ),
         item("quit", "/quit", "exit tomte"),
     ];
     let mut seen: std::collections::HashSet<String> = items.iter().map(|i| i.key.clone()).collect();
@@ -334,6 +339,34 @@ pub fn sessions(metas: &[tomte_core::session::SessionMeta]) -> Vec<PickerItem> {
         .collect()
 }
 
+/// Build picker rows from the session's rewind checkpoints, newest turn first so
+/// the most recent is the default selection. The `key` is the checkpoint's ordinal
+/// (its index in `Agent::checkpoints`) — exactly what `Agent::rewind_to` takes.
+pub fn rewind_points(points: &[tomte_core::tools::Checkpoint]) -> Vec<PickerItem> {
+    let total = points.len();
+    points
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(ordinal, cp)| {
+            let later = total - 1 - ordinal;
+            let suffix = if later == 0 {
+                "the latest turn".to_string()
+            } else {
+                format!(
+                    "drops {later} later turn{}",
+                    if later == 1 { "" } else { "s" }
+                )
+            };
+            PickerItem {
+                key: ordinal.to_string(),
+                title: cp.label.clone(),
+                description: format!("{}  ·  {}", ago(cp.created_at_ms), suffix),
+            }
+        })
+        .collect()
+}
+
 fn ago(ms: u64) -> String {
     let now = tomte_core::session::now_ms();
     let diff = now.saturating_sub(ms);
@@ -409,7 +442,7 @@ mod effort_tests {
 
 #[cfg(test)]
 mod slash_menu_tests {
-    use super::slash_commands;
+    use super::{rewind_points, slash_commands};
     use std::fs;
 
     #[test]
@@ -445,5 +478,38 @@ mod slash_menu_tests {
         // Built-ins are still present and come first.
         assert!(items.iter().any(|i| i.key == "model"));
         assert!(items.first().is_some_and(|i| i.key == "help"));
+    }
+
+    #[test]
+    fn rewind_is_in_the_slash_menu() {
+        let tmp = tempfile::tempdir().unwrap();
+        let items = slash_commands(tmp.path());
+        assert!(
+            items
+                .iter()
+                .any(|i| i.key == "rewind" && i.title == "/rewind"),
+            "/rewind should be offered in the slash menu"
+        );
+    }
+
+    #[test]
+    fn rewind_points_are_newest_first_keyed_by_ordinal() {
+        let cp = |label: &str| tomte_core::tools::Checkpoint {
+            history_index: 0,
+            edits_before: 0,
+            label: label.into(),
+            created_at_ms: 0,
+        };
+        let points = vec![cp("first turn"), cp("second turn"), cp("third turn")];
+        let items = rewind_points(&points);
+        assert_eq!(items.len(), 3);
+        // Newest turn first; the key is its ordinal in the original list, which is
+        // exactly what `Agent::rewind_to` takes.
+        assert_eq!(items[0].title, "third turn");
+        assert_eq!(items[0].key, "2");
+        assert!(items[0].description.contains("the latest turn"));
+        assert_eq!(items[2].title, "first turn");
+        assert_eq!(items[2].key, "0");
+        assert!(items[2].description.contains("drops 2 later turns"));
     }
 }

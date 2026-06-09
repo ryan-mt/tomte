@@ -46,6 +46,11 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
             // handle_slash (same pattern as `pending_resume_id`).
             app.pending_undo = true;
         }
+        "rewind" => {
+            // main_loop has the agent Arc, so it reads the checkpoints and opens
+            // the picker there (open_overlay here can't reach the agent).
+            app.pending_rewind_open = true;
+        }
         "clear" => {
             app.blocks.clear();
             app.committed_blocks = 0;

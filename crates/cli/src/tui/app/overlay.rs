@@ -304,6 +304,13 @@ pub async fn handle_overlay_select(app: &mut App, kind: OverlayKind, key_sel: &s
                 app.pending_resume_id = Some(key_sel.to_string());
             }
         }
+        OverlayKind::RewindPicker => {
+            // key is the checkpoint ordinal; main_loop runs the rewind (it has
+            // the agent Arc), the same deferral as resume.
+            if let Ok(ordinal) = key_sel.parse::<usize>() {
+                app.pending_rewind_ordinal = Some(ordinal);
+            }
+        }
         OverlayKind::LogoutPicker => {
             if let Some(target) = tomte_core::auth::LogoutTarget::from_key(key_sel) {
                 let mut record = auth::load_auth().unwrap_or_default();

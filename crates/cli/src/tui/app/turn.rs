@@ -85,6 +85,10 @@ pub async fn launch_turn(
             }
         }
         if let Some(a) = guard.as_mut() {
+            // Mark a rewind point for this turn BEFORE the user message lands, so
+            // `/rewind` to it truncates the conversation to just before the turn
+            // and reverts the edits the turn is about to make.
+            a.record_checkpoint(text.as_str()).await;
             if app.pending_images.is_empty() {
                 a.push_user_message(text);
             } else {

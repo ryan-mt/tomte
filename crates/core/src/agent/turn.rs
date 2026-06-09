@@ -57,6 +57,10 @@ impl Agent {
         }
 
         self.history = compacted_history(&summary);
+        // History was replaced by a single summary item, so every checkpoint's
+        // `history_index` now points past the end — drop them rather than let
+        // `/rewind` truncate to a stale offset.
+        self.checkpoints.clear();
         Ok(original_len)
     }
 

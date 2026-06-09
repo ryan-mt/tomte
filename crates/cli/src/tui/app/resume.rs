@@ -91,6 +91,87 @@ pub async fn apply_resume(
     app.auto_scroll = true;
 }
 
+/// Carry out a rewind after the picker set `pending_rewind_ordinal`: run the
+/// agent's `rewind_to` (revert file edits + truncate the conversation), then
+/// rebuild the visible transcript from the truncated history and print the calm
+/// end-of-rewind summary. Mirrors `apply_resume`'s block-rebuild + scroll reset.
+pub async fn apply_rewind(
+    app: &mut App,
+    agent: &std::sync::Arc<tokio::sync::Mutex<Option<Agent>>>,
+    ordinal: usize,
+) {
+    let (outcome, history) = {
+        let mut guard = agent.lock().await;
+        match guard.as_mut() {
+            Some(a) => match a.rewind_to(ordinal).await {
+                Ok(out) => (out, a.history.clone()),
+                Err(e) => {
+                    app.blocks
+                        .push(Block::System(format!("rewind failed: {e}")));
+                    return;
+                }
+            },
+            None => {
+                app.blocks
+                    .push(Block::System("nothing to rewind yet".to_string()));
+                return;
+            }
+        }
+    };
+
+    let rebuilt = rebuild_blocks_from_history(&history);
+    app.blocks.clear();
+    // Inline mode: re-commit the truncated transcript to scrollback from the top
+    // (the already-emitted rewound turns stay in native scrollback above, exactly
+    // as `/resume` behaves — we can't retract them, but the live view is correct).
+    app.committed_blocks = 0;
+    app.blocks.push(Block::Welcome);
+    app.blocks.extend(rebuilt);
+    app.blocks.push(Block::System(rewind_summary(&outcome)));
+    app.auto_scroll = true;
+    // Persist the rewound history so a later `/resume` picks up the rewound state,
+    // not the pre-rewind conversation still on disk.
+    app.pending_session_save = true;
+}
+
+/// The calm, one-glance end-of-rewind summary (Pillar 4): what it restored, and
+/// honestly, what it could not (externally-changed files, shell side effects).
+fn rewind_summary(o: &tomte_core::tools::RewindOutcome) -> String {
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let mut s = format!("↩ rewound to: {}", o.label);
+    s.push_str(&format!(
+        "\n  · dropped {} turn{} from the conversation",
+        o.turns_dropped,
+        plural(o.turns_dropped)
+    ));
+    s.push_str(&format!(
+        "\n  · reverted {} file{}",
+        o.files_reverted,
+        plural(o.files_reverted)
+    ));
+    if !o.files_skipped.is_empty() {
+        let names = o
+            .files_skipped
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        s.push_str(&format!(
+            "\n  · left {} file{} changed outside tomte as-is: {names}",
+            o.files_skipped.len(),
+            plural(o.files_skipped.len())
+        ));
+    }
+    if o.shell_effects > 0 {
+        s.push_str(&format!(
+            "\n  · {} shell side effect{} since then could NOT be undone",
+            o.shell_effects,
+            plural(o.shell_effects)
+        ));
+    }
+    s
+}
+
 /// Kick off real compaction in the BACKGROUND (mirrors `launch_turn`'s spawn):
 /// a task locks the agent, summarizes the history and REPLACES it with the
 /// summary, persists, then reports back via `AgentEvent::CompactDone`. Running

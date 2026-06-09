@@ -98,6 +98,31 @@ pub async fn main_loop(
             };
             app.blocks.push(Block::System(msg));
         }
+        // `/rewind` opens a picker of this session's checkpoints. main_loop has the
+        // agent Arc, so it snapshots them here (open_overlay can't reach the agent).
+        if app.can_run_deferred_agent_op() && std::mem::take(&mut app.pending_rewind_open) {
+            let points = {
+                let g = agent.lock().await;
+                g.as_ref()
+                    .map(|a| a.checkpoints.clone())
+                    .unwrap_or_default()
+            };
+            if points.is_empty() {
+                app.blocks.push(Block::System(
+                    "Nothing to rewind to yet — start a turn first.".to_string(),
+                ));
+            } else {
+                app.rewind_points = points;
+                app.open_overlay(OverlayKind::RewindPicker);
+            }
+        }
+        // The rewind picker set this ordinal; run the rewind + rebuild the
+        // transcript now (same deferral as resume/undo above).
+        if app.can_run_deferred_agent_op() {
+            if let Some(ordinal) = app.pending_rewind_ordinal.take() {
+                apply_rewind(&mut app, &agent, ordinal).await;
+            }
+        }
         // `/clear` clears the transcript UI in its handler and sets this so
         // main_loop can also reset the agent's history (the model otherwise keeps
         // the full conversation). Deferred while compacting OR busy for the same

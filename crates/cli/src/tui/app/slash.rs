@@ -47,6 +47,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  /about              show tomte version + build info\n  \
                  /perms [on|off]     toggle the approval modal for writes/shell\n  \
                  /undo               revert the most recent file edit\n  \
+                 /rewind             restore an earlier turn (undo its file edits)\n  \
                  /quit               exit\n\n\
                  Composer prefixes:\n  \
                  @<path>             reference a file (typeahead); its contents are attached\n  \

@@ -108,6 +108,41 @@ pub struct UndoEntry {
     pub post_edit_size: Option<u64>,
 }
 
+/// A rewind point recorded at a user-turn boundary, so `/rewind` can restore the
+/// session to just before that turn: truncate the conversation back to
+/// `history_index`, and revert every file edit made since (those pushed onto the
+/// undo stack after `edits_before`). Runtime-only — it indexes into the undo
+/// stack, which is itself deliberately not persisted across `/resume`.
+#[derive(Debug, Clone)]
+pub struct Checkpoint {
+    /// `history.len()` just before this turn's user message — the truncation point.
+    pub history_index: usize,
+    /// [`SessionState::undo_pushed`] at the moment this turn started. The edits to
+    /// revert are those pushed after it; a monotonic counter (not the stack
+    /// length) so it stays correct even after the capped stack evicts old entries.
+    pub edits_before: u64,
+    /// One-line label for the picker (the user prompt, trimmed).
+    pub label: String,
+    /// Epoch ms the turn started, for an "ago" hint in the picker.
+    pub created_at_ms: u64,
+}
+
+/// What a `/rewind` actually did, for the calm end-of-rewind summary.
+#[derive(Debug, Clone, Default)]
+pub struct RewindOutcome {
+    /// The label of the turn we rewound to.
+    pub label: String,
+    /// How many later user turns were dropped from the conversation.
+    pub turns_dropped: usize,
+    /// Files restored to their pre-turn content (or deleted, if newly created).
+    pub files_reverted: usize,
+    /// Files left untouched because they changed outside tomte (or a write failed)
+    /// — reported, never clobbered.
+    pub files_skipped: Vec<std::path::PathBuf>,
+    /// `run_shell` side effects since the checkpoint, which cannot be undone.
+    pub shell_effects: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct WorktreeState {
     pub original_cwd: std::path::PathBuf,
@@ -122,6 +157,12 @@ pub struct SessionState {
     pub todos: Vec<TodoItem>,
     pub background_shells: HashMap<String, Arc<BackgroundShellState>>,
     pub undo_stack: std::collections::VecDeque<UndoEntry>,
+    /// Monotonic count of edits ever pushed onto [`undo_stack`](Self::undo_stack)
+    /// this session — it keeps climbing even when the capped stack evicts its
+    /// oldest entry. A [`Checkpoint`] records this value so `/rewind` can tell how
+    /// many edits happened since, without being fooled by the stack length
+    /// shifting under eviction.
+    pub undo_pushed: u64,
     /// Canonical paths read this session, keyed exactly as `fs::resolve`
     /// produces them. Powers the read-before-write safety:
     /// `write_file` refuses to overwrite, and `edit_file`/`multi_edit` refuse
@@ -169,5 +210,6 @@ impl SessionState {
             self.undo_stack.pop_front();
         }
         self.undo_stack.push_back(entry);
+        self.undo_pushed = self.undo_pushed.saturating_add(1);
     }
 }

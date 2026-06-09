@@ -24,6 +24,7 @@ impl Agent {
             last_input_tokens: 0,
             history_seen_len: 0,
             cost_usage: Vec::new(),
+            checkpoints: Vec::new(),
         }
     }
 
@@ -71,54 +72,156 @@ impl Agent {
     /// Equivalent to the `undo_last_edit` tool but callable directly from the
     /// host (e.g. a `/undo` slash command) without round-tripping the model.
     pub async fn undo_last_edit(&self) -> anyhow::Result<String> {
-        use anyhow::{anyhow, Context};
+        use anyhow::anyhow;
         let mut session = self.session.lock().await;
         let entry = session
             .undo_stack
             .back()
             .cloned()
             .ok_or_else(|| anyhow!("no edits to undo"))?;
-        // Mirrors the TOCTOU guard in the `undo_last_edit` tool: refuse to
-        // overwrite a file that has been touched since we edited it, so a
-        // user's manual changes can't be silently destroyed by /undo.
-        if let Some(expected) = entry.post_edit_mtime {
-            let meta = std::fs::metadata(&entry.path);
-            let current_mtime = meta.as_ref().ok().and_then(|m| m.modified().ok());
-            let current_size = meta.as_ref().ok().map(|m| m.len());
-            // Mirror the `undo_last_edit` tool exactly: at 1s mtime resolution a
-            // same-second external edit can leave mtime unchanged, so the size
-            // snapshot is the only signal that catches it. Checking mtime alone
-            // here risked silently clobbering such an edit.
-            if current_mtime != Some(expected) || current_size != entry.post_edit_size {
-                return Err(anyhow!(
-                    "refusing to undo {}: file has been modified since the edit",
-                    entry.path.display()
-                ));
+        // Refuse (without popping) when the file changed under us, so a user's
+        // manual edit isn't silently destroyed — the same guard `/rewind` reuses,
+        // except there a modified file is skipped-and-reported rather than fatal.
+        if !file_unmodified_since(&entry) {
+            return Err(anyhow!(
+                "refusing to undo {}: file has been modified since the edit",
+                entry.path.display()
+            ));
+        }
+        apply_revert(&entry).await?;
+        session.undo_stack.pop_back();
+        Ok(if entry.original_content.is_some() {
+            format!("Restored {}", entry.path.display())
+        } else {
+            format!("Removed (was a new file): {}", entry.path.display())
+        })
+    }
+
+    /// Record a rewind point for the user turn about to start. Call it right
+    /// before [`push_user_message`](Self::push_user_message): `history_index` is
+    /// captured before the push, and `edits_before` is the live undo counter.
+    pub async fn record_checkpoint(&mut self, label: impl Into<String>) {
+        let edits_before = self.session.lock().await.undo_pushed;
+        self.checkpoints.push(crate::tools::Checkpoint {
+            history_index: self.history.len(),
+            edits_before,
+            label: checkpoint_label(&label.into()),
+            created_at_ms: crate::session::now_ms(),
+        });
+    }
+
+    /// Restore the session to the `ordinal`-th rewind point: revert every file
+    /// edit made since that turn (newest-first, skipping a file that changed
+    /// outside tomte), truncate the conversation back to it, and drop the later
+    /// checkpoints. Returns a [`RewindOutcome`] for the calm end-of-rewind
+    /// summary. Shell side effects can't be undone — they are only counted.
+    pub async fn rewind_to(
+        &mut self,
+        ordinal: usize,
+    ) -> anyhow::Result<crate::tools::RewindOutcome> {
+        use anyhow::anyhow;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+        let cp = self
+            .checkpoints
+            .get(ordinal)
+            .cloned()
+            .ok_or_else(|| anyhow!("no such rewind point"))?;
+
+        // Phase 1 (locked): pop the edits made since the checkpoint and GROUP them
+        // by file. The monotonic `undo_pushed` tells how many happened (correct even
+        // after the capped stack evicted its oldest); `.min` bounds us to what is
+        // still revertable. For a file edited several times in the range we keep two
+        // entries: the NEWEST (its post snapshot is the "is it externally modified?"
+        // guard) and the OLDEST (its `original_content` is the pre-checkpoint state
+        // to restore). Reverting per-file in one shot avoids the trap where
+        // restoring edit N's original bumps the file's mtime and makes edit N-1's
+        // guard read it as modified.
+        let targets: HashMap<PathBuf, (crate::tools::UndoEntry, crate::tools::UndoEntry)> = {
+            let mut session = self.session.lock().await;
+            let since = session.undo_pushed.saturating_sub(cp.edits_before);
+            let to_revert = (since as usize).min(session.undo_stack.len());
+            let mut map: HashMap<PathBuf, (crate::tools::UndoEntry, crate::tools::UndoEntry)> =
+                HashMap::new();
+            for _ in 0..to_revert {
+                let Some(entry) = session.undo_stack.pop_back() else {
+                    break;
+                };
+                map.entry(entry.path.clone())
+                    .and_modify(|(_, oldest)| *oldest = entry.clone())
+                    .or_insert_with(|| (entry.clone(), entry));
+            }
+            map
+        };
+
+        // Phase 2 (unlocked): revert each file. A file changed outside tomte (its
+        // current bytes no longer match what tomte last wrote) is reported and left
+        // as-is, never clobbered.
+        let mut files_reverted = 0usize;
+        let mut files_skipped: Vec<PathBuf> = Vec::new();
+        let mut reverted_paths: Vec<PathBuf> = Vec::new();
+        for (path, (newest, oldest)) in &targets {
+            if !file_unmodified_since(newest) {
+                files_skipped.push(path.clone());
+                continue;
+            }
+            match apply_revert(oldest).await {
+                Ok(()) => {
+                    files_reverted += 1;
+                    reverted_paths.push(path.clone());
+                }
+                Err(_) => files_skipped.push(path.clone()),
             }
         }
-        let message = match entry.original_content {
-            Some(content) => {
-                // Atomic restore (temp + rename, preserving permissions), matching
-                // the undo_last_edit tool and the edit/write tools, so a crash
-                // mid-restore can't leave a half-written file and the restored file
-                // keeps its original permissions instead of the umask default.
-                let tmp = entry
-                    .path
-                    .with_extension(format!("undo-{}.tmp", crate::tools::fs::rand_suffix()));
-                crate::tools::fs::atomic_write_preserving_permissions(&entry.path, &tmp, &content)
-                    .await
-                    .with_context(|| format!("restore {}", entry.path.display()))?;
-                format!("Restored {}", entry.path.display())
+
+        // Phase 3 (locked): a restore rewrote each file with a fresh mtime, so the
+        // newest undo entry that remains BELOW the rewound range for that file now
+        // carries a stale post snapshot — refresh it (its post content equals what
+        // we just restored), so a later `/rewind` to an earlier point doesn't
+        // misread our own restore as an external edit.
+        if !reverted_paths.is_empty() {
+            let mut session = self.session.lock().await;
+            for path in &reverted_paths {
+                if let Some(below) = session
+                    .undo_stack
+                    .iter_mut()
+                    .rev()
+                    .find(|e| &e.path == path)
+                {
+                    let meta = std::fs::metadata(path);
+                    below.post_edit_mtime = meta.as_ref().ok().and_then(|m| m.modified().ok());
+                    below.post_edit_size = meta.as_ref().ok().map(|m| m.len());
+                }
             }
-            None => {
-                tokio::fs::remove_file(&entry.path)
-                    .await
-                    .with_context(|| format!("remove {}", entry.path.display()))?;
-                format!("Removed (was a new file): {}", entry.path.display())
-            }
-        };
-        session.undo_stack.pop_back();
-        Ok(message)
+        }
+
+        // `run_shell` effects in the dropped turns can't be reverted; count them
+        // from the history slice so the summary can be honest about it.
+        let cut = cp.history_index.min(self.history.len());
+        let shell_effects = self.history[cut..]
+            .iter()
+            .filter(
+                |item| matches!(item, InputItem::FunctionCall { name, .. } if name == "run_shell"),
+            )
+            .count();
+
+        self.history.truncate(cut);
+        // Truncation lowered the real occupancy; clamp the seen-prefix index back in
+        // bounds and force a fresh occupancy read so microcompaction doesn't fire on
+        // a stale, too-high token count next turn.
+        self.history_seen_len = self.history_seen_len.min(self.history.len());
+        self.last_input_tokens = 0;
+
+        let turns_dropped = self.checkpoints.len() - ordinal;
+        self.checkpoints.truncate(ordinal);
+
+        Ok(crate::tools::RewindOutcome {
+            label: cp.label,
+            turns_dropped,
+            files_reverted,
+            files_skipped,
+            shell_effects,
+        })
     }
 
     /// Replace this agent's history and identity from a stored session so
@@ -136,6 +239,9 @@ impl Agent {
         self.history = record.history;
         self.session_id = record.meta.id;
         self.session_created_ms = record.meta.created_at_ms;
+        // A resumed session starts with an empty undo stack (it is not persisted),
+        // so any prior checkpoints would index into edits that no longer exist.
+        self.checkpoints.clear();
     }
 
     /// Reset the conversation so the next turn starts fresh: drop the history the
@@ -149,6 +255,9 @@ impl Agent {
         self.history.clear();
         self.history_seen_len = 0;
         self.last_input_tokens = 0;
+        // The conversation the checkpoints index into is gone; drop them so
+        // `/rewind` can't truncate to a now-invalid offset.
+        self.checkpoints.clear();
     }
 
     /// Append inherited memory files to the system prompt (Codex / Claude Code /
@@ -354,5 +463,58 @@ impl Agent {
             role: "user".to_string(),
             content,
         });
+    }
+}
+
+/// Whether the file at `entry.path` is still exactly as tomte last wrote it — its
+/// current (mtime, size) match the post-edit snapshot — so reverting it won't
+/// clobber an edit made outside tomte. A `None` snapshot disables the check
+/// (treated as unmodified). At 1s mtime resolution a same-second external edit can
+/// leave the mtime unchanged, so the size is the second signal that catches it.
+fn file_unmodified_since(entry: &crate::tools::UndoEntry) -> bool {
+    let Some(expected) = entry.post_edit_mtime else {
+        return true;
+    };
+    let meta = std::fs::metadata(&entry.path);
+    let current_mtime = meta.as_ref().ok().and_then(|m| m.modified().ok());
+    let current_size = meta.as_ref().ok().map(|m| m.len());
+    current_mtime == Some(expected) && current_size == entry.post_edit_size
+}
+
+/// Restore `entry.path` to `entry.original_content` (atomic temp+rename, preserving
+/// permissions), or delete it when the edit created the file (`None`). Does NOT
+/// check staleness — callers gate with [`file_unmodified_since`] first.
+async fn apply_revert(entry: &crate::tools::UndoEntry) -> anyhow::Result<()> {
+    use anyhow::Context;
+    match &entry.original_content {
+        Some(content) => {
+            let tmp = entry
+                .path
+                .with_extension(format!("undo-{}.tmp", crate::tools::fs::rand_suffix()));
+            crate::tools::fs::atomic_write_preserving_permissions(&entry.path, &tmp, content)
+                .await
+                .with_context(|| format!("restore {}", entry.path.display()))?;
+        }
+        None => {
+            tokio::fs::remove_file(&entry.path)
+                .await
+                .with_context(|| format!("remove {}", entry.path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Trim a user prompt to a one-line label for a checkpoint and its picker row.
+fn checkpoint_label(text: &str) -> String {
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let truncated: String = line.chars().take(80).collect();
+    if truncated.is_empty() {
+        "(empty prompt)".to_string()
+    } else {
+        truncated
     }
 }

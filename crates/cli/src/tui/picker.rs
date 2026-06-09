@@ -17,7 +17,9 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 mod items;
-pub use items::{efforts, logout_targets, models, sessions, slash_commands, verbosities};
+pub use items::{
+    efforts, logout_targets, models, rewind_points, sessions, slash_commands, verbosities,
+};
 
 pub struct PickerItem {
     pub key: String,         // identifier returned on select
