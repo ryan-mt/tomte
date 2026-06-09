@@ -231,21 +231,29 @@ fn resolve_go(raw: &str, file_set: &HashSet<&str>, go_module: Option<&str>) -> O
     } else {
         format!("{rel_dir}/")
     };
-    let mut hit: Option<&str> = None;
+    // Lexicographically-smallest candidate per class, so the resolved edge is
+    // stable across rebuilds (`file_set` iteration order is not deterministic).
+    let mut best: Option<&str> = None;
+    let mut best_test: Option<&str> = None;
     for path in file_set {
         let in_dir = match path.strip_prefix(prefix.as_str()) {
             Some(tail) => !tail.contains('/'),
             None => prefix.is_empty() && !path.contains('/'),
         };
-        if in_dir && path.ends_with(".go") {
-            // Prefer a non-test file as the package's representative node.
-            if !path.ends_with("_test.go") {
-                return Some((*path).to_string());
-            }
-            hit.get_or_insert(path);
+        if !(in_dir && path.ends_with(".go")) {
+            continue;
+        }
+        // Prefer a non-test file as the package's representative node.
+        let slot = if path.ends_with("_test.go") {
+            &mut best_test
+        } else {
+            &mut best
+        };
+        if slot.is_none_or(|cur| *path < cur) {
+            *slot = Some(path);
         }
     }
-    hit.map(|s| s.to_string())
+    best.or(best_test).map(|s| s.to_string())
 }
 
 // ---- path helpers -----------------------------------------------------------
@@ -447,6 +455,39 @@ import React from 'react';
                 Some("github.com/me/app")
             ),
             None
+        );
+    }
+
+    #[test]
+    fn go_package_representative_is_deterministic() {
+        // Several non-test files in the package dir: the resolved representative
+        // must not depend on HashSet iteration order (fresh set per round).
+        for _ in 0..16 {
+            let files = set(&["db/z.go", "db/m.go", "db/a.go", "db/a_test.go"]);
+            assert_eq!(
+                resolve(
+                    Lang::Go,
+                    "main.go",
+                    "github.com/me/app/db",
+                    &files,
+                    Some("github.com/me/app")
+                )
+                .as_deref(),
+                Some("db/a.go")
+            );
+        }
+        // Only test files present → the smallest test file is the stable fallback.
+        let files = set(&["db/z_test.go", "db/a_test.go"]);
+        assert_eq!(
+            resolve(
+                Lang::Go,
+                "main.go",
+                "github.com/me/app/db",
+                &files,
+                Some("github.com/me/app")
+            )
+            .as_deref(),
+            Some("db/a_test.go")
         );
     }
 

@@ -266,6 +266,12 @@ fn resolve_seed(
     seed: &str,
 ) -> (String, Vec<String>, Vec<String>) {
     let norm = super::normalize(seed);
+    // An absolute path (a pasted stack-trace location) becomes root-relative so
+    // it can match the twin's stored paths; other seeds pass through unchanged.
+    let norm = norm
+        .strip_prefix(&format!("{}/", twin.root))
+        .map(str::to_string)
+        .unwrap_or(norm);
     // Strip a trailing `:NN` line suffix (a stack-trace location).
     let path_part = match norm.rsplit_once(':') {
         Some((file, line)) if !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit()) => file,
@@ -495,7 +501,9 @@ fn applicable_rules(twin: &RepoTwin, seed_files: &[String]) -> Vec<AppliedRule> 
     for doc in &twin.rules {
         for r in &doc.rules {
             let lc = r.text.to_ascii_lowercase();
-            if let Some(tok) = tokens.iter().find(|t| lc.contains(t.as_str())) {
+            // `min()` rather than `find()`: token-set iteration order is not
+            // deterministic, and the chosen token is printed on the card.
+            if let Some(tok) = tokens.iter().filter(|t| lc.contains(t.as_str())).min() {
                 if seen.insert((doc.file.clone(), r.line)) {
                     out.push(AppliedRule {
                         file: doc.file.clone(),
@@ -802,6 +810,42 @@ mod tests {
         let sel = why_context(&twin, tmp.path(), "src/auth/session.ts");
         // The AGENTS.md rule mentioning "session" is surfaced.
         assert!(sel.rules.iter().any(|r| r.text.contains("session tokens")));
+    }
+
+    #[test]
+    fn absolute_stack_trace_seed_resolves_via_root_strip() {
+        let (tmp, twin) = fixture();
+        // A pasted stack-trace location is absolute; the engine must map it back
+        // onto the twin's root-relative paths instead of reporting "missing".
+        let abs = format!("{}/src/auth/session.ts:2", twin.root);
+        let sel = why_context(&twin, tmp.path(), &abs);
+        assert_eq!(sel.seed_kind, "file", "seed: {abs}");
+        assert_eq!(sel.resolved_seeds[0].path, "src/auth/session.ts");
+    }
+
+    #[test]
+    fn rule_token_attribution_is_deterministic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("src/auth")).unwrap();
+        std::fs::write(
+            root.join("src/auth/session.ts"),
+            "export function makeSession() {}\n",
+        )
+        .unwrap();
+        // The rule mentions BOTH the dir token (`auth`) and the stem
+        // (`session`); the card must always cite the same one (the min).
+        std::fs::write(root.join("AGENTS.md"), "- auth session rules apply\n").unwrap();
+        let twin = build(root).unwrap();
+        for _ in 0..12 {
+            let sel = why_context(&twin, root, "src/auth/session.ts");
+            let rule = sel
+                .rules
+                .iter()
+                .find(|r| r.text.contains("auth session"))
+                .expect("rule surfaced");
+            assert_eq!(rule.why, "mentions `auth`");
+        }
     }
 
     #[test]
