@@ -81,9 +81,13 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                 app.blocks
                     .push(Block::System("Usage: /apikey sk-…".to_string()));
             } else {
-                let mut record = auth::load_auth().unwrap_or_default();
-                auth::activate_openai_api_key(&mut record, arg.to_string());
-                match auth::save_auth(&record) {
+                // Locked read-modify-write — must not race an in-flight token
+                // refresh (see `auth::mutate_auth`).
+                let saved = auth::mutate_auth(|record| {
+                    auth::activate_openai_api_key(record, arg.to_string());
+                })
+                .await;
+                match saved {
                     Ok(_) => {
                         app.auth_mode = AuthMode::OpenaiApiKey;
                         app.blocks.push(Block::System("✅ API key saved.".into()));

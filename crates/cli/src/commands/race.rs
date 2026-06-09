@@ -48,6 +48,11 @@ pub async fn run(
     let progress = move |ev: RaceEvent| {
         let t = t0.elapsed().as_secs();
         match ev {
+            RaceEvent::UnconfinedPlatform => eprintln!(
+                "⚠ no OS sandbox on this platform: contestants are isolated in git \
+                 worktrees and dangerous commands stay blocked, but other shell side \
+                 effects are not filesystem/network-confined"
+            ),
             RaceEvent::Starting { contestants } => eprintln!(
                 "🏁 {contestants} contestant(s) racing from HEAD in isolated worktrees — \
                  this runs the task AND the project's checks per contestant…"

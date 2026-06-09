@@ -67,9 +67,9 @@ async fn login_openai_api_key() -> Result<()> {
     if key.is_empty() {
         anyhow::bail!("API key is empty");
     }
-    let mut record = auth::load_auth().unwrap_or_default();
-    auth::activate_openai_api_key(&mut record, key);
-    auth::save_auth(&record)?;
+    // Locked read-modify-write — must not race an in-flight token refresh
+    // (see `auth::mutate_auth`).
+    auth::mutate_auth(|record| auth::activate_openai_api_key(record, key)).await?;
     println!("✅  OpenAI API key saved.");
     Ok(())
 }
@@ -79,9 +79,9 @@ async fn login_anthropic_api_key() -> Result<()> {
     if key.is_empty() {
         anyhow::bail!("API key is empty");
     }
-    let mut record = auth::load_auth().unwrap_or_default();
-    auth::activate_anthropic_api_key(&mut record, key);
-    auth::save_auth(&record)?;
+    // Locked read-modify-write — must not race an in-flight token refresh
+    // (see `auth::mutate_auth`).
+    auth::mutate_auth(|record| auth::activate_anthropic_api_key(record, key)).await?;
     println!("✅  Anthropic API key saved.");
     Ok(())
 }

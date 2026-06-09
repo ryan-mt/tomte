@@ -126,7 +126,20 @@ pub(crate) fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathB
                     return Err(anyhow!("path escapes the sandbox: {}", path.display()));
                 }
             }
-            Component::Normal(s) => normalized.push(s),
+            Component::Normal(s) => {
+                // Windows resolves reserved device names (NUL, CON, COM1…, also
+                // with an extension like `CON.txt`) to the device regardless of
+                // directory, so they'd slip past the lexical sandbox check and
+                // a write would target the console / null sink, not a file.
+                #[cfg(windows)]
+                if is_windows_reserved_name(s) {
+                    return Err(anyhow!(
+                        "reserved Windows device name in path: {}",
+                        raw_path.display()
+                    ));
+                }
+                normalized.push(s);
+            }
             Component::Prefix(_) | Component::RootDir => {
                 return Err(anyhow!("invalid path component: {}", raw_path.display()));
             }
@@ -167,6 +180,23 @@ pub(crate) fn resolve(cwd: &std::path::Path, p: &str) -> Result<std::path::PathB
     Ok(resolved)
 }
 
+/// True for the Win32 reserved device basenames — `CON`, `PRN`, `AUX`, `NUL`,
+/// `COM1`–`COM9`, `LPT1`–`LPT9` — matched case-insensitively on the part before
+/// the first `.` (so `con.txt` counts), per the Win32 naming rules.
+#[cfg(windows)]
+fn is_windows_reserved_name(name: &std::ffi::OsStr) -> bool {
+    let Some(s) = name.to_str() else {
+        return false;
+    };
+    let base = s.split('.').next().unwrap_or(s).trim_end();
+    let upper = base.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.as_bytes()[3].is_ascii_digit()
+            && upper.as_bytes()[3] != b'0')
+}
+
 fn canonicalize_with_missing(path: &std::path::Path) -> Result<std::path::PathBuf> {
     let mut existing = path.to_path_buf();
     let mut missing: Vec<OsString> = Vec::new();
@@ -192,6 +222,25 @@ fn canonicalize_with_missing(path: &std::path::Path) -> Result<std::path::PathBu
             Err(e) => {
                 return Err(e).with_context(|| format!("canonicalize {}", existing.display()))
             }
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_reserved_tests {
+    use super::resolve;
+
+    #[test]
+    fn reserved_device_names_are_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Bare, cased, extensioned, and nested forms all resolve to devices on
+        // Win32 — every one must be refused before any fs call runs.
+        for p in ["NUL", "con", "COM1.txt", "sub/aux.log", "LPT9"] {
+            assert!(resolve(tmp.path(), p).is_err(), "{p} must be rejected");
+        }
+        // Names that merely start with a reserved word are ordinary files.
+        for p in ["console.txt", "common.rs", "auxiliary", "com10.txt"] {
+            assert!(resolve(tmp.path(), p).is_ok(), "{p} must be allowed");
         }
     }
 }

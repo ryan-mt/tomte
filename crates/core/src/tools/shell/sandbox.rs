@@ -114,6 +114,14 @@ const PLATFORM_CONFINES: bool = true;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const PLATFORM_CONFINES: bool = false;
 
+/// Whether this platform's OS sandbox actually confines filesystem/network
+/// access (Linux Landlock + seccomp, macOS seatbelt). False on Windows — there
+/// the "sandbox" is process-teardown only — so callers that promise isolation
+/// (e.g. `tomte race`) can tell the user the honest posture.
+pub fn platform_confines() -> bool {
+    PLATFORM_CONFINES
+}
+
 /// Build the `Command` that runs `command` under the OS sandbox configured in
 /// `config`, working in `cwd`. Falls back to a plain shell when the sandbox is
 /// disabled (`danger-full-access`) or unsupported on this platform. On a

@@ -114,8 +114,8 @@ pub async fn start_browser_login(open_browser: bool) -> Result<PendingLogin> {
         let _ = webbrowser::open(&auth_url);
     }
 
-    let redirect = redirect_uri.clone();
-    let url = auth_url.clone();
+    let redirect = redirect_uri;
+    let url = auth_url;
     let completion = tokio::spawn(async move {
         let code = match tokio::time::timeout(Duration::from_secs(600), code_rx).await {
             Ok(Ok(result)) => result?,
@@ -448,8 +448,19 @@ pub async fn ensure_fresh(record: &AuthRecord) -> Result<String> {
     // token and bricking that credential (the two providers hold separate refresh
     // locks, so they are not serialized against each other).
     let mut updated = match load_auth() {
-        Ok(latest) if latest.tokens.is_some() => latest,
-        _ => base_record,
+        Ok(latest) => {
+            if latest.tokens.is_none() {
+                // The OpenAI slot vanished from disk while we were on the
+                // network — a logout (e.g. from another process) landed
+                // mid-refresh. Honor it: the fresh access token still serves
+                // the in-flight turn, but the credential is never re-persisted
+                // (falling back to the pre-logout snapshot would silently
+                // resurrect what the user just cleared).
+                return Ok(refreshed.access_token);
+            }
+            latest
+        }
+        Err(_) => base_record,
     };
     if let Some(st) = updated.tokens.as_mut() {
         st.access_token = refreshed.access_token.clone();

@@ -200,18 +200,18 @@ impl LoginScreen {
                     *self.error.lock().await = Some("API key cannot be empty".into());
                     return Ok(false);
                 }
-                let mut record = auth::load_auth().unwrap_or_default();
                 let mode = match provider {
-                    Provider::OpenAi => {
-                        auth::activate_openai_api_key(&mut record, key_str);
-                        AuthMode::OpenaiApiKey
-                    }
-                    Provider::Anthropic => {
-                        auth::activate_anthropic_api_key(&mut record, key_str);
-                        AuthMode::AnthropicApiKey
-                    }
+                    Provider::OpenAi => AuthMode::OpenaiApiKey,
+                    Provider::Anthropic => AuthMode::AnthropicApiKey,
                 };
-                match auth::save_auth(&record) {
+                // Locked read-modify-write — must not race an in-flight token
+                // refresh (see `auth::mutate_auth`).
+                let saved = auth::mutate_auth(|record| match provider {
+                    Provider::OpenAi => auth::activate_openai_api_key(record, key_str),
+                    Provider::Anthropic => auth::activate_anthropic_api_key(record, key_str),
+                })
+                .await;
+                match saved {
                     Ok(_) => {
                         *self.stage.lock().await = Stage::Success(mode);
                         return Ok(true);

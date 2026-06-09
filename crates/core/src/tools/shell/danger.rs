@@ -539,6 +539,19 @@ fn inline_code_flags(name: &str) -> Option<&'static [&'static str]> {
     None
 }
 
+/// True when any segment's command candidate is `pwsh`/`powershell` — i.e. the
+/// command actually invokes PowerShell (as a word, not as some other program's
+/// argument). Gates the string-builder markers in
+/// [`runs_inline_interpreter_code`].
+fn names_powershell(scan: &str) -> bool {
+    scan.split([';', '&', '|', '\n']).any(|seg| {
+        let words: Vec<&str> = seg.split_whitespace().collect();
+        segment_command_candidates(&words)
+            .iter()
+            .any(|name| is_versioned_name(name, "pwsh") || is_versioned_name(name, "powershell"))
+    })
+}
+
 /// A PowerShell `-EncodedCommand` flag or an abbreviation (`-e`, `-en…`, `-ec`).
 /// Its base64 argument is opaque to the token scan. Deliberately NOT `-Command`:
 /// that argument is plain PowerShell, which `normalize_shell_scan` exposes
@@ -586,6 +599,22 @@ fn segment_command_candidates(words: &[&str]) -> Vec<String> {
 /// (`env python3 -c …`, `sudo node -e …`) — which a first-word-only check let
 /// slip past — is still caught.
 fn runs_inline_interpreter_code(scan: &str) -> bool {
+    // A `-Command` payload is normally plain PowerShell that the flattened scan
+    // reads (see `is_powershell_code_flag`). But string-BUILT execution —
+    // `[scriptblock]::Create(…)`, a `FromBase64String` decode, `[char]`-array
+    // `-join` assembly — composes the real command at runtime where no token
+    // rule can see it. When PowerShell is invoked anywhere in the command,
+    // treat those builders as inline code. Checked over the whole scan (not
+    // per segment) because the call operator `&` that runs the built block is
+    // itself a segment separator here. A flag only adds an approval prompt.
+    let lower = scan.to_ascii_lowercase();
+    if (lower.contains("[scriptblock]::create")
+        || lower.contains("frombase64string")
+        || (lower.contains("[char") && lower.contains("-join")))
+        && names_powershell(scan)
+    {
+        return true;
+    }
     scan.split([';', '&', '|', '\n']).any(|seg| {
         let words: Vec<&str> = seg.split_whitespace().collect();
         segment_command_candidates(&words).iter().any(|name| {

@@ -313,10 +313,15 @@ pub async fn handle_overlay_select(app: &mut App, kind: OverlayKind, key_sel: &s
         }
         OverlayKind::LogoutPicker => {
             if let Some(target) = tomte_core::auth::LogoutTarget::from_key(key_sel) {
-                let mut record = auth::load_auth().unwrap_or_default();
-                tomte_core::auth::clear_credential(&mut record, target);
-                match auth::save_auth(&record) {
-                    Ok(_) => {
+                // Locked read-modify-write: an unserialized load→save here
+                // could interleave with an in-flight token refresh and revert
+                // its freshly-rotated refresh token (see `auth::mutate_auth`).
+                let saved = auth::mutate_auth(|record| {
+                    tomte_core::auth::clear_credential(record, target);
+                })
+                .await;
+                match saved {
+                    Ok(record) => {
                         app.auth_mode = auth::effective_mode_with_env(&record);
                         app.blocks.push(Block::System("✅ Logged out.".into()));
                     }

@@ -402,6 +402,23 @@ pub fn create_dir_secure(dir: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
+/// Tighten a secret-bearing file to the current user — the cross-platform
+/// `chmod 600`: Unix file mode, Windows owner-only ACL via `icacls`. Public so
+/// CLI-side writers of credential-adjacent files (e.g. settings.json, whose MCP
+/// server `env` may carry tokens) can apply the same enforcement `auth.json`
+/// and `config.json` get. Best-effort, matching `save_auth`'s Windows posture.
+pub fn restrict_file_to_owner(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(windows)]
+    crate::auth::storage::restrict_to_owner_windows(path);
+    #[cfg(not(any(unix, windows)))]
+    let _ = path;
+}
+
 pub fn config_file() -> PathBuf {
     config_dir().join("config.json")
 }

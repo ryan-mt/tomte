@@ -107,12 +107,22 @@ fn repair_owner_only(path: &std::path::Path) {
     }
 }
 
+/// Windows analogue of the Unix load-time repair. `icacls` shells out (tens of
+/// ms) and `load_auth` runs on every credential resolution, so unlike the cheap
+/// Unix mode check this repairs once per process — enough to re-tighten an
+/// auth.json restored from a backup or copied in with a broad inherited ACL.
+#[cfg(windows)]
+fn repair_owner_only(path: &std::path::Path) {
+    static REPAIR_ONCE: std::sync::Once = std::sync::Once::new();
+    REPAIR_ONCE.call_once(|| restrict_to_owner_windows(path));
+}
+
 pub fn load_auth() -> Result<AuthRecord> {
     let path = auth_file();
     if !path.exists() {
         return Ok(AuthRecord::default());
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     repair_owner_only(&path);
     let text = std::fs::read_to_string(&path)?;
     if text.trim().is_empty() {

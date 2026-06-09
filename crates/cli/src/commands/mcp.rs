@@ -268,6 +268,12 @@ fn write_owner_only(path: &Path, bytes: &[u8]) -> Result<()> {
     }
     let mut f = opts.open(path)?;
     f.write_all(bytes)?;
+    drop(f);
+    // settings.json can carry MCP `--env KEY=VALUE` secrets: give it the same
+    // owner-only enforcement auth.json/config.json get. On Windows this is the
+    // icacls ACL the Unix `mode(0o600)` above can't provide; tightened before
+    // the caller's rename so the live file is never broader than the user.
+    tomte_core::config::restrict_file_to_owner(path);
     Ok(())
 }
 

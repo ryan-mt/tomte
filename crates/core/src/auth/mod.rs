@@ -37,6 +37,24 @@ use crate::provider::Provider;
 /// round-trip, which is fine: refreshes are rare (~hourly) and sub-second.
 pub(crate) static REFRESH_LOCK: Lazy<AsyncMutex<()>> = Lazy::new(|| AsyncMutex::new(()));
 
+/// Locked read-modify-write on the persisted auth record, for every in-process
+/// writer that is NOT a token refresh (logout, `/apikey`, login activation).
+///
+/// Those writers used to do an unserialized `load_auth → mutate → save_auth`;
+/// interleaved with an in-flight refresh (which holds [`REFRESH_LOCK`] across
+/// its own load→network→save), the unlocked save could revert a freshly-rotated
+/// single-use refresh token (bricking the credential on its next refresh) or —
+/// the mirror image — the refresh's merge could re-persist OAuth tokens the
+/// user had just logged out. Holding the same lock here closes both races.
+/// Returns the record as saved so callers can refresh UI state from it.
+pub async fn mutate_auth(mutate: impl FnOnce(&mut AuthRecord)) -> Result<AuthRecord> {
+    let _guard = REFRESH_LOCK.lock().await;
+    let mut record = load_auth().unwrap_or_default();
+    mutate(&mut record);
+    save_auth(&record)?;
+    Ok(record)
+}
+
 pub fn effective_mode_with_env(record: &AuthRecord) -> AuthMode {
     effective_mode_with_env_values(
         record,

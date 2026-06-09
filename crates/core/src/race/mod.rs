@@ -50,6 +50,12 @@ pub struct RaceOptions {
 /// multi-minute tournament instead of going silent until the final report.
 #[derive(Debug, Clone)]
 pub enum RaceEvent {
+    /// This platform's OS sandbox does not confine filesystem/network (Windows):
+    /// contestants run with `--dangerously-skip-permissions`, so while the
+    /// danger classifier still hard-blocks flagged commands, non-flagged shell
+    /// side effects are not OS-confined to the worktree. Emitted once, before
+    /// [`RaceEvent::Starting`], so the user knows the honest isolation posture.
+    UnconfinedPlatform,
     /// Worktrees are ready; the field is about to run.
     Starting { contestants: usize },
     /// A contestant's worktree could not be created — it can never win.
@@ -198,6 +204,9 @@ pub async fn run_race(
                 planned.push((s, None, Some(err)));
             }
         }
+    }
+    if !crate::tools::shell::sandbox::platform_confines() {
+        on_event(RaceEvent::UnconfinedPlatform);
     }
     on_event(RaceEvent::Starting {
         contestants: planned.iter().filter(|(_, wt, _)| wt.is_some()).count(),

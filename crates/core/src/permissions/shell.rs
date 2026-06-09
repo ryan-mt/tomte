@@ -5,17 +5,21 @@ use serde_json::Value;
 
 use super::MatchMode;
 
-/// Program name of a shell command: the first whitespace-delimited word with
-/// any leading path stripped, so `/usr/bin/git` and `git` share one rule. Used
-/// only to NAME the persisted rule; matching uses [`shell_program_segments`].
+/// Program name of a shell command: the first whitespace-delimited word,
+/// normalized by the same [`program_name`] the rule matcher uses (quotes
+/// stripped, glued redirects cut, basename taken) — so the persisted rule is
+/// named after the program that will actually match. The old raw-word version
+/// could label an "allow all" grant under a misleading name (`"git"` with
+/// quotes, `/usr/bin/git` vs `git`). Used only to NAME the persisted rule;
+/// matching uses [`shell_program_segments`].
 pub(super) fn shell_program(args: &Value) -> Option<String> {
     let cmd = args
         .get("command")
         .or_else(|| args.get("cmd"))
         .and_then(|v| v.as_str())?;
     let first = cmd.split_whitespace().next()?;
-    let prog = first.rsplit('/').next().unwrap_or(first);
-    (!prog.is_empty()).then(|| prog.to_string())
+    let prog = program_name(first);
+    (!prog.is_empty()).then_some(prog)
 }
 
 /// Split a shell command on its control operators (`;`, `&&`, `||`, `|`, `&`,

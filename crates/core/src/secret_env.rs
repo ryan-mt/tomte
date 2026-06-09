@@ -11,7 +11,8 @@ const ENV_DENYLIST_SUBSTRINGS: &[&str] = &[
     "SECRET",
     "PASSWORD",
     "PASSWD",
-    "_PWD", // *_PWD (e.g. MYSQL_PWD); not bare PWD/OLDPWD (no `_PWD` substring)
+    "_PASS", // *_PASS (DB_PASS, SMTP_PASS); the `_` spares BYPASS/COMPASS-style names
+    "_PWD",  // *_PWD (e.g. MYSQL_PWD); not bare PWD/OLDPWD (no `_PWD` substring)
     "API_KEY",
     "APIKEY",
     "ACCESS_KEY",
@@ -113,6 +114,8 @@ mod tests {
             "STRIPE_KEY",
             "FOO_KEY",
             "MYSQL_PWD",
+            "DB_PASS",
+            "SMTP_PASS",
             "PGPASSWORD",
             "MY_WEBHOOK_URL",
             "SENTRY_DSN",
@@ -171,6 +174,9 @@ mod tests {
             "REDIS_HOST",
             "REDIS_PORT",
             "MONGO_HOST",
+            // `_PASS` requires the underscore: BYPASS/COMPASS-style names survive.
+            "CACHE_BYPASS",
+            "COMPASS_DIR",
         ] {
             assert!(!is_secret_env_name(name), "should NOT scrub {name}");
         }

@@ -247,6 +247,12 @@ fn classify_danger_flags_destructive_patterns() {
         "powershell -EncodedCommand ZQBjAGgAbwA=",
         "powershell -e ZQBjAGgAbwA=",
         "pwsh -Command \"Remove-Item -Recurse -Force C:\\data\"",
+        // String-BUILT PowerShell execution: the real command is composed at
+        // runtime ([scriptblock]::Create, base64 decode, [char]-array -join),
+        // opaque to the flattened token scan — the builder itself is the flag.
+        "powershell -Command \"& ([scriptblock]::Create($payload))\"",
+        "pwsh -Command \"[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('cm0='))\"",
+        "powershell -Command \"$s = -join [char[]](114,109); & $s\"",
         // Broadened git destructive forms that auto-run under a `git:*` grant.
         "git reset --merge HEAD~5",
         "git reset --keep HEAD~5",
@@ -418,6 +424,10 @@ fn classify_danger_does_not_flag_common_commands() {
         // benign one must NOT be refused (regression: this broke poll.rs).
         "powershell -NoProfile -Command \"Start-Sleep -Seconds 30\"",
         "pwsh -Command \"Get-Date\"",
+        // The string-builder markers only count INSIDE a pwsh/powershell
+        // segment — naming them in another program's args is plain text.
+        "grep -r frombase64string src/",
+        "echo [scriptblock]::create",
         // del/rmdir/Remove-Item of a single entry (no /s, no -Recurse) is benign.
         "del temp.txt",
         "Remove-Item temp.txt",
