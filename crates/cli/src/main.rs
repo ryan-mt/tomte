@@ -179,6 +179,62 @@ enum Command {
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
     },
+    /// Build and inspect the Repo Twin — a verifiable map of the repository
+    /// (file/import graph, symbol graph, test map, git recent-change map, and
+    /// project conventions). With no flags it loads the cached index (building
+    /// it on first use) and prints a summary; `--rebuild` forces a fresh scan.
+    Twin {
+        /// Rebuild the index from scratch instead of reusing the cache.
+        #[arg(long)]
+        rebuild: bool,
+        /// Emit the summary as JSON instead of the rendered text.
+        #[arg(long)]
+        json: bool,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
+    /// Agent Tournament: run a task with several contestants (varying
+    /// model/effort/style), each in its own git worktree, then judge them on
+    /// evidence — the project's own tests, diff size, added coverage, and
+    /// risky-command count — and pick the best patch. The judge is deterministic;
+    /// an LLM is never the referee. `--apply` applies the winning patch.
+    Race {
+        /// The task, e.g. "fix the checkout bug".
+        task: Vec<String>,
+        /// Number of contestants (1–8).
+        #[arg(long, default_value_t = 4)]
+        agents: usize,
+        /// Comma-separated models to spread contestants across (e.g.
+        /// `claude-opus-4-8,gpt-5.5`). Defaults to the configured model.
+        #[arg(long)]
+        models: Option<String>,
+        /// Apply the winning patch to the working tree when the race finishes.
+        #[arg(long)]
+        apply: bool,
+        /// Emit the full report as JSON instead of the rendered card.
+        #[arg(long)]
+        json: bool,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
+    /// Context X-Ray: explain why a file or symbol is (or isn't) relevant. Pass a
+    /// file (`src/auth/session.rs`), a stack-trace location (`src/x.rs:88`), or a
+    /// symbol name (`createSession`). Prints the files the Repo Twin would pull
+    /// into context — each with the index it came from — and the nearby files it
+    /// deliberately leaves out, each with why it's unreachable.
+    #[command(name = "why-context")]
+    WhyContext {
+        /// The seed: a file path, `file:line`, or symbol name.
+        seed: String,
+        /// Emit the full selection as JSON instead of the rendered card.
+        #[arg(long)]
+        json: bool,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
 }
 
 fn init_tracing(stderr_logs: bool) {
@@ -313,6 +369,18 @@ async fn async_main() -> Result<()> {
         Some(Command::Hooks { action }) => commands::hooks::run(action).await,
         Some(Command::Mcp { action }) => commands::mcp::run(action).await,
         Some(Command::Prove { json, cwd }) => commands::prove::run(json, cwd).await,
+        Some(Command::Twin { rebuild, json, cwd }) => commands::twin::run(rebuild, json, cwd).await,
+        Some(Command::WhyContext { seed, json, cwd }) => {
+            commands::why_context::run(seed, json, cwd).await
+        }
+        Some(Command::Race {
+            task,
+            agents,
+            models,
+            apply,
+            json,
+            cwd,
+        }) => commands::race::run(task, agents, models, apply, json, cwd).await,
     }
 }
 

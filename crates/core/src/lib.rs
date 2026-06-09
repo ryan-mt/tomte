@@ -18,6 +18,8 @@ pub mod permissions;
 pub mod pricing;
 pub mod proof;
 pub mod provider;
+pub mod race;
+pub mod repo_twin;
 mod retry;
 pub mod secret_env;
 mod sensitive;

@@ -8,4 +8,7 @@ pub mod hooks;
 pub mod login;
 pub mod mcp;
 pub mod prove;
+pub mod race;
+pub mod twin;
 pub mod why;
+pub mod why_context;
