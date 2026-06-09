@@ -217,31 +217,59 @@ pub(super) fn locate_line_number(path: &str, needle: &str) -> Option<usize> {
     Some(content[..idx].matches('\n').count() + 1)
 }
 
+/// Numbered code preview for a Write tool call, syntax-highlighted from the
+/// target file's extension through the same syntect pipeline the assistant's
+/// fenced code blocks use — so a `Write(src/main.rs)` preview reads like code,
+/// not a wall of one-color text. An unknown or missing extension degrades to
+/// the plain-text syntax (uniform theme foreground), never to an error.
 pub(super) fn append_numbered(
     out: &mut Vec<Line<'static>>,
     content: &str,
+    path: &str,
     max_lines: usize,
     no_style: Style,
-    code_style: Style,
     width: usize,
 ) {
+    use syntect::easy::HighlightLines;
+    let (ss, theme) = syntax_assets();
+    let syntax = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| resolve_syntax(ss, ext))
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+    let mut hl = HighlightLines::new(syntax, theme);
+
     let total = content.lines().count();
+    let body_w = width.saturating_sub(5);
     for (i, raw) in content.lines().enumerate().take(max_lines) {
         let n = i + 1;
-        let mut first = true;
-        for w in wrap(raw, width.saturating_sub(5)) {
-            if first {
-                out.push(Line::from(vec![
-                    Span::styled(format!("{:>4} ", n), no_style),
-                    Span::styled(w, code_style),
-                ]));
-                first = false;
-            } else {
-                out.push(Line::from(vec![
-                    Span::styled("     ".to_string(), no_style),
-                    Span::styled(w, code_style),
-                ]));
+        // Feed the highlighter the line WITH its newline (like the markdown
+        // path's `LinesWithEndings`) so multi-line constructs keep their state.
+        let clean = format!("{}\n", sanitize_display(raw));
+        let ranges = hl.highlight_line(&clean, ss).unwrap_or_default();
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (style, piece) in ranges {
+            let piece = piece.trim_end_matches(['\n', '\r']);
+            if piece.is_empty() {
+                continue;
             }
+            let c = style.foreground;
+            spans.push(Span::styled(
+                piece.to_string(),
+                Style::default().fg(Color::Rgb(c.r, c.g, c.b)).bg(CODE_BG),
+            ));
+        }
+        let mut first = true;
+        for row in wrap_spans(spans, body_w, CODE_BG) {
+            let gutter = if first {
+                format!("{n:>4} ")
+            } else {
+                "     ".to_string()
+            };
+            first = false;
+            let mut line = vec![Span::styled(gutter, no_style)];
+            line.extend(row);
+            out.push(Line::from(line));
         }
     }
     if total > max_lines {

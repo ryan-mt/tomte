@@ -72,9 +72,9 @@ pub(super) fn friendly_body<'a>(
             append_numbered(
                 &mut out,
                 content,
+                path,
                 limits.write_preview,
                 style_lineno,
-                style_code,
                 avail,
             );
         }
