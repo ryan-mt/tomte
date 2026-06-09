@@ -203,6 +203,7 @@ fn parse_tools_unquoted_array_and_comma_forms() {
 
 #[test]
 fn resolve_model_alias_maps_claude_aliases() {
+    assert_eq!(resolve_model_alias("fable"), "claude-fable-5");
     assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6");
     assert_eq!(resolve_model_alias("opus"), "claude-opus-4-8");
     assert_eq!(resolve_model_alias("haiku"), "claude-haiku-4-5");

@@ -46,8 +46,20 @@ impl Pricing {
 /// OpenAI ids match exactly. An unknown id falls back to a mid GPT-5 rate.
 pub fn pricing_for(model: &str) -> Pricing {
     // Anthropic: cache read = 0.1x input, cache write (5m TTL) = 1.25x input.
+    // Rates per the published model docs (June 2026).
+    if model.contains("fable") || model.contains("mythos") {
+        return Pricing::new(10.0, 50.0, 1.0, 12.5);
+    }
     if model.contains("opus") {
-        return Pricing::new(15.0, 75.0, 1.5, 18.75);
+        // Opus 4.5 and later published $5/$25; Opus 4.1 and older (or an id
+        // whose version can't be parsed, like dated `claude-opus-4-20250514`)
+        // keep the original $15/$75.
+        return match crate::catalog::claude_version(&model.to_ascii_lowercase()) {
+            Some((major, minor)) if major > 4 || (major == 4 && minor >= 5) => {
+                Pricing::new(5.0, 25.0, 0.5, 6.25)
+            }
+            _ => Pricing::new(15.0, 75.0, 1.5, 18.75),
+        };
     }
     if model.contains("sonnet") {
         return Pricing::new(3.0, 15.0, 0.3, 3.75);
@@ -151,13 +163,37 @@ mod tests {
 
     #[test]
     fn anthropic_families_priced_by_tier_and_date_suffix() {
+        // Fable (and Mythos, same published rate) is the $10/$50 top tier.
+        assert_eq!(
+            pricing_for("claude-fable-5"),
+            Pricing::new(10.0, 50.0, 1.0, 12.5)
+        );
+        assert_eq!(
+            pricing_for("claude-mythos-5"),
+            Pricing::new(10.0, 50.0, 1.0, 12.5)
+        );
+        // Opus 4.5+ published $5/$25.
         assert_eq!(
             pricing_for("claude-opus-4-8"),
-            Pricing::new(15.0, 75.0, 1.5, 18.75)
+            Pricing::new(5.0, 25.0, 0.5, 6.25)
         );
         // A dated snapshot id still resolves to the tier's rates.
         assert_eq!(
             pricing_for("claude-opus-4-8-20260101"),
+            Pricing::new(5.0, 25.0, 0.5, 6.25)
+        );
+        assert_eq!(
+            pricing_for("claude-opus-4-5-20251101"),
+            Pricing::new(5.0, 25.0, 0.5, 6.25)
+        );
+        // Opus 4.1 and older keep the original $15/$75 — including the dated
+        // bare-major Opus 4.0 id, whose version can't be parsed.
+        assert_eq!(
+            pricing_for("claude-opus-4-1-20250805"),
+            Pricing::new(15.0, 75.0, 1.5, 18.75)
+        );
+        assert_eq!(
+            pricing_for("claude-opus-4-20250514"),
             Pricing::new(15.0, 75.0, 1.5, 18.75)
         );
         assert_eq!(

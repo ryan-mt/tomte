@@ -73,6 +73,7 @@ const MODELS: &[ModelInfo] = &[
     openai("gpt-5.2", 400_000),
     openai("gpt-5", 400_000),
     // ---- Anthropic ----
+    anthropic("claude-fable-5", 1_000_000, true, true),
     anthropic("claude-opus-4-8", 1_000_000, true, true),
     anthropic("claude-opus-4-7", 1_000_000, true, true),
     anthropic("claude-opus-4-6", 1_000_000, true, true),
@@ -160,6 +161,10 @@ pub fn supports_adaptive_thinking(model: &str) -> bool {
 /// without a catalog edit; Sonnet and Haiku never get `xhigh`.
 pub fn supports_xhigh(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
+    // Fable (the tier above Opus) ships xhigh from day one.
+    if m.contains("fable") {
+        return true;
+    }
     if !m.contains("opus") {
         return false;
     }
@@ -194,8 +199,8 @@ pub fn supports_extended_thinking(model: &str) -> bool {
 
 fn family_supports_1m(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
-    // The Mythos preview ships 1M; Haiku never does.
-    if m.contains("mythos") {
+    // The Fable/Mythos top tier ships 1M; Haiku never does.
+    if m.contains("fable") || m.contains("mythos") {
         return true;
     }
     if m.contains("haiku") {
@@ -241,8 +246,9 @@ fn family_supports_adaptive_thinking(model: &str) -> bool {
     if !(m.starts_with("claude") || m.contains("mythos")) {
         return false;
     }
-    // The Mythos preview is adaptive; Haiku never is.
-    if m.contains("mythos") {
+    // The Fable/Mythos top tier is adaptive-only (Fable rejects an explicit
+    // `type:"disabled"` — thinking is always on); Haiku never is adaptive.
+    if m.contains("fable") || m.contains("mythos") {
         return true;
     }
     if m.contains("haiku") {
@@ -257,8 +263,9 @@ fn family_supports_adaptive_thinking(model: &str) -> bool {
 /// Parse the `(major, minor)` version from a `claude-<tier>-<major>-<minor>` id
 /// — the shape every Claude model tomte surfaces uses (a trailing date
 /// snapshot is ignored). Returns `None` for ids that don't fit, so callers fall
-/// back to a safe default rather than guessing.
-fn claude_version(model_lc: &str) -> Option<(u32, u32)> {
+/// back to a safe default rather than guessing. `pub(crate)` for `pricing`,
+/// which version-gates the Opus rate the same way.
+pub(crate) fn claude_version(model_lc: &str) -> Option<(u32, u32)> {
     let parts: Vec<&str> = model_lc.split('-').collect();
     let tier = parts
         .iter()
@@ -314,7 +321,7 @@ mod tests {
         assert!(openai.iter().all(|id| !id.starts_with("claude")));
         assert!(anthropic.iter().all(|id| id.starts_with("claude")));
         assert_eq!(openai[0], "gpt-5.5");
-        assert_eq!(anthropic[0], "claude-opus-4-8");
+        assert_eq!(anthropic[0], "claude-fable-5");
     }
 
     #[test]
@@ -392,8 +399,25 @@ mod tests {
         assert!(!supports_adaptive_thinking("claude-haiku-4-5"));
     }
 
+    // Fable 5 (the tier above Opus, GA 2026-06-09): 1M window, adaptive-only
+    // thinking, xhigh effort — and never the legacy budget shape, which it
+    // rejects with a 400. A dated snapshot inherits the same facts via the
+    // family fallbacks ("fable" doesn't fit the opus/sonnet/haiku version
+    // parser, so the substring rules are load-bearing).
     #[test]
-    fn xhigh_is_opus_4_7_plus_only() {
+    fn fable_is_top_tier_one_million_adaptive_and_xhigh() {
+        for id in ["claude-fable-5", "claude-fable-5-20260609"] {
+            assert_eq!(context_limit(id), 1_000_000, "{id} window");
+            assert!(supports_1m(id), "{id} 1M beta");
+            assert!(supports_adaptive_thinking(id), "{id} adaptive");
+            assert!(supports_xhigh(id), "{id} xhigh");
+            assert!(!supports_extended_thinking(id), "{id} must never be legacy");
+        }
+        assert!(lookup("claude-fable-5").is_some());
+    }
+
+    #[test]
+    fn xhigh_is_fable_or_opus_4_7_plus_only() {
         for id in [
             "claude-opus-4-7",
             "claude-opus-4-8",

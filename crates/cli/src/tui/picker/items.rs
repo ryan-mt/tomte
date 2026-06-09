@@ -194,7 +194,8 @@ pub fn models() -> Vec<PickerItem> {
                 (Provider::OpenAi, "gpt-5.4-nano") => "latency-sensitive",
                 (Provider::OpenAi, "gpt-5.2") => "older frontier",
                 (Provider::OpenAi, "gpt-5") => "oldest GPT-5-class",
-                (Provider::Anthropic, "claude-opus-4-8") => "frontier · most capable",
+                (Provider::Anthropic, "claude-fable-5") => "most capable · top tier",
+                (Provider::Anthropic, "claude-opus-4-8") => "frontier · most capable opus",
                 (Provider::Anthropic, "claude-opus-4-7") => {
                     "previous frontier · long-running agents"
                 }
@@ -451,6 +452,12 @@ mod effort_tests {
                 "{present} missing for Opus"
             );
         }
+        // Fable 5 honours xhigh like Opus 4.7+.
+        let fable = keys("claude-fable-5");
+        assert!(
+            fable.iter().any(|s| s == "xhigh"),
+            "xhigh missing for Fable"
+        );
         // Sonnet 4.6 clamps xhigh to high, so the picker hides xhigh but keeps max.
         let sonnet = keys("claude-sonnet-4-6");
         assert!(!sonnet.iter().any(|s| s == "xhigh"));

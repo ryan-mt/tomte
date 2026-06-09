@@ -303,6 +303,33 @@ fn opus_4_8_gets_adaptive_thinking_and_xhigh() {
 }
 
 #[test]
+fn fable_5_gets_adaptive_xhigh_and_omits_thinking_when_off() {
+    // Fable 5's published surface (GA 2026-06-09): adaptive-only thinking,
+    // xhigh honoured. An explicit `thinking:{"type":"disabled"}` is a 400 on
+    // Fable, so with no effort the `thinking` field must be omitted entirely
+    // (None serializes to no field) — adaptive is then always-on server-side.
+    let req = ResponsesRequest::new("claude-fable-5", vec![]).with_reasoning("xhigh");
+    let out = to_messages_request(&req);
+    assert!(matches!(out.thinking, Some(ThinkingConfig::Adaptive)));
+    assert_eq!(out.output_config.as_ref().unwrap().effort, "xhigh");
+    assert!(out.max_tokens > 32_000);
+
+    let req = ResponsesRequest::new("claude-fable-5", vec![]).with_reasoning("none");
+    let out = to_messages_request(&req);
+    assert!(out.thinking.is_none(), "no effort must omit `thinking`");
+    let json = serde_json::to_value(&out).unwrap();
+    assert!(
+        json.get("thinking").is_none(),
+        "the wire request must not carry a `thinking` field at all"
+    );
+
+    // Never the legacy budget shape — Fable rejects type:"enabled" with a 400.
+    let req = ResponsesRequest::new("claude-fable-5", vec![]).with_reasoning("medium");
+    let out = to_messages_request(&req);
+    assert!(matches!(out.thinking, Some(ThinkingConfig::Adaptive)));
+}
+
+#[test]
 fn future_opus_gets_adaptive_xhigh_not_legacy() {
     // A future Opus id not yet in the catalog must use adaptive + xhigh,
     // never the deprecated type:enabled shape (which 4.7+ reject with a 400).

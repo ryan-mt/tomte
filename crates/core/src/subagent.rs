@@ -356,6 +356,7 @@ pub fn load_by_name(cwd: &Path, name: &str) -> Result<SubagentDefinition> {
 /// concrete (or an OpenAI id) passes through unchanged.
 pub fn resolve_model_alias(model: &str) -> String {
     match model.trim().to_ascii_lowercase().as_str() {
+        "fable" => "claude-fable-5".to_string(),
         "sonnet" => "claude-sonnet-4-6".to_string(),
         "opus" => "claude-opus-4-8".to_string(),
         "haiku" => "claude-haiku-4-5".to_string(),
