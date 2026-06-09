@@ -8,6 +8,7 @@ pub mod hooks;
 pub mod login;
 pub mod mcp;
 pub mod prove;
+pub mod pulse;
 pub mod race;
 pub mod twin;
 pub mod why;

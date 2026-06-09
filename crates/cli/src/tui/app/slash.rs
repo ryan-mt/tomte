@@ -39,6 +39,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  /why [loc]          decision trail: why changes were made (--all, --reconcile)\n  \
                  /blame <file>       the decision trail for one file (greppable)\n  \
                  /twin [--rebuild]   the Repo Twin: five verifiable indexes of this repo\n  \
+                 /pulse              repo pulse: files most likely to break next, scored from the twin\n  \
                  /why-context <seed> context X-ray: which files belong in context, and why\n  \
                  /review             ask the agent to review uncommitted changes\n  \
                  /prove              verify the work — run test/typecheck/lint/build, show a proof capsule\n  \

@@ -219,6 +219,21 @@ enum Command {
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
     },
+    /// Repo Pulse: which files are most likely to break next, scored from the
+    /// Repo Twin's own indexes — commits in the recent git window × import
+    /// fan-in × 2 when no test covers the file. Every number on the card is a
+    /// real index entry, so the verdict is reproducible. `--json` for scripts.
+    Pulse {
+        /// Rebuild the twin from scratch before scoring.
+        #[arg(long)]
+        rebuild: bool,
+        /// Emit the report as JSON instead of the rendered card.
+        #[arg(long)]
+        json: bool,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
     /// Context X-Ray: explain why a file or symbol is (or isn't) relevant. Pass a
     /// file (`src/auth/session.rs`), a stack-trace location (`src/x.rs:88`), or a
     /// symbol name (`createSession`). Prints the files the Repo Twin would pull
@@ -402,6 +417,9 @@ async fn async_main() -> Result<()> {
         Some(Command::Mcp { action }) => commands::mcp::run(action).await,
         Some(Command::Prove { json, cwd }) => commands::prove::run(json, cwd).await,
         Some(Command::Twin { rebuild, json, cwd }) => commands::twin::run(rebuild, json, cwd).await,
+        Some(Command::Pulse { rebuild, json, cwd }) => {
+            commands::pulse::run(rebuild, json, cwd).await
+        }
         Some(Command::WhyContext { seed, json, cwd }) => {
             commands::why_context::run(seed, json, cwd).await
         }

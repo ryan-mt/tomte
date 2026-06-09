@@ -26,6 +26,7 @@
 
 pub mod gitmap;
 pub mod imports;
+pub mod pulse;
 pub mod rules;
 pub mod select;
 pub mod symbols;

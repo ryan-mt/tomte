@@ -390,6 +390,26 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
             };
             app.blocks.push(Block::System(text));
         }
+        "pulse" => {
+            // The hearth report: which files are most likely to break next,
+            // scored from the twin's own indexes (change heat × import fan-in
+            // × missing tests). Deterministic — every number on the card is a
+            // real index entry. Same blocking-task treatment as /twin.
+            let cwd = app.cwd.clone();
+            let report = tokio::task::spawn_blocking(move || {
+                let twin = tomte_core::repo_twin::load_or_build(&cwd)?;
+                anyhow::Ok(tomte_core::repo_twin::pulse::render(
+                    &tomte_core::repo_twin::pulse::pulse(&twin),
+                ))
+            })
+            .await;
+            let text = match report {
+                Ok(Ok(card)) => card,
+                Ok(Err(e)) => format!("pulse: {e}"),
+                Err(e) => format!("pulse: {e}"),
+            };
+            app.blocks.push(Block::System(text));
+        }
         "why-context" | "xray" => {
             // The Context X-Ray query: which files belong in context for this
             // seed (a file, a stack-trace `file:line`, or a symbol), each

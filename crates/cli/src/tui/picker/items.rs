@@ -52,6 +52,11 @@ pub fn slash_commands(cwd: &Path) -> Vec<PickerItem> {
             "the Repo Twin: five verifiable indexes of this repo (--rebuild)",
         ),
         item(
+            "pulse",
+            "/pulse",
+            "repo pulse: the files most likely to break next, scored from the twin",
+        ),
+        item(
             "why-context",
             "/why-context",
             "context X-ray: which files belong in context for a file/symbol, and why",
