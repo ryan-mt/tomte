@@ -214,7 +214,8 @@ impl RepoTwin {
         out.push_str(&format!("  git-tracked      {} files\n", s.tracked_by_git));
         out.push_str(&format!("  convention docs  {}\n", s.rule_docs));
         out.push_str(
-            "\nAsk why a file/symbol is (or isn't) relevant:  tomte why-context <file|symbol>",
+            "\nAsk why a file/symbol is (or isn't) relevant:  tomte why-context <file|symbol>\n\
+             Feel where it breaks next:                      tomte pulse",
         );
         out
     }

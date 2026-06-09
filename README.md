@@ -53,7 +53,11 @@ terminal agent ships together — each one verifiable, none of them "trust me":
 Wrapped around those: a glass-box pre-flight that states what a write or shell command will
 touch *before* it runs, recorded decisions resurfacing as house rules the agent re-reads
 before it could break one, and an end-of-turn receipt — files touched, tests run, the why
-it recorded.
+it recorded. And because the indexes are real data, they compose: `tomte pulse` scores
+which files are most likely to break next (change heat × import fan-in × missing tests,
+formula on the card), and `tomte handoff` renders the whole standing — git state, newest
+decisions, drift watch, map, pulse — as one paste-ready capsule, so the next session
+(a colleague, tomorrow's you, or a different model entirely) starts where this one stopped.
 
 ## Why you might like it
 
@@ -140,6 +144,8 @@ tomte run --cwd /srv/project --prompt-file nightly-task.md   # scheduler-friendl
 tomte prove --json                       # run the project's own checks; non-zero exit on failure
 tomte twin                               # build/inspect the repo's verifiable map
 tomte why-context src/auth/session.rs    # which files belong in context, and why
+tomte pulse                              # which files break next — scored, formula on the card
+tomte handoff --out HANDOFF.md           # the shift report for the next session (or model)
 tomte race "fix the flaky retry test" --agents 4   # tournament: isolated worktrees, measured judge
 ```
 
@@ -192,6 +198,7 @@ Inside the TUI:
 | `/why` | read back the decision trail — *why* past changes were made (`tomte why <loc>` / `tomte blame <file>` from the CLI; add `--json` for machine-readable output) |
 | `/prove` | verify the work — run the project's own test/typecheck/lint/build and show the proof capsule (`tomte prove` headless; non-zero exit gates CI) |
 | `/twin` · `/why-context <seed>` | the Repo Twin and the context X-ray — five verifiable indexes of the repo, and which files belong in context for a file/symbol, with why |
+| `/pulse` · `/handoff` | the files most likely to break next (scored from the twin, formula shown), and the paste-ready shift report for the next session |
 | `/rewind` | restore the session to an earlier turn and revert the file edits made since (each row shows its blast radius first); `/undo` reverts just the last edit |
 | `/compact <focus>` | compact the conversation, steering the summary toward what you name |
 | `/buddy` | hatch a pixel companion — a rarity-weighted species seeded from your account, so it's stable for you and only re-rolls on an account switch (`/buddy off`, `/buddy reset`) |
