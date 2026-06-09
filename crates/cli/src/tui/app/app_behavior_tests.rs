@@ -76,6 +76,32 @@ async fn prove_slash_arms_collection_and_guards_double_run() {
     );
 }
 
+// `/prove explain` arms the collection AND the explain follow-up; a bare
+// `/prove` must clear any stale explain flag; an unknown arg prints usage.
+#[tokio::test]
+async fn prove_explain_arms_the_follow_up_and_bare_prove_clears_it() {
+    let mut app = App::new();
+
+    handle_slash(&mut app, "prove explain").await;
+    assert!(app.pending_prove);
+    assert!(app.prove_explain, "explain must arm the follow-up");
+
+    // Simulate the run finishing, then a bare `/prove`: no stale explain.
+    app.pending_prove = false;
+    app.prove_explain = false;
+    handle_slash(&mut app, "prove").await;
+    assert!(app.pending_prove);
+    assert!(!app.prove_explain, "bare /prove must not inherit explain");
+
+    let mut app2 = App::new();
+    handle_slash(&mut app2, "prove nonsense").await;
+    assert!(!app2.pending_prove, "unknown arg must not arm a run");
+    assert!(
+        matches!(app2.blocks.last(), Some(Block::System(s)) if s.contains("Usage: /prove")),
+        "unknown arg prints usage"
+    );
+}
+
 // `/why-context` with no seed prints usage instead of building the twin —
 // the X-ray needs a file/symbol to trace, so a bare call must stay instant.
 #[tokio::test]

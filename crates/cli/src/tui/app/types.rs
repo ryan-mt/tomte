@@ -314,6 +314,10 @@ pub struct App {
     /// True while a background `/prove` collection is running — guards against a
     /// second `/prove` spawning a duplicate run before the first reports back.
     pub proving: bool,
+    /// Set by `/prove explain`: when the background collection reports back,
+    /// also queue a prompt asking the agent to explain the capsule (the CLI
+    /// keeps the numbers; the model only interprets them).
+    pub prove_explain: bool,
     /// Set true by `/compact` or the auto-compact trigger so main_loop can call
     /// `Agent::compact_history()` on the next tick (slash/event handlers don't
     /// have the agent Arc).

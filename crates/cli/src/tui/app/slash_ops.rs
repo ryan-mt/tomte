@@ -323,11 +323,24 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
             // the UI keeps animating; the capsule it gathers is the CLI's own
             // evidence — git changes + the real exit codes of the project's
             // test/typecheck/lint/build — never the model's say-so.
+            // `/prove explain` additionally queues an agent turn that interprets
+            // the collected capsule (the model explains; it never supplies numbers).
+            let explain = match arg.trim() {
+                "" => false,
+                "explain" | "--explain" => true,
+                other => {
+                    app.blocks.push(Block::System(format!(
+                        "Usage: /prove [explain]  — collect the proof capsule; `explain` asks the agent to interpret it. Got: {other}"
+                    )));
+                    return;
+                }
+            };
             if app.proving {
                 app.blocks
                     .push(Block::System("Already collecting proof…".into()));
             } else {
                 app.pending_prove = true;
+                app.prove_explain = explain;
             }
         }
         "why" => {

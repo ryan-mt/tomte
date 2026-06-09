@@ -47,6 +47,25 @@ Steps:\n\
     )
 }
 
+/// The `/prove explain` follow-up: the agent explains a capsule the CLI
+/// already collected. The numbers stay the CLI's — the prompt forbids
+/// re-running checks or claiming anything the capsule doesn't show.
+pub fn prove_explain_prompt(card: &str) -> String {
+    format!(
+        "The CLI just collected this Proof Capsule (real git state and real exit \
+         codes — the numbers are not yours to change):\n\n{card}\n\n\
+         Explain it briefly for the work in this session:\n\
+         1. What the verdict means: which claims about the current changes are now \
+         backed by evidence, and which are not.\n\
+         2. Residual risks these checks do NOT cover (untested paths, behavior the \
+         suite can't see, platform gaps).\n\
+         3. What to verify by hand before shipping, as concrete steps.\n\n\
+         Do not re-run the checks. Do not contradict or restate numbers that are \
+         not in the capsule. If everything passed, say what that does and does not \
+         prove."
+    )
+}
+
 pub fn goal_start_prompt(objective: &str) -> String {
     format!(
         "{GOAL_START_PREFIX}\n\n\

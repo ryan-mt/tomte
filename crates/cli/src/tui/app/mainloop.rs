@@ -519,6 +519,12 @@ pub async fn main_loop(
             Some(card) = prove_rx.recv() => {
                 // The background `/prove` collection finished; show the capsule.
                 app.proving = false;
+                // `/prove explain`: hand the CLI-collected card to the agent to
+                // interpret — the card is on screen and in the prompt verbatim;
+                // the model can only explain the numbers, not change them.
+                if std::mem::take(&mut app.prove_explain) {
+                    app.message_queue.push(prove_explain_prompt(&card));
+                }
                 app.blocks.push(Block::System(card));
                 app.auto_scroll = true;
             }

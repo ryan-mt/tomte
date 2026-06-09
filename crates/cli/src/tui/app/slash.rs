@@ -43,7 +43,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  /handoff            the shift report: git + decisions + map, for the next session\n  \
                  /why-context <seed> context X-ray: which files belong in context, and why\n  \
                  /review             ask the agent to review uncommitted changes\n  \
-                 /prove              verify the work — run test/typecheck/lint/build, show a proof capsule\n  \
+                 /prove [explain]    verify the work — run test/typecheck/lint/build, show a proof capsule\n  \
                  /commit             stage & commit with a generated message\n  \
                  /commit-push-pr     commit, push a branch, and open a PR\n  \
                  /export [path]      save conversation as markdown\n  \

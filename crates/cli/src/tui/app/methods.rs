@@ -78,6 +78,7 @@ impl App {
             pending_clear: false,
             pending_prove: false,
             proving: false,
+            prove_explain: false,
             pending_compact: false,
             compact_focus: None,
             auto_compact_done_this_window: false,
