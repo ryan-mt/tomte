@@ -55,6 +55,9 @@ pub async fn main_loop(
     // Background `!`-command output flows back here so it lands on the UI thread
     // (the command itself runs off the event loop — see `handle_bang_shell`).
     let (bang_tx, mut bang_rx) = mpsc::channel::<BangResult>(8);
+    // A background `/prove` collection sends its rendered capsule back here so it
+    // lands on the UI thread (the test/build commands run off the event loop).
+    let (prove_tx, mut prove_rx) = mpsc::channel::<String>(4);
     // Persistent agent kept across turns to preserve history.
     let agent: std::sync::Arc<tokio::sync::Mutex<Option<Agent>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));
@@ -162,6 +165,23 @@ pub async fn main_loop(
         }
         if app.pending_session_save && !app.busy && !app.compacting && app.screen == Screen::Chat {
             save_current_session_record(&mut app, &agent).await;
+        }
+        // `/prove` runs in the BACKGROUND (it can shell out to a full build/test
+        // suite) so the main loop keeps ticking; the rendered capsule comes back
+        // over `prove_rx`. `proving` guards against a duplicate spawn.
+        if std::mem::take(&mut app.pending_prove) && !app.proving {
+            app.proving = true;
+            app.blocks.push(Block::System(
+                "🔍 Collecting proof — running the project's test / typecheck / lint / build…"
+                    .into(),
+            ));
+            app.auto_scroll = true;
+            let cwd = app.cwd.clone();
+            let tx = prove_tx.clone();
+            tokio::spawn(async move {
+                let capsule = tomte_core::proof::collect(&cwd).await;
+                let _ = tx.send(capsule.render()).await;
+            });
         }
         // After a successful compaction the bar holds at 100% briefly, then we
         // swap in the result line and tear the bar down. The 80ms select tick
@@ -494,6 +514,12 @@ pub async fn main_loop(
                 // as context for the next message.
                 app.blocks.push(Block::System(r.display));
                 app.pending_shell_context.push(r.context);
+                app.auto_scroll = true;
+            }
+            Some(card) = prove_rx.recv() => {
+                // The background `/prove` collection finished; show the capsule.
+                app.proving = false;
+                app.blocks.push(Block::System(card));
                 app.auto_scroll = true;
             }
             _ = tokio::time::sleep(Duration::from_millis(if app.hatch.is_some() { 45 } else { 80 })) => {

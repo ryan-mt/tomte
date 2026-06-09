@@ -50,6 +50,32 @@ async fn compact_slash_is_a_noop_while_busy() {
     assert_eq!(app.compact_focus, None);
 }
 
+// `/prove` arms the deferred background collection; a second `/prove` while one
+// is already running is a no-op (the `proving` guard) so it can't double-spawn.
+#[tokio::test]
+async fn prove_slash_arms_collection_and_guards_double_run() {
+    let mut app = App::new();
+    assert!(!app.pending_prove);
+
+    handle_slash(&mut app, "prove").await;
+    assert!(app.pending_prove);
+
+    // Simulate main_loop having started the run: the flag is consumed and
+    // `proving` is set. A second `/prove` must NOT re-arm it.
+    app.pending_prove = false;
+    app.proving = true;
+    handle_slash(&mut app, "prove").await;
+    assert!(
+        !app.pending_prove,
+        "must not re-arm while a run is in flight"
+    );
+    let last = app.blocks.last().expect("a note");
+    assert!(
+        matches!(last, Block::System(s) if s.contains("Already collecting")),
+        "should report the in-flight run"
+    );
+}
+
 // `/thoughts [on|off]` toggles the live-reasoning display; bare `/thoughts` flips it.
 #[tokio::test]
 async fn thoughts_slash_toggles_show_thinking() {

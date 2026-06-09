@@ -317,6 +317,19 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
                 Err(e) => app.blocks.push(Block::System(format!("git diff: {e}"))),
             }
         }
+        "prove" => {
+            // "Done means verified." main_loop spawns the collection in the
+            // background (it can run cargo build / npm test, far past a frame) so
+            // the UI keeps animating; the capsule it gathers is the CLI's own
+            // evidence — git changes + the real exit codes of the project's
+            // test/typecheck/lint/build — never the model's say-so.
+            if app.proving {
+                app.blocks
+                    .push(Block::System("Already collecting proof…".into()));
+            } else {
+                app.pending_prove = true;
+            }
+        }
         "why" => {
             // Read-only view of the decision trail (Pillar 2): why earlier
             // changes were made, and by which model. No arg or `--all` lists

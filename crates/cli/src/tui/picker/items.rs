@@ -52,6 +52,11 @@ pub fn slash_commands(cwd: &Path) -> Vec<PickerItem> {
             "ask the agent to review uncommitted changes",
         ),
         item(
+            "prove",
+            "/prove",
+            "verify the work: run test/typecheck/lint/build, show a proof capsule",
+        ),
+        item(
             "commit",
             "/commit",
             "stage & commit with a generated message",

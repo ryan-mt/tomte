@@ -306,6 +306,14 @@ pub struct App {
     /// the next tick (slash handlers don't have the agent Arc). The transcript
     /// UI is cleared immediately in the handler; this resets the model's context.
     pub pending_clear: bool,
+    /// Set true by `/prove` so main_loop spawns the background proof collection
+    /// (git + the project's test/typecheck/lint/build scripts) on the next tick.
+    /// The capsule it gathers is the CLI's own evidence — the model never sees a
+    /// chance to forge it.
+    pub pending_prove: bool,
+    /// True while a background `/prove` collection is running — guards against a
+    /// second `/prove` spawning a duplicate run before the first reports back.
+    pub proving: bool,
     /// Set true by `/compact` or the auto-compact trigger so main_loop can call
     /// `Agent::compact_history()` on the next tick (slash/event handlers don't
     /// have the agent Arc).

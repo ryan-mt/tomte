@@ -16,6 +16,7 @@ pub mod memory;
 pub mod openai;
 pub mod permissions;
 pub mod pricing;
+pub mod proof;
 pub mod provider;
 mod retry;
 pub mod secret_env;

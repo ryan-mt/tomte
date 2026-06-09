@@ -76,6 +76,8 @@ impl App {
             pending_rewind_ordinal: None,
             rewind_points: Vec::new(),
             pending_clear: false,
+            pending_prove: false,
+            proving: false,
             pending_compact: false,
             compact_focus: None,
             auto_compact_done_this_window: false,

@@ -166,6 +166,19 @@ enum Command {
         #[command(subcommand)]
         action: Option<commands::mcp::McpAction>,
     },
+    /// Collect a Proof Capsule for the working tree — the files git reports
+    /// changed plus the REAL exit codes of the project's own test / typecheck /
+    /// lint / build scripts, which tomte runs itself (never the model's word).
+    /// Exits non-zero if any check fails, so it can gate a commit or CI step.
+    /// Runs headless (no TUI); the in-session companion is `/prove`.
+    Prove {
+        /// Emit the capsule as JSON instead of the human ✅/❌ card.
+        #[arg(long)]
+        json: bool,
+        /// Working directory to verify. Defaults to the current directory.
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
 }
 
 fn init_tracing(stderr_logs: bool) {
@@ -299,6 +312,7 @@ async fn async_main() -> Result<()> {
         Some(Command::Cost { session, cwd }) => commands::cost::run(session, cwd).await,
         Some(Command::Hooks { action }) => commands::hooks::run(action).await,
         Some(Command::Mcp { action }) => commands::mcp::run(action).await,
+        Some(Command::Prove { json, cwd }) => commands::prove::run(json, cwd).await,
     }
 }
 
