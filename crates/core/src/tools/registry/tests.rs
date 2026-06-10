@@ -200,6 +200,21 @@ fn filtered_strips_user_prompt_tool_from_subagents() {
     assert_eq!(names(&reg), vec!["read_file"]);
 }
 
+/// `think` is a read-only scratchpad: standard, alias-resolvable, kept for
+/// sub-agents (wildcard + explicit whitelist), and not stripped like the
+/// orchestration tools.
+#[test]
+fn think_is_standard_aliased_and_kept_for_subagents() {
+    let std_reg = Registry::standard();
+    assert!(names(&std_reg).contains(&"think"));
+    assert!(std_reg.find("scratchpad").is_some(), "alias resolves");
+    // Survives the wildcard subagent filter (unlike goal_update/dispatch).
+    assert!(names(&Registry::filtered(&[])).contains(&"think"));
+    // Whitelistable by name for a subagent.
+    let filtered = Registry::filtered(&["think".to_string()]);
+    assert_eq!(names(&filtered), vec!["think"]);
+}
+
 #[test]
 fn standard_includes_skill_and_dispatch() {
     let n = names(&Registry::standard());

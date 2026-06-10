@@ -201,3 +201,56 @@ fn call_result_fences_both_success_and_error_paths() {
     assert!(ok.starts_with("<untrusted-mcp-output server=\"srv\" tool=\"tool\">"));
     assert!(ok.contains("hello world"));
 }
+
+#[test]
+fn server_supports_resources_reads_the_capability_object() {
+    // Presence of capabilities.resources (an object) = supported.
+    assert!(server_supports_resources(&json!({
+        "capabilities": {"resources": {"subscribe": true}}
+    })));
+    assert!(server_supports_resources(&json!({
+        "capabilities": {"resources": {}}
+    })));
+    // Absent capability, or a server that only advertises tools → not supported.
+    assert!(!server_supports_resources(&json!({
+        "capabilities": {"tools": {}}
+    })));
+    assert!(!server_supports_resources(&json!({})));
+}
+
+#[test]
+fn resource_list_result_formats_and_fences() {
+    let resp = json!({
+        "resources": [
+            {"uri": "file:///a.txt", "name": "A", "mimeType": "text/plain", "description": "the a"},
+            {"uri": "file:///b.bin"},
+            {"name": "no uri — skipped"}
+        ]
+    });
+    let out = resource_list_result("fs", &resp);
+    assert!(out.starts_with("<untrusted-mcp-output server=\"fs\" tool=\"resources/list\">"));
+    assert!(out.contains("file:///a.txt — A (text/plain): the a"));
+    assert!(out.contains("file:///b.bin"));
+    // An entry without a uri is dropped, not rendered as a blank line.
+    assert!(!out.contains("no uri"));
+    // Empty list → a visible placeholder, never an empty fenced body.
+    let empty = resource_list_result("fs", &json!({"resources": []}));
+    assert!(empty.contains("(server exposes no resources)"));
+}
+
+#[test]
+fn resource_read_result_joins_text_and_flags_binary() {
+    let resp = json!({
+        "contents": [
+            {"uri": "x", "mimeType": "text/plain", "text": "line one"},
+            {"uri": "x", "mimeType": "image/png", "blob": "…"}
+        ]
+    });
+    let out = resource_read_result("fs", "file:///x", &resp);
+    assert!(out.starts_with("<untrusted-mcp-output server=\"fs\""));
+    assert!(out.contains("line one"));
+    assert!(out.contains("[image/png resource content omitted]"));
+    // A resource with no contents at all surfaces a placeholder, not empty.
+    let empty = resource_read_result("fs", "file:///y", &json!({"contents": []}));
+    assert!(empty.contains("(resource file:///y returned no content)"));
+}

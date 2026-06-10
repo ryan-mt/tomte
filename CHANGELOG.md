@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.4
+
+### Added
+
+- Added a `think` tool — a no-op scratchpad the model calls to reason in the open mid-task (plan the next move after a batch of tool results, weigh a trade-off and state the rejected option, check a plan against a `record_decision` before editing). It writes nothing to disk, fetches nothing, and returns nothing new — the thought just lands in the conversation so the reasoning is in the record and survives into later turns. Read-only (so it never needs approval) and kept for sub-agents (it survives the wildcard filter and is whitelistable by name); the system prompt's tool-discipline list teaches the timing — use it to think, not to narrate, and skip it when the next step is already known. Aliased (`scratchpad`) and tolerant of the field spellings models reach for (`thought`/`text`/`note`/`reasoning`).
+- Added MCP resources — `list_mcp_resources` and `read_mcp_resource`: when a connected MCP server advertises the `resources` capability at handshake, tomte registers one shared pair of tools so the model can pull a server's files/docs/configs into context by URI (parity with Claude Code's ListMcpResources/ReadMcpResource). `list_mcp_resources` with no `server` aggregates every resource-capable server under a header; with a `server` it lists just that one. `read_mcp_resource` reads one URI, disambiguating with `server` only when several servers expose resources (a sole server is used automatically; an unknown name errors with the known servers listed). Both are read-only (auto-approvable), and the server output is wrapped in the same `<untrusted-mcp-output>` provenance fence as tool results — a compromised server can't forge the close tag or smuggle a framework marker. The tools are never deferred behind `tool_search` (they aren't `mcp__`-namespaced), and they only appear when a server can actually serve them, so they don't clutter the tool list otherwise.
+- Added `TOMTE_MAX_CONTEXT_TOKENS` — an env override for the resolved context-window size, mirroring Claude Code's `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. Pin the window for a gateway/proxy whose real limit tomte can't infer from the model name, or shrink it to force earlier compaction. Accepts a bare integer or a `k`/`m` suffix (`200000`, `200k`, `1m`; case-insensitive, underscores tolerated); a valid value is clamped to `[8k, 20m]` so a typo can't make every turn read as ≥100% full and thrash the compaction path, and an unset or unparseable value leaves the catalog/provider value untouched. It flows through the single `effective_context_limit` choke point, so the status-bar gauge, `/context`, the warn/auto-compact thresholds, and microcompaction all honor it together.
+
 ## 0.0.3
 
 ### Added

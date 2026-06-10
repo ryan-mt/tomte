@@ -419,12 +419,27 @@ impl Agent {
     pub async fn load_mcp(&mut self) -> Result<()> {
         let clients = crate::mcp::spawn_all().await;
         let mut mcp_count = 0usize;
-        for client in clients {
+        for client in &clients {
             for info in client.tools.clone() {
                 let adapter = crate::mcp::McpToolAdapter::new(client.clone(), info);
                 self.registry.add(Box::new(adapter));
                 mcp_count += 1;
             }
+        }
+        // Servers that advertised the `resources` capability get one shared pair
+        // of resource tools (not deferred, since they aren't `mcp__`-namespaced).
+        let resource_clients: Vec<_> = clients
+            .iter()
+            .filter(|c| c.supports_resources)
+            .cloned()
+            .collect();
+        if !resource_clients.is_empty() {
+            self.registry
+                .add(Box::new(crate::mcp::ListMcpResources::new(
+                    resource_clients.clone(),
+                )));
+            self.registry
+                .add(Box::new(crate::mcp::ReadMcpResource::new(resource_clients)));
         }
         // Past the threshold, defer MCP schemas behind `tool_search` and tell
         // the model what's available via a compact manifest in the prompt.

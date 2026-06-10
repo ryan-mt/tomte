@@ -152,6 +152,50 @@ pub struct ProviderConfig {
 /// fires before a real overflow. Users with a larger model raise it explicitly.
 pub const DEFAULT_PROVIDER_CONTEXT_LIMIT: u64 = 200_000;
 
+/// Env var that overrides the resolved context-window size (tokens). Lets a user
+/// pin the window for a gateway/proxy whose real limit tomte can't infer, or
+/// shrink it to force earlier compaction. Accepts a bare integer or a `k`/`m`
+/// suffix (`200000`, `200k`, `1m`). Mirrors Claude Code's
+/// `CLAUDE_CODE_MAX_CONTEXT_TOKENS`.
+pub const CONTEXT_OVERRIDE_ENV: &str = "TOMTE_MAX_CONTEXT_TOKENS";
+
+/// Floor for a [`CONTEXT_OVERRIDE_ENV`] value. Below this a typo (`2000`) would
+/// make every turn read as ≥100% full and thrash the compaction path, so a
+/// too-small override is clamped up rather than honored.
+pub const MIN_CONTEXT_OVERRIDE: u64 = 8_000;
+/// Ceiling for a [`CONTEXT_OVERRIDE_ENV`] value, so an absurd number can't skew
+/// the gauge math or starve the warn/compact thresholds.
+pub const MAX_CONTEXT_OVERRIDE: u64 = 20_000_000;
+
+/// Parse a human token-count override: a bare integer, or a `k`/`m` suffix
+/// (`"200k"` → 200_000, `"1m"` → 1_000_000; case-insensitive, underscores and
+/// surrounding whitespace tolerated). Returns `None` for anything unparseable or
+/// non-positive so the caller falls back to the catalog/provider value. A valid
+/// value is clamped to `[MIN_CONTEXT_OVERRIDE, MAX_CONTEXT_OVERRIDE]`.
+pub fn parse_context_override(raw: &str) -> Option<u64> {
+    let s = raw.trim().replace('_', "").to_ascii_lowercase();
+    let (num, mult) = if let Some(n) = s.strip_suffix('m') {
+        (n, 1_000_000f64)
+    } else if let Some(n) = s.strip_suffix('k') {
+        (n, 1_000f64)
+    } else {
+        (s.as_str(), 1f64)
+    };
+    let value: f64 = num.trim().parse().ok()?;
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    let tokens = (value * mult) as u64;
+    Some(tokens.clamp(MIN_CONTEXT_OVERRIDE, MAX_CONTEXT_OVERRIDE))
+}
+
+/// Apply a context-window override on top of `base`. Pure (`raw` is the literal
+/// env value) so the precedence is unit-testable without mutating process env.
+/// An unset or unparseable override leaves `base` untouched.
+pub(crate) fn apply_context_override(base: u64, raw: Option<&str>) -> u64 {
+    raw.and_then(parse_context_override).unwrap_or(base)
+}
+
 impl ProviderConfig {
     /// Resolve the API key: the env var named by `api_key_env` (if set and
     /// non-empty) wins, then the literal `api_key`, else empty (local servers
@@ -246,8 +290,15 @@ impl Config {
     /// [`providers`](Config::providers)) takes that provider's declared
     /// `context_limit`, or [`DEFAULT_PROVIDER_CONTEXT_LIMIT`] when unset, because
     /// tomte can't infer a custom endpoint's real window from the model name.
-    /// Built-in OpenAI/Anthropic models use the catalog value.
+    /// Built-in OpenAI/Anthropic models use the catalog value. The
+    /// [`CONTEXT_OVERRIDE_ENV`] env var wins over both when set to a valid value.
     pub fn effective_context_limit(&self) -> u64 {
+        let base = self.resolved_context_limit();
+        apply_context_override(base, std::env::var(CONTEXT_OVERRIDE_ENV).ok().as_deref())
+    }
+
+    /// The context window from config/catalog alone, before the env override.
+    fn resolved_context_limit(&self) -> u64 {
         if let Some((prefix, _)) = self.model.split_once('/') {
             if let Some(pc) = self
                 .providers

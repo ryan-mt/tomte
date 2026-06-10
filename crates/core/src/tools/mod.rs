@@ -10,6 +10,7 @@ pub mod plan;
 pub mod search;
 pub mod shell;
 pub mod skill;
+pub mod think;
 pub mod todo;
 pub mod tool_search;
 pub mod wait;

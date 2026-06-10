@@ -34,7 +34,9 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 mod adapter;
+mod resources;
 pub use adapter::McpToolAdapter;
+pub use resources::{ListMcpResources, ReadMcpResource};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -139,6 +141,10 @@ pub struct McpToolInfo {
 pub struct McpClient {
     pub name: String,
     pub tools: Vec<McpToolInfo>,
+    /// Whether the server advertised the `resources` capability at handshake.
+    /// Gates registration of the `list_mcp_resources`/`read_mcp_resource` tools
+    /// so they only appear when at least one server can actually serve them.
+    pub supports_resources: bool,
     state: Mutex<McpState>,
 }
 
@@ -288,7 +294,8 @@ impl McpClient {
                 "version": env!("CARGO_PKG_VERSION"),
             }
         });
-        state.request("initialize", init_params).await?;
+        let init = state.request("initialize", init_params).await?;
+        let supports_resources = server_supports_resources(&init);
         state.notify("notifications/initialized", json!({})).await?;
 
         // Tool discovery.
@@ -298,8 +305,27 @@ impl McpClient {
         Ok(Self {
             name,
             tools,
+            supports_resources,
             state: Mutex::new(state),
         })
+    }
+
+    /// List the resources this server exposes (`resources/list`), as a fenced,
+    /// model-readable index. Errors if the transport fails.
+    pub async fn list_resources(&self) -> Result<String> {
+        let mut state = self.state.lock().await;
+        let resp = state.request("resources/list", json!({})).await?;
+        drop(state);
+        Ok(resource_list_result(&self.name, &resp))
+    }
+
+    /// Read one resource by URI (`resources/read`), fenced as untrusted output.
+    pub async fn read_resource(&self, uri: &str) -> Result<String> {
+        let params = json!({ "uri": uri });
+        let mut state = self.state.lock().await;
+        let resp = state.request("resources/read", params).await?;
+        drop(state);
+        Ok(resource_read_result(&self.name, uri, &resp))
     }
 
     /// Invoke a tool on the server. Returns the joined text content of the
@@ -311,6 +337,97 @@ impl McpClient {
         drop(state);
         call_result(&self.name, tool_name, &resp)
     }
+}
+
+/// Read the `resources` capability from an `initialize` result. The MCP spec
+/// advertises a server's resource support as the presence of
+/// `capabilities.resources` (an object, possibly empty). Pure for testing.
+fn server_supports_resources(init_result: &Value) -> bool {
+    init_result
+        .get("capabilities")
+        .and_then(|c| c.get("resources"))
+        .is_some()
+}
+
+/// Format a `resources/list` result into a compact index — one line per
+/// resource (`uri — name (mimeType): description`), fenced as untrusted server
+/// output. Pure, so the formatting/fencing is unit-tested without a live server.
+fn resource_list_result(server: &str, resp: &Value) -> String {
+    let mut lines = String::new();
+    if let Some(arr) = resp.get("resources").and_then(|v| v.as_array()) {
+        for r in arr {
+            let uri = r.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+            if uri.is_empty() {
+                continue;
+            }
+            let mut line = uri.to_string();
+            if let Some(name) = r
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                line.push_str(" — ");
+                line.push_str(name);
+            }
+            if let Some(mime) = r
+                .get("mimeType")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                line.push_str(" (");
+                line.push_str(mime);
+                line.push(')');
+            }
+            if let Some(desc) = r
+                .get("description")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                line.push_str(": ");
+                line.push_str(desc);
+            }
+            if !lines.is_empty() {
+                lines.push('\n');
+            }
+            lines.push_str(&line);
+        }
+    }
+    let body = if lines.is_empty() {
+        "(server exposes no resources)".to_string()
+    } else {
+        lines
+    };
+    fence_mcp_output(server, "resources/list", &body)
+}
+
+/// Build a `resources/read` result: concatenate the `contents` text blocks,
+/// replacing any non-text (binary `blob`) block with a placeholder so a
+/// binary-only resource doesn't deliver as an invisible empty string. Fenced.
+/// Pure, so it's unit-testable off a synthetic body.
+fn resource_read_result(server: &str, uri: &str, resp: &Value) -> String {
+    let mut buf = String::new();
+    if let Some(arr) = resp.get("contents").and_then(|v| v.as_array()) {
+        for item in arr {
+            let piece = match item.get("text").and_then(|v| v.as_str()) {
+                Some(text) => text.to_string(),
+                None => {
+                    let mime = item
+                        .get("mimeType")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("binary");
+                    format!("[{mime} resource content omitted]")
+                }
+            };
+            if !buf.is_empty() {
+                buf.push('\n');
+            }
+            buf.push_str(&piece);
+        }
+    }
+    if buf.is_empty() {
+        buf = format!("(resource {uri} returned no content)");
+    }
+    fence_mcp_output(server, uri, &buf)
 }
 
 /// Build the `call_tool` result from a `tools/call` response body. The joined

@@ -330,6 +330,39 @@ fn effective_context_limit_uses_builtin_then_user_override() {
 }
 
 #[test]
+fn parse_context_override_handles_suffixes_and_garbage() {
+    // Bare integer = literal tokens.
+    assert_eq!(parse_context_override("250000"), Some(250_000));
+    // k/m suffix scales; case-insensitive; underscores/spaces tolerated.
+    assert_eq!(parse_context_override("200k"), Some(200_000));
+    assert_eq!(parse_context_override("1M"), Some(1_000_000));
+    assert_eq!(parse_context_override(" 1_000_000 "), Some(1_000_000));
+    assert_eq!(parse_context_override("0.5m"), Some(500_000));
+    // Out of range clamps, not rejects.
+    assert_eq!(parse_context_override("100"), Some(MIN_CONTEXT_OVERRIDE));
+    assert_eq!(parse_context_override("999m"), Some(MAX_CONTEXT_OVERRIDE));
+    // Unparseable / non-positive → None (caller keeps the catalog value).
+    for bad in ["", "  ", "abc", "-5", "0", "1g", "k", "nanm"] {
+        assert_eq!(parse_context_override(bad), None, "{bad:?} must not parse");
+    }
+}
+
+#[test]
+fn apply_context_override_precedence() {
+    let base = 200_000;
+    // Unset / invalid leaves the base untouched.
+    assert_eq!(apply_context_override(base, None), base);
+    assert_eq!(apply_context_override(base, Some("nonsense")), base);
+    // A valid override wins over the base.
+    assert_eq!(apply_context_override(base, Some("1m")), 1_000_000);
+    // A too-small override is clamped up, never honored verbatim.
+    assert_eq!(
+        apply_context_override(base, Some("3000")),
+        MIN_CONTEXT_OVERRIDE
+    );
+}
+
+#[test]
 fn redacted_view_hides_literal_provider_keys() {
     let mut cfg = Config::default();
     cfg.providers.insert(
