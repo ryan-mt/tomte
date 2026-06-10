@@ -383,6 +383,14 @@ fn walk_source_paths(root: &Path) -> Vec<String> {
             }
         }
     }
+    // `ignore`'s walk yields entries in filesystem `read_dir` order, which is not
+    // stable across machines/filesystems. Every other walker in tomte sorts for
+    // this reason (`glob`/`grep`/`list_dir`/`skill`/`rules`); the twin must too,
+    // or the stored `files`/`imports`/`symbols` order — and the first-N caps that
+    // read it (`ignored_neighbors`, `distinctive_symbols`, rounds' TODO scan) —
+    // become nondeterministic, breaking the "same tree → same card" guarantee
+    // the twin/pulse/rounds/race pillars all advertise.
+    out.sort();
     out
 }
 
@@ -567,5 +575,24 @@ mod tests {
         // After an edit the fingerprint changes (cache would be rebuilt).
         std::fs::write(root.join("src/a.rs"), "pub fn a() { let _x = 1; }\n").unwrap();
         assert_ne!(built.fingerprint, fingerprint(root));
+    }
+
+    #[test]
+    fn walk_source_paths_is_sorted_for_determinism() {
+        // The twin/pulse/rounds/race pillars advertise "same tree → same card",
+        // which requires a stable file order. `ignore`'s walk yields read_dir
+        // order (filesystem-dependent), so the walk must sort — or the first-N
+        // caps that read `twin.files` (ignored_neighbors, distinctive_symbols,
+        // rounds' TODO scan) flap across machines.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("src/inner")).unwrap();
+        for rel in ["src/zeta.rs", "src/alpha.rs", "src/inner/mid.rs", "top.rs"] {
+            std::fs::write(root.join(rel), "fn x() {}\n").unwrap();
+        }
+        let files = walk_source_paths(root);
+        let mut sorted = files.clone();
+        sorted.sort();
+        assert_eq!(files, sorted, "walk_source_paths must return sorted paths");
     }
 }

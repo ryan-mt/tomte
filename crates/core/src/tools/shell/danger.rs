@@ -688,6 +688,7 @@ fn shell_runs_process_substitution(scan: &str) -> bool {
 /// A raw block-device path that a write/redirect could corrupt. Kept to the
 /// disk families the redirect guard has always covered (`sd`/`nvme`/`hd`).
 fn is_raw_block_device(target: &str) -> bool {
+    let target = collapse_leading_slashes(target);
     target.starts_with("/dev/sd")
         || target.starts_with("/dev/nvme")
         || target.starts_with("/dev/hd")
@@ -902,6 +903,7 @@ fn is_broad_git_target(token: &str) -> bool {
 fn is_dangerous_chmod_target(token: &str) -> bool {
     let token = token.trim_end_matches([';', '&', '|']);
     let literal = token.trim_matches(|c| matches!(c, '"' | '\''));
+    let literal = collapse_leading_slashes(literal);
     if literal == "/"
         || is_root_equivalent(literal)
         || literal.starts_with("/*")
@@ -919,6 +921,7 @@ fn is_dangerous_chmod_target(token: &str) -> bool {
 fn is_dangerous_rm_target(token: &str) -> bool {
     let token = token.trim_end_matches([';', '&', '|']);
     let literal = token.trim_matches(|c| matches!(c, '"' | '\''));
+    let literal = collapse_leading_slashes(literal);
     // Command substitution hides the real path at classify time (`rm -rf $(…)`,
     // `rm -rf `…``) — err toward flagging.
     if token.contains('`') || token.contains("$(") {
@@ -964,6 +967,22 @@ fn is_dangerous_rm_target(token: &str) -> bool {
 /// relative path (it requires the leading `/`) so it adds no false positives.
 fn is_root_equivalent(literal: &str) -> bool {
     literal.starts_with('/') && literal.split('/').all(|s| matches!(s, "" | "." | ".."))
+}
+
+/// Collapse a run of leading `/` to a single `/`. Linux and macOS resolve
+/// `//etc` and `///dev/sda` to `/etc` and `/dev/sda` — the same OS targets as
+/// the single-slash spellings — but the prefix matches below (`/etc`, `/dev/sd`,
+/// the `/*` glob test) would miss the doubled form, so `rm -rf //etc` and
+/// `dd of=//dev/sda` slipped the classifier that flags their single-slash twins.
+/// Normalizing the leading run closes that bypass; mid-path `//` already resolves
+/// and matches, so it's left alone. `/` is ASCII, so byte-slicing is boundary-safe.
+fn collapse_leading_slashes(s: &str) -> &str {
+    let trimmed = s.trim_start_matches('/');
+    // Zero or one leading slash: nothing to collapse.
+    if trimmed.len() + 1 >= s.len() {
+        return s;
+    }
+    &s[s.len() - trimmed.len() - 1..]
 }
 
 /// Best-effort detection of absolute paths whose recursive deletion would

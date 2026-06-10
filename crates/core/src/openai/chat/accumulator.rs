@@ -11,13 +11,30 @@ use crate::tool_args::accumulate_argument_fragment;
 
 /// Normalize Chat Completions usage (`prompt_tokens`/`completion_tokens`) into
 /// the `input_tokens`/`output_tokens` shape the agent's accounting expects.
+///
+/// Chat reports cached prompt tokens under `prompt_tokens_details.cached_tokens`
+/// (folded *into* `prompt_tokens`, the total). We re-emit them under the
+/// Responses shape (`input_tokens_details.cached_tokens`) that
+/// `agent::classify_input_tokens` already understands, so a Chat provider that
+/// reports a cache hit (real OpenAI `/v1/chat/completions` does) gets the
+/// cache-read discount in `/cost` instead of billing every cached token at the
+/// full input rate. Occupancy is unchanged either way (the class folds back in).
 pub(super) fn normalize_usage(usage: &Value) -> Value {
     let get = |k: &str| usage.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
-    json!({
+    let cached = usage
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let mut out = json!({
         "input_tokens": get("prompt_tokens"),
         "output_tokens": get("completion_tokens"),
         "total_tokens": get("total_tokens"),
-    })
+    });
+    if cached > 0 {
+        out["input_tokens_details"] = json!({ "cached_tokens": cached });
+    }
+    out
 }
 
 pub(super) struct ToolAcc {
@@ -133,6 +150,36 @@ fn append_tool_args_capped(acc: &mut ToolAcc, fragment: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_usage_maps_core_counts() {
+        let u = normalize_usage(&json!({
+            "prompt_tokens": 1200, "completion_tokens": 300, "total_tokens": 1500
+        }));
+        assert_eq!(u["input_tokens"], 1200);
+        assert_eq!(u["output_tokens"], 300);
+        assert_eq!(u["total_tokens"], 1500);
+        // No cache hit reported → no cache shape emitted.
+        assert!(u.get("input_tokens_details").is_none());
+    }
+
+    #[test]
+    fn normalize_usage_carries_chat_cached_tokens_into_responses_shape() {
+        // Real OpenAI /v1/chat/completions reports the cache hit here. It must
+        // reach `classify_input_tokens` (which reads the Responses shape) so the
+        // cache-read discount applies in /cost instead of full input rate.
+        let u = normalize_usage(&json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 50,
+            "total_tokens": 1050,
+            "prompt_tokens_details": { "cached_tokens": 800 }
+        }));
+        // Emitted under the Responses shape that classify_input_tokens reads;
+        // it folds cached INTO input_tokens (total), so 1000 splits into
+        // 200 uncached + 800 cache-read downstream (see agent::usage tests).
+        assert_eq!(u["input_tokens"], 1000);
+        assert_eq!(u["input_tokens_details"]["cached_tokens"], 800);
+    }
 
     #[tokio::test]
     async fn apply_tool_delta_bounds_distinct_indices() {

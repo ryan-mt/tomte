@@ -323,6 +323,45 @@ fn classify_danger_flags_destructive_patterns() {
         assert!(classify_danger(cmd).is_some(), "expected `{cmd}` flagged");
     }
 }
+
+#[test]
+fn collapse_leading_slashes_keeps_one() {
+    assert_eq!(collapse_leading_slashes("//etc"), "/etc");
+    assert_eq!(collapse_leading_slashes("///dev/sda"), "/dev/sda");
+    assert_eq!(collapse_leading_slashes("//"), "/");
+    assert_eq!(collapse_leading_slashes("///"), "/");
+    // Zero or one leading slash, and relative paths, are returned unchanged.
+    assert_eq!(collapse_leading_slashes("/etc"), "/etc");
+    assert_eq!(collapse_leading_slashes("etc"), "etc");
+    assert_eq!(collapse_leading_slashes(""), "");
+    // Mid-path doubled slashes are left alone (they already resolve + match).
+    assert_eq!(collapse_leading_slashes("/etc//x"), "/etc//x");
+}
+
+#[test]
+fn classify_danger_flags_leading_double_slash_targets() {
+    // The kernel collapses a leading `//` to `/`, so these hit the same
+    // destructive OS targets as their single-slash twins — the classifier must
+    // flag them too (regression for the `//etc` / `//dev/sda` bypass).
+    for cmd in [
+        "rm -rf //etc",
+        "rm -rf ///usr",
+        "rm -rf //home/ryan/.ssh",
+        "rm -rf //root",
+        "rm -rf //*",
+        "chmod -R 777 //etc",
+        "chown -R root //usr",
+        "dd if=/dev/zero of=//dev/sda",
+        "echo x > //dev/sda",
+        "shred //dev/sda",
+    ] {
+        assert!(
+            classify_danger(cmd).is_some(),
+            "expected `{cmd}` flagged (leading // resolves to a destructive target)"
+        );
+    }
+}
+
 #[test]
 fn classify_danger_does_not_flag_common_commands() {
     for cmd in [
