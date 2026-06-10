@@ -286,6 +286,10 @@ pub struct App {
     pub is_thinking: bool,
     /// When true, tool call blocks render with more detail (toggled via Ctrl+O).
     pub expanded_tools: bool,
+    /// Set by Ctrl+O at rest in inline mode; the main loop opens the modal
+    /// expanded-transcript pager on its next pass (the pager pumps the shared
+    /// event stream, which the key handler doesn't hold).
+    pub open_transcript_pager: bool,
     /// Handle to the currently running turn task. Held so the user can cancel
     /// (Esc) a stuck turn — aborting the task drops the agent mutex guard and
     /// the in-flight HTTP request, freeing things up for the next turn.

@@ -547,6 +547,16 @@ pub async fn main_loop(
                     }
                 }
                 if stop { break; }
+                // Ctrl+O at rest (inline mode): the modal expanded-transcript
+                // pager. Runs here rather than in handle_key because it pumps
+                // the shared event stream until the user closes it.
+                if std::mem::take(&mut app.open_transcript_pager) {
+                    run_transcript_pager(&app, &mut events).await?;
+                    // Leaving the alternate screen restores the prompt pixels,
+                    // but ratatui's cached buffer can't be trusted across the
+                    // excursion — force a clean repaint of the live viewport.
+                    let _ = terminal.clear();
+                }
             }
             Some(ev) = agent_rx.recv() => {
                 dirty = true;

@@ -64,7 +64,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  ?                   show this card (on an empty composer)\n  \
                  ↑ / ↓               recall older / newer messages (on the first / last composer line)\n  \
                  Esc                 cancel the running turn (while busy); clear the composer (draft stays in ↑ history)\n  \
-                 Ctrl+O              toggle tool-call detail view\n  \
+                 Ctrl+O              view the transcript with full tool detail (mid-turn: toggle live detail)\n  \
                  Ctrl+T              show / hide the live todo panel\n  \
                  Ctrl+L              clear the screen\n  \
                  Ctrl+V / Alt+V      paste text or image (use Alt+V on Windows Terminal)\n  \

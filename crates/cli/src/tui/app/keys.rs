@@ -221,7 +221,19 @@ pub async fn handle_key(
             handle_paste(app).await;
         }
         KeyCode::Char('o') if ctrl => {
-            app.expanded_tools = !app.expanded_tools;
+            // Inline mode pushes finished turns into native scrollback, which
+            // can never be repainted — at rest the expanded flag would have
+            // nothing left to redraw, leaving the "(Ctrl+O for more)" hints
+            // dead. Open the modal transcript pager instead; while a turn
+            // streams, the live tail repaints every frame, so the plain
+            // toggle still works there (and the pager would stall the agent
+            // event channels). Alt-screen mode repaints the whole transcript
+            // each frame, so the toggle is always right for it.
+            if app.render_mode == RenderMode::Inline && !app.busy {
+                app.open_transcript_pager = true;
+            } else {
+                app.expanded_tools = !app.expanded_tools;
+            }
         }
         KeyCode::Char('t') if ctrl => {
             app.show_todos = !app.show_todos;

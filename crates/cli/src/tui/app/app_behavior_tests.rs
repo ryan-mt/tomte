@@ -1264,3 +1264,75 @@ async fn bare_question_mark_shows_help_only_on_empty_composer() {
     assert_eq!(app.input.buffer, "what?", "mid-draft ? is just a character");
     assert_eq!(app.blocks.len(), blocks_before, "no second help card");
 }
+
+// === Ctrl+O: pager at rest, live toggle mid-turn ==============================
+
+// Inline mode commits finished turns into native scrollback (insert_before),
+// which can never be repainted — so at rest Ctrl+O must open the modal pager
+// instead of flipping a flag nothing redraws. Mid-turn the live tail repaints
+// every frame, so the flag toggle still works there; alt-screen mode repaints
+// the whole transcript each frame, so the toggle is always right for it.
+#[tokio::test]
+async fn ctrl_o_opens_pager_at_rest_and_toggles_while_busy_inline() {
+    let mut app = App::new();
+    app.render_mode = RenderMode::Inline;
+    let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+
+    press(&mut app, ctrl_o).await;
+    assert!(app.open_transcript_pager, "idle inline → pager request");
+    assert!(
+        !app.expanded_tools,
+        "idle inline must not flip the dead flag"
+    );
+
+    app.open_transcript_pager = false;
+    app.busy = true;
+    press(&mut app, ctrl_o).await;
+    assert!(
+        !app.open_transcript_pager,
+        "mid-turn: no modal (it would stall the event pump)"
+    );
+    assert!(
+        app.expanded_tools,
+        "mid-turn: the live tail toggle still works"
+    );
+}
+
+#[tokio::test]
+async fn ctrl_o_keeps_the_plain_toggle_in_alt_screen_mode() {
+    let mut app = App::new();
+    app.render_mode = RenderMode::AltScreen;
+    let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    press(&mut app, ctrl_o).await;
+    assert!(app.expanded_tools);
+    assert!(!app.open_transcript_pager);
+    press(&mut app, ctrl_o).await;
+    assert!(!app.expanded_tools);
+}
+
+// The expanded flag is a per-turn live-detail view in inline mode: left on
+// across turns, the next turn's scrollback commits would bake expanded detail
+// in forever with no way to collapse them (Ctrl+O at rest opens the pager,
+// not the toggle). Alt-screen keeps the flag — there it stays collapsible.
+#[test]
+fn turn_end_resets_expanded_tools_only_in_inline_mode() {
+    let mut app = App::new();
+    app.render_mode = RenderMode::Inline;
+    app.busy = true;
+    app.expanded_tools = true;
+    apply_agent_event(&mut app, AgentEvent::TurnComplete);
+    assert!(
+        !app.expanded_tools,
+        "inline: the per-turn flag ends with the turn"
+    );
+
+    let mut app = App::new();
+    app.render_mode = RenderMode::AltScreen;
+    app.busy = true;
+    app.expanded_tools = true;
+    apply_agent_event(&mut app, AgentEvent::TurnComplete);
+    assert!(
+        app.expanded_tools,
+        "alt-screen: the toggle persists across turns"
+    );
+}

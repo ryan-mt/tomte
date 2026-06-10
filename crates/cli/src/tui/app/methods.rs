@@ -66,6 +66,7 @@ impl App {
             message_queue: Vec::new(),
             is_thinking: false,
             expanded_tools: false,
+            open_transcript_pager: false,
             current_turn: None,
             approval: ApprovalMode::OnRequest,
             require_approval: true,

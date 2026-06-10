@@ -157,6 +157,13 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             // "working…" so it never freezes that way in the transcript (or,
             // inline, in native scrollback).
             settle_inflight_tools(&mut app.blocks);
+            // Inline mode: the expanded flag is a per-turn live-detail view
+            // (Ctrl+O at rest opens the pager instead), so it ends with the
+            // turn — left on, the NEXT turn's scrollback commits would bake
+            // expanded detail in forever with no way to collapse them.
+            if app.render_mode == RenderMode::Inline {
+                app.expanded_tools = false;
+            }
             // SOUL Pillar 4: leave a tidy "left in order" receipt of what this
             // turn changed (files / tests / why), pushed as the turn's last block.
             // A pure Q&A turn that changed nothing produces no receipt.
@@ -312,6 +319,10 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             // The errored turn delivers no further tool results — settle any
             // block still showing "working…".
             settle_inflight_tools(&mut app.blocks);
+            // Per-turn live-detail flag ends with the turn (see TurnComplete).
+            if app.render_mode == RenderMode::Inline {
+                app.expanded_tools = false;
+            }
         }
         AgentEvent::FallbackSwitched { from, to, .. } => {
             // Adopt the fallback as the session's model so the status bar is
