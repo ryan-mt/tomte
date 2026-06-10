@@ -64,6 +64,40 @@ fn chat_prove_flag_parses_and_defaults_off() {
 }
 
 #[test]
+fn chat_continue_and_session_flags_parse_and_conflict() {
+    let cli = Cli::try_parse_from(["tomte", "chat", "go on", "--continue"]).unwrap();
+    match cli.command {
+        Some(Command::Chat {
+            continue_session,
+            session,
+            ..
+        }) => {
+            assert!(continue_session);
+            assert!(session.is_none());
+        }
+        other => panic!("expected chat command, got {other:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["tomte", "chat", "go on", "--session", "abc123"]).unwrap();
+    match cli.command {
+        Some(Command::Chat {
+            continue_session,
+            session,
+            ..
+        }) => {
+            assert!(!continue_session);
+            assert_eq!(session.as_deref(), Some("abc123"));
+        }
+        other => panic!("expected chat command, got {other:?}"),
+    }
+
+    // Naming an exact session and asking for "the latest" at once is ambiguous.
+    assert!(
+        Cli::try_parse_from(["tomte", "chat", "go on", "--continue", "--session", "abc"]).is_err()
+    );
+}
+
+#[test]
 fn continue_flag_parses_with_no_subcommand() {
     let cli = Cli::try_parse_from(["tomte", "--continue"]).unwrap();
     assert!(cli.continue_session);

@@ -87,6 +87,16 @@ enum Command {
         /// (only meaningful in `workspace-write`; off by default).
         #[arg(long)]
         sandbox_allow_net: bool,
+        /// Continue the most recent saved session in this directory — the new
+        /// prompt is appended to that conversation (the headless counterpart
+        /// of `tomte --continue`; same store as `tomte sessions`). A directory
+        /// with no saved session starts fresh with a note instead of erroring.
+        #[arg(long = "continue")]
+        continue_session: bool,
+        /// Continue a specific saved session by id (see `tomte sessions`).
+        /// Unlike `--continue`, an unknown or unloadable id is an error.
+        #[arg(long, conflicts_with = "continue_session")]
+        session: Option<String>,
         /// After the turn completes, collect a Proof Capsule — run the
         /// project's own verification checks (test / typecheck / lint / build)
         /// and append the ✅/❌ card, exiting non-zero when a check fails, so
@@ -513,6 +523,8 @@ async fn async_main() -> Result<()> {
             dangerously_skip_permissions,
             sandbox,
             sandbox_allow_net,
+            continue_session,
+            session,
             prove,
         }) => {
             commands::chat::run(
@@ -526,6 +538,8 @@ async fn async_main() -> Result<()> {
                 dangerously_skip_permissions,
                 sandbox,
                 sandbox_allow_net,
+                continue_session,
+                session,
                 prove,
             )
             .await

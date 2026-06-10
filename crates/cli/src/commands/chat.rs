@@ -23,6 +23,8 @@ pub async fn run(
     dangerously_skip_permissions: bool,
     sandbox: Option<String>,
     sandbox_allow_net: bool,
+    continue_session: bool,
+    session: Option<String>,
     prove: bool,
 ) -> Result<()> {
     let mut prompt = prompt;
@@ -93,6 +95,7 @@ pub async fn run(
         cfg.sandbox.network_override = Some(true);
     }
     let format = normalize_output_format(&output_format)?;
+    let json_mode = matches!(format.as_str(), "json" | "stream-json");
 
     let client = LlmClient::for_config(&cfg).await?;
     let mut agent = Agent::new(client, cfg);
@@ -133,6 +136,39 @@ pub async fn run(
     // misconfigured server logs a warning but does not abort the turn.
     agent.load_mcp().await.ok();
 
+    // --continue / --session: replace the fresh agent's history with the
+    // stored session's, the same way the TUI's `/resume` and `tomte --continue`
+    // do (restore comes after the env/memory/skill blocks and MCP load so the
+    // stored conversation owns the final history). `--session` names an exact
+    // id, so a missing or unloadable one is an error; `--continue` mirrors the
+    // TUI flag and starts fresh with a note when there's nothing to continue.
+    let here = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if let Some(id) = &session {
+        let record = tomte_core::session::load(&here, id)
+            .map_err(|e| anyhow::anyhow!("--session {id}: {e}"))?;
+        eprintln!(
+            "↻ resumed: {} ({} messages)",
+            record.meta.preview, record.meta.message_count
+        );
+        agent.restore_from(record);
+    } else if continue_session {
+        match tomte_core::session::latest_id(&here) {
+            Some(id) => match tomte_core::session::load(&here, &id) {
+                Ok(record) => {
+                    eprintln!(
+                        "↻ resumed: {} ({} messages)",
+                        record.meta.preview, record.meta.message_count
+                    );
+                    agent.restore_from(record);
+                }
+                Err(e) => {
+                    eprintln!("note: latest session {id} failed to load ({e}); starting fresh")
+                }
+            },
+            None => eprintln!("note: no saved session for this directory — starting fresh"),
+        }
+    }
+
     // Lifecycle hooks: SessionStart (best-effort), then UserPromptSubmit which
     // may BLOCK the prompt (exit 2) before the model ever sees it.
     agent.hooks.fire_session_start().await;
@@ -145,9 +181,12 @@ pub async fn run(
     agent.push_user_message(prompt);
 
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(256);
-    let agent_task = tokio::spawn(async move { agent.run_turn(tx).await });
-
-    let json_mode = matches!(format.as_str(), "json" | "stream-json");
+    // The task hands the agent back so the post-turn code can persist the
+    // session record it now carries.
+    let agent_task = tokio::spawn(async move {
+        let result = agent.run_turn(tx).await;
+        (agent, result)
+    });
 
     let mut stdout = std::io::stdout().lock();
     let mut event_error: Option<String> = None;
@@ -175,14 +214,40 @@ pub async fn run(
             }
         }
     }
-    match agent_task.await {
-        Ok(Ok(())) => {
+    let (agent, turn_result) = match agent_task.await {
+        Ok(pair) => pair,
+        Err(e) => return Err(anyhow::anyhow!("agent task failed: {e}")),
+    };
+
+    // Persist the conversation like every TUI turn does (even a failed one),
+    // so any headless run is continuable later — `--continue`/`--session` here,
+    // `tomte --continue`/`resume` in the TUI — and visible to `tomte sessions`.
+    // A save failure is logged, never fatal: the turn's output already stands.
+    let record = agent.to_session_record().await;
+    let session_id = record.meta.id.clone();
+    if let Err(e) = tomte_core::session::save(&record) {
+        tracing::debug!(error = %e, "session save failed");
+    }
+
+    match turn_result {
+        Ok(()) => {
             if let Some(message) = event_error {
                 anyhow::bail!(message);
             }
         }
-        Ok(Err(e)) => return Err(event_error.map_or(e, anyhow::Error::msg)),
-        Err(e) => return Err(anyhow::anyhow!("agent task failed: {e}")),
+        Err(e) => return Err(event_error.map_or(e, anyhow::Error::msg)),
+    }
+
+    if json_mode {
+        // Tell a scripting consumer which session this turn landed in, so the
+        // next run can chain with `--session <id>`. Same per-line `kind`
+        // dispatch as the AgentEvent stream.
+        if let Ok(line) =
+            serde_json::to_string(&serde_json::json!({ "kind": "session", "id": session_id }))
+        {
+            writeln!(stdout, "{line}").ok();
+            stdout.flush().ok();
+        }
     }
 
     // --prove: the turn finished cleanly — now collect the Proof Capsule the
