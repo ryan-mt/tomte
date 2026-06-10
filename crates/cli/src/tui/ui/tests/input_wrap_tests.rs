@@ -1,4 +1,3 @@
-
 use super::super::{
     input_visual_row_count, is_table_separator, render_assistant_md, wrap_visual_rows, CODE_BG,
 };

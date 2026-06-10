@@ -1,4 +1,3 @@
-
 use super::super::{push_assistant_lines, Block};
 use ratatui::text::Line;
 

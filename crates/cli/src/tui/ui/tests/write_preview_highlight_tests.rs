@@ -1,4 +1,3 @@
-
 use super::super::friendly_body;
 use ratatui::style::Color;
 use serde_json::json;

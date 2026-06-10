@@ -1,4 +1,3 @@
-
 use super::super::truncate_line_to_width;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};

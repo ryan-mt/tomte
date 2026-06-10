@@ -1,4 +1,3 @@
-
 use super::super::render_chat;
 use crate::tui::app::{App, Block};
 use ratatui::backend::TestBackend;

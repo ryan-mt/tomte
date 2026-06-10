@@ -1,4 +1,3 @@
-
 use super::super::render_assistant_md;
 
 fn rows(md: &str, w: usize) -> Vec<String> {

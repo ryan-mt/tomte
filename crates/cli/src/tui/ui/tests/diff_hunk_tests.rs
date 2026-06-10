@@ -1,4 +1,3 @@
-
 use super::super::{diff_hunk, DiffRow};
 
 fn tag(r: &DiffRow<'_>) -> (char, String) {

@@ -1,4 +1,3 @@
-
 use super::super::shorten_path_with_home;
 use std::path::Path;
 

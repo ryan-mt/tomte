@@ -1,4 +1,3 @@
-
 use super::super::render_markdown_inline;
 use ratatui::style::Modifier;
 

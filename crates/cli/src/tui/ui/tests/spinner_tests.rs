@@ -1,4 +1,3 @@
-
 use super::super::render_spinner;
 use crate::tui::app::App;
 use ratatui::backend::TestBackend;

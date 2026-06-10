@@ -1,4 +1,3 @@
-
 use super::super::{context_gauge, status_left_text_for_parts};
 use crate::tui::palette;
 

@@ -1,4 +1,3 @@
-
 use super::super::{
     hidden_todos_summary, todo_label, todos_height_for_count, truncate_chars, visible_todo_indices,
     TODO_VISIBLE_ROWS,

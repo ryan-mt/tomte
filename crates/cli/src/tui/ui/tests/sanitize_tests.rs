@@ -1,4 +1,3 @@
-
 use super::super::sanitize_display;
 
 #[test]
