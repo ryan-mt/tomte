@@ -20,6 +20,7 @@ pub mod pricing;
 pub mod proof;
 pub mod provider;
 pub mod race;
+pub mod receipt;
 pub mod repo_twin;
 mod retry;
 pub mod rounds;

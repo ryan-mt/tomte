@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod prove;
 pub mod pulse;
 pub mod race;
+pub mod receipt;
 pub mod rounds;
 pub mod seal;
 pub mod twin;

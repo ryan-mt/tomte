@@ -235,6 +235,30 @@ enum Command {
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
     },
+    /// The work receipt: one Markdown/HTML/JSON artifact that proves a stretch
+    /// of work — a fresh Proof Capsule (files changed + real check exit
+    /// codes), whether HEAD carries a verified Commit Seal, what the session
+    /// actually ran and edited (from the persisted session log), the cost
+    /// receipt, and the newest recorded decisions. Attach it to a PR:
+    /// evidence, not a transcript. Always renders (red or green) — the gates
+    /// are `tomte prove` and `tomte seal verify`.
+    Receipt {
+        /// Emit the receipt as JSON instead of markdown.
+        #[arg(long, conflicts_with = "html")]
+        json: bool,
+        /// Emit a standalone HTML page instead of markdown.
+        #[arg(long)]
+        html: bool,
+        /// Session id to summarize (defaults to this project's newest session).
+        #[arg(long)]
+        session: Option<String>,
+        /// Write to a file (e.g. RECEIPT.md) instead of stdout.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
     /// Repo Pulse: which files are most likely to break next, scored from the
     /// Repo Twin's own indexes — commits in the recent git window × import
     /// fan-in × 2 when no test covers the file. Every number on the card is a
@@ -476,6 +500,13 @@ async fn async_main() -> Result<()> {
             commands::pulse::run(rebuild, json, cwd).await
         }
         Some(Command::Handoff { json, out, cwd }) => commands::handoff::run(json, out, cwd).await,
+        Some(Command::Receipt {
+            json,
+            html,
+            session,
+            out,
+            cwd,
+        }) => commands::receipt::run(json, html, session, out, cwd).await,
         Some(Command::Rounds {
             no_proof,
             json,
@@ -713,6 +744,54 @@ mod tests {
                 cwd: None
             })
         ));
+    }
+
+    #[test]
+    fn receipt_flags_parse_and_json_conflicts_with_html() {
+        let cli = Cli::try_parse_from([
+            "tomte",
+            "receipt",
+            "--html",
+            "--session",
+            "s-1",
+            "--out",
+            "RECEIPT.html",
+            "--cwd",
+            "/p",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Receipt {
+                json,
+                html,
+                session,
+                out,
+                cwd,
+            }) => {
+                assert!(!json);
+                assert!(html);
+                assert_eq!(session.as_deref(), Some("s-1"));
+                assert_eq!(out, Some(std::path::PathBuf::from("RECEIPT.html")));
+                assert_eq!(cwd, Some(std::path::PathBuf::from("/p")));
+            }
+            other => panic!("expected receipt command, got {other:?}"),
+        }
+
+        // Bare `tomte receipt` is markdown to stdout.
+        let bare = Cli::try_parse_from(["tomte", "receipt"]).unwrap();
+        assert!(matches!(
+            bare.command,
+            Some(Command::Receipt {
+                json: false,
+                html: false,
+                session: None,
+                out: None,
+                cwd: None
+            })
+        ));
+
+        // One artifact, one format: --json and --html refuse to combine.
+        assert!(Cli::try_parse_from(["tomte", "receipt", "--json", "--html"]).is_err());
     }
 
     #[test]
