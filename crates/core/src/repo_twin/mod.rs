@@ -255,6 +255,22 @@ pub fn load_or_build(cwd: &Path) -> anyhow::Result<RepoTwin> {
     Ok(twin)
 }
 
+/// Load the cached twin WITHOUT ever building one — for callers on a hot path
+/// (the pre-edit context manifest) where an inline full build would stall the
+/// turn. Returns the twin and whether it is still fresh for the current tree
+/// (`false` means the tree changed since the cache was built — edges may lag).
+/// `None` when no readable cache of the current version exists; those callers
+/// simply show nothing until `tomte twin` (or any twin consumer) builds it.
+pub fn load_cached(cwd: &Path) -> Option<(RepoTwin, bool)> {
+    let root = repo_root(cwd);
+    let cached = load_cache(&root)?;
+    if cached.version != CACHE_VERSION {
+        return None;
+    }
+    let fresh = cached.fingerprint == fingerprint(&root);
+    Some((cached, fresh))
+}
+
 /// Force a fresh build for `cwd` and cache it (`tomte twin build`), regardless of
 /// whether a fresh cache already exists.
 pub fn rebuild(cwd: &Path) -> anyhow::Result<RepoTwin> {

@@ -245,6 +245,10 @@ pub struct SessionState {
     /// Worktree created by this session via `enter_worktree`. Exit/remove tools
     /// are scoped to this state so tomte never cleans up a user-created worktree.
     pub worktree: Option<WorktreeState>,
+    /// Files whose pre-edit Context Manifest already showed this session, so
+    /// the card appears once per file, not on every subsequent edit. Runtime
+    /// only (not persisted); keyed by the path argument as the model spelled it.
+    pub manifested_files: std::collections::HashSet<String>,
 }
 
 impl Drop for SessionState {

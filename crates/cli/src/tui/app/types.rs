@@ -123,6 +123,10 @@ pub struct PreFlight {
     /// Pillar 5 (A2 Tier 1) — the file's recorded decisions, surfaced as
     /// "house rules" when an edit targets it; empty otherwise.
     pub house_rules: Vec<String>,
+    /// Pillar 3 — the Context Manifest shown on a session's first edit to a
+    /// file: pulling X because <edge> · read/not read, leaving out Y because
+    /// <reason>. Empty otherwise.
+    pub context_manifest: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

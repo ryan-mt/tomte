@@ -129,6 +129,7 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             scope,
             leash,
             house_rules,
+            context_manifest,
         } => {
             // SOUL Pillar 1: attach the glass-box card to its tool block so the
             // next frame shows WHAT the call will do and HOW FAR it reaches,
@@ -139,6 +140,7 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
                     scope,
                     leash,
                     house_rules,
+                    context_manifest,
                 });
             }
         }

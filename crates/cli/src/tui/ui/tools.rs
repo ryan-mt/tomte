@@ -376,6 +376,25 @@ pub(super) fn render_tool(
                 )));
             }
         }
+        // Pillar 3 — the Context Manifest on a session's first edit to a file:
+        // the twin's X-ray of what belongs in context for this edit (and what
+        // was deliberately left out), each claim from a real index edge and
+        // checked against the session's own read log. Proof, not stuffing.
+        if !pf.context_manifest.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  ◈ ", Style::default().fg(palette::ACCENT)),
+                Span::styled(
+                    "context manifest for this edit",
+                    Style::default().fg(palette::TEXT_MUTED),
+                ),
+            ]));
+            for entry in &pf.context_manifest {
+                lines.push(Line::from(Span::styled(
+                    format!("    {entry}"),
+                    Style::default().fg(palette::TEXT_FAINT),
+                )));
+            }
+        }
     }
 
     // Body

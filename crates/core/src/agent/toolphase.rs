@@ -477,12 +477,46 @@ impl Agent {
                 } else {
                     Vec::new()
                 };
+                // Pillar 3 — the Context Manifest: the first time this session
+                // edits a file, show the twin's X-ray of it (pulling X because
+                // <real edge> · read/not read; leaving out Y because <reason>)
+                // so the context behind the edit is proven, not assumed.
+                // Cache-only (never builds the twin inline) and once per file;
+                // computed off the async runtime since it stats the tree.
+                let context_manifest = match tool.name() {
+                    "edit_file" | "write_file" | "multi_edit" => {
+                        match edit_path_argument(args).map(str::to_string) {
+                            Some(path) => {
+                                let (first_time, read_files) = {
+                                    let mut session = ctx.session.lock().await;
+                                    (
+                                        session.manifested_files.insert(path.clone()),
+                                        session.read_files.clone(),
+                                    )
+                                };
+                                if first_time {
+                                    let cwd = ctx.cwd.clone();
+                                    tokio::task::spawn_blocking(move || {
+                                        crate::context_manifest::for_edit(&cwd, &path, &read_files)
+                                    })
+                                    .await
+                                    .unwrap_or_default()
+                                } else {
+                                    Vec::new()
+                                }
+                            }
+                            None => Vec::new(),
+                        }
+                    }
+                    _ => Vec::new(),
+                };
                 let _ = tx
                     .send(AgentEvent::PreFlight {
                         call_id: call_id.clone(),
                         scope: card.scope,
                         leash: card.leash,
                         house_rules,
+                        context_manifest,
                     })
                     .await;
             }

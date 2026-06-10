@@ -985,6 +985,7 @@ mod preflight_render_tests {
             scope: "writes 1 file · nothing else moves".to_string(),
             leash: None,
             house_rules: Vec::new(),
+            context_manifest: Vec::new(),
         };
         render_tool(
             &mut lines,
@@ -1012,6 +1013,7 @@ mod preflight_render_tests {
             scope: "runs a shell command · may change your tree".to_string(),
             leash: Some("rm -rf on a critical path".to_string()),
             house_rules: Vec::new(),
+            context_manifest: Vec::new(),
         };
         render_tool(
             &mut lines,
@@ -1057,6 +1059,7 @@ mod preflight_render_tests {
                 "reject bcrypt, use argon2 — memory-hard (gpt-5.5)".to_string(),
                 "+2 more · tomte why src/auth.rs".to_string(),
             ],
+            context_manifest: Vec::new(),
         };
         render_tool(
             &mut lines,
@@ -1079,6 +1082,44 @@ mod preflight_render_tests {
         );
         assert!(
             rendered.contains("+2 more · tomte why src/auth.rs"),
+            "got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn context_manifest_renders_under_the_card() {
+        let mut lines = Vec::new();
+        let pf = PreFlight {
+            scope: "writes 1 file · nothing else moves".to_string(),
+            leash: None,
+            house_rules: Vec::new(),
+            context_manifest: vec![
+                "pulling src/session.rs — imported by src/auth.rs · ✓ read this session"
+                    .to_string(),
+                "leaving out src/ui.rs — no path from the seed".to_string(),
+            ],
+        };
+        render_tool(
+            &mut lines,
+            "edit_file",
+            "{\"path\":\"src/auth.rs\"}",
+            None,
+            false,
+            Some(&pf),
+            80,
+            false,
+        );
+        let rendered = text(&lines);
+        assert!(
+            rendered.contains("context manifest for this edit"),
+            "got: {rendered}"
+        );
+        assert!(
+            rendered.contains("pulling src/session.rs — imported by src/auth.rs"),
+            "got: {rendered}"
+        );
+        assert!(
+            rendered.contains("leaving out src/ui.rs — no path from the seed"),
             "got: {rendered}"
         );
     }

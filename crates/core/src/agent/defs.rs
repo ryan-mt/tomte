@@ -255,6 +255,13 @@ pub enum AgentEvent {
         /// "house rules" when an edit targets it; empty otherwise. Pure recall
         /// at the moment of risk, never a gate.
         house_rules: Vec<String>,
+        /// Pillar 3 — the Context Manifest: the first time a session edits a
+        /// file, the twin's X-ray of that file — "pulling X because <real
+        /// edge> · read/not read this session" and "leaving out Y because
+        /// <reason>" — so the context behind the edit is proven, not assumed.
+        /// Empty after the first card, when no twin cache exists, or when the
+        /// twin connects nothing to the file.
+        context_manifest: Vec<String>,
     },
     /// Pillar 5 (A2 Tier 2) — the conscience self-check judged that a pending
     /// edit contradicts a recorded decision. The TUI raises a three-way card
