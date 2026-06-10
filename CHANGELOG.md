@@ -13,6 +13,7 @@
 
 ### Changed
 
+- Split `doctor.rs` (623 lines): the per-area diagnostic sections (runtime, auth, config, model routing, MCP, discovery, hooks, tools — with the platform permission check) move to `doctor/sections.rs`, and the PATH/PATHEXT binary probing to `doctor/path.rs`, leaving the report types and `diagnose` in `doctor.rs`. Pure moves; core suite unchanged (912).
 - Split `tui/app/types.rs` (556 lines) into the `App` state struct plus three themed submodules — `types/modes.rs` (permission/overlay/screen/render modes), `types/block.rs` (transcript blocks, pre-flight, hatch/fleet views, the chat render cache), and `types/pending.rs` (pending approval/conscience/goal/plan-exit holders and `ActiveGoal`) — re-exported from `types::` so callers are unchanged. Pure moves; CLI suite unchanged (308).
 - Split `tools/search/grep.rs` (558 lines): the external-ripgrep backend moves to `grep/rg.rs` and the pure-Rust fallback walker (with its glob/type-filter and match helpers) to `grep/native.rs`, leaving the tool entry in `grep.rs`. Pure moves; core suite unchanged (912).
 - Split `mcp.rs` (643 lines): the per-OS process plumbing (process-group isolation, Windows program resolution) moves to `mcp/process.rs` and the JSON-RPC result handling (capped line reads, tool/resource result flattening, the untrusted-output fence, schema normalization) to `mcp/wire.rs`, leaving the client/state/spawn logic in `mcp.rs` beside the existing `adapter`/`resources` submodules. Pure moves; core suite unchanged (912).
