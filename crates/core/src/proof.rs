@@ -329,7 +329,8 @@ fn read_node_scripts(cwd: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(cwd.join("package.json")) else {
         return Vec::new();
     };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(crate::config::strip_bom(&text))
+    else {
         return Vec::new();
     };
     json.get("scripts")

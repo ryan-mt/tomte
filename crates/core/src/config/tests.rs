@@ -450,3 +450,12 @@ fn create_dir_secure_is_owner_only_and_repairs_existing() {
     let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o700, "existing loose dir must be repaired");
 }
+
+#[test]
+fn strip_bom_removes_only_a_leading_bom() {
+    assert_eq!(strip_bom("\u{feff}{\"a\":1}"), "{\"a\":1}");
+    assert_eq!(strip_bom("{\"a\":1}"), "{\"a\":1}");
+    // Only the leading BOM is stripped; an interior one is content.
+    assert_eq!(strip_bom("a\u{feff}b"), "a\u{feff}b");
+    assert_eq!(strip_bom(""), "");
+}

@@ -6,6 +6,10 @@
 
 - Added `--prove` to `tomte chat` — "done means verified" for unattended runs. After the headless turn completes cleanly, the CLI collects a Proof Capsule exactly like `tomte prove` (it runs the project's own test/typecheck/lint/build itself and records the real exit codes; the model is never in the loop) and appends the ✅/❌ card to the output. A failed or errored check makes the whole run exit non-zero, so a cron job or script can refuse work that isn't actually verified — and a turn that already failed never reaches the capsule (it was already non-zero). With `--output-format json` the capsule is emitted as the final line tagged `"kind":"proof_capsule"`, matching the per-line `kind` dispatch of the AgentEvent stream. Smoke-tested end-to-end: green path exits 0 with the card appended (text and JSON), a deliberately failing `npm test` flips the card to ❌ and the exit code to 1.
 
+### Fixed
+
+- Fixed a UTF-8 BOM making user-edited JSON files silently unparseable (found smoke-testing `chat --prove` on Windows). Editors on Windows commonly save with a BOM, and `serde_json` rejects it, so a BOM'd file was treated exactly like a missing/corrupt one: `config.json` fell back to defaults (mystery setting resets), a project `.tomte/config.json` overlay was ignored, `settings.json` lost its hooks and MCP servers — and worst, a BOM'd `package.json` read as "no scripts", so every Proof Capsule check reported "no script" and `tomte prove` could exit 0 having verified nothing (npm itself tolerates a BOM'd `package.json`). A leading BOM is now stripped at every user-editable-JSON parse site (config, project overlay, hooks settings, MCP settings, package.json); interior content is untouched. Regression tests cover the stripped and non-stripped shapes.
+
 ### Changed
 
 - Moved `decisions.rs`'s trailing 369-line inline test module out to `decisions/tests.rs`, matching the repo's existing convention for large test modules (`danger.rs`, `config.rs`, `mcp.rs`, …). Pure structural move — test code is unchanged and the suite count is identical (910 core tests before and after).

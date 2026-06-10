@@ -499,10 +499,19 @@ pub fn config_file() -> PathBuf {
     config_dir().join("config.json")
 }
 
+/// Strip a leading UTF-8 BOM before JSON parsing. Editors on Windows commonly
+/// write one, and `serde_json` rejects it — which silently turned a valid
+/// user-edited file (config.json, settings.json, a project's package.json)
+/// into "unparseable", falling back to defaults / empty as if the file weren't
+/// there. npm itself tolerates a BOM'd package.json, so tomte should too.
+pub(crate) fn strip_bom(s: &str) -> &str {
+    s.strip_prefix('\u{feff}').unwrap_or(s)
+}
+
 pub fn load() -> Config {
     let path = config_file();
     let mut cfg = match std::fs::read_to_string(&path) {
-        Ok(s) => match serde_json::from_str::<Config>(&s) {
+        Ok(s) => match serde_json::from_str::<Config>(strip_bom(&s)) {
             Ok(cfg) => cfg,
             Err(e) => {
                 // Silently resetting to defaults on a corrupt file used to make
@@ -585,7 +594,7 @@ fn overlay_project_config(mut cfg: Config, cwd: &Path) -> Config {
     let Some(text) = read_project_config(&path) else {
         return cfg;
     };
-    let value: serde_json::Value = match serde_json::from_str(&text) {
+    let value: serde_json::Value = match serde_json::from_str(strip_bom(&text)) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(config = %path.display(), error = %e, "project config.json parse failed; ignoring it");

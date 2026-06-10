@@ -121,7 +121,7 @@ pub fn load_servers_config() -> HashMap<String, McpServerConfig> {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return HashMap::new();
     };
-    match serde_json::from_str::<SettingsFile>(&text) {
+    match serde_json::from_str::<SettingsFile>(crate::config::strip_bom(&text)) {
         Ok(s) => s.mcp_servers,
         Err(e) => {
             tracing::warn!(error = %e, "failed to parse mcp_servers from settings.json");

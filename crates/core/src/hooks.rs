@@ -196,7 +196,7 @@ pub fn load() -> HookSet {
         #[serde(default)]
         hooks: HooksConfig,
     }
-    match serde_json::from_str::<SettingsFile>(&text) {
+    match serde_json::from_str::<SettingsFile>(crate::config::strip_bom(&text)) {
         Ok(s) => HookSet { config: s.hooks },
         Err(e) => {
             tracing::warn!(error = %e, path = %path.display(), "failed to parse settings.json");

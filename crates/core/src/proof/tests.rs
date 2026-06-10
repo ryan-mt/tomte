@@ -354,3 +354,20 @@ async fn collect_on_an_unknown_project_runs_nothing_and_is_unverified() {
     assert!(!capsule.any_check_ran());
     assert!(!capsule.timestamp.is_empty());
 }
+
+#[test]
+fn read_node_scripts_tolerates_a_utf8_bom() {
+    // Editors on Windows commonly write package.json with a UTF-8 BOM, and npm
+    // accepts it. serde_json rejects a BOM, so without stripping it every check
+    // read "no script" and the capsule could exit 0 having verified nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    std::fs::write(
+        p.join("package.json"),
+        "\u{feff}{\"scripts\":{\"test\":\"node t.js\",\"lint\":\"eslint .\"}}",
+    )
+    .unwrap();
+    let scripts = read_node_scripts(p);
+    assert!(scripts.contains(&"test".to_string()), "got: {scripts:?}");
+    assert!(scripts.contains(&"lint".to_string()), "got: {scripts:?}");
+}
