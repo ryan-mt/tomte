@@ -26,7 +26,7 @@ impl App {
         let spinner_words = resolve_spinner_words(&config);
         let mut app = Self {
             screen,
-            render_mode: RenderMode::from_env(),
+            render_mode: RenderMode::resolve(&config),
             login: LoginScreen::new(),
             blocks,
             committed_blocks: 0,

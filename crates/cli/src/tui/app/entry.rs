@@ -32,7 +32,10 @@ pub async fn run_with(
     resume_latest: bool,
     plan_mode_required: bool,
 ) -> Result<()> {
-    let mode = RenderMode::from_env();
+    // Resolve the renderer the same way `App::new` does (config + env), so the
+    // terminal we set up matches the mode the app will render in.
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mode = RenderMode::resolve(&config::load_for_cwd(&cwd));
     // Install a panic hook that restores the terminal before unwinding, so a
     // panic inside main_loop (or any library it pulls in) doesn't leave the
     // user's shell stuck in raw mode + alternate screen. The alt-screen/mouse

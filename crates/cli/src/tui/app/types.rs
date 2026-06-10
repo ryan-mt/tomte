@@ -69,14 +69,15 @@ pub enum Screen {
 
 /// How the TUI occupies the terminal.
 ///
-/// - `AltScreen` (default): a full-screen alternate-buffer renderer with the
-///   input pinned to the bottom edge and in-app scroll + drag-selection — the
-///   conventional "transcript on top, prompt at the bottom" layout.
-/// - `Inline`: an inline viewport (SOUL.md Pillar 4 — the calm, tidy terminal)
-///   that leaves finished turns in the terminal's own native scrollback (via
-///   `Terminal::insert_before`) and never captures the mouse, so native
-///   scrollback + selection/copy keep working. Opt in with `TOMTE_INLINE=1` (or
-///   `true`/`yes`/`on`).
+/// - `Inline` (default): an inline viewport (SOUL.md Pillar 4 — the calm, tidy
+///   terminal) that leaves finished turns in the terminal's own native
+///   scrollback (via `Terminal::insert_before`) and never captures the mouse,
+///   so native scrollback + selection/copy keep working.
+/// - `AltScreen`: a full-screen alternate-buffer renderer with the input pinned
+///   to the bottom edge and in-app scroll + drag-selection — the conventional
+///   "transcript on top, prompt at the bottom" layout. Opt in with
+///   `render_mode: "alt"` in config.json or `TOMTE_INLINE=0` (or
+///   `false`/`no`/`off`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
     AltScreen,
@@ -84,20 +85,30 @@ pub enum RenderMode {
 }
 
 impl RenderMode {
-    /// Resolve from the environment. The full-screen alternate screen is the
-    /// default; `TOMTE_INLINE=1` (or `true`/`yes`/`on`) opts into the inline
-    /// viewport (Pillar 4 — native scrollback + selection/copy).
-    pub fn from_env() -> Self {
-        Self::from_env_value(std::env::var("TOMTE_INLINE").ok().as_deref())
+    /// Resolve from config + environment. Inline (Pillar 4) is the default;
+    /// `render_mode: "alt"` in config.json opts back into the full-screen
+    /// alternate screen, and the `TOMTE_INLINE` env var overrides both ways
+    /// (`1`/`true`/`yes`/`on` forces inline, `0`/`false`/`no`/`off` forces
+    /// alt-screen).
+    pub fn resolve(config: &config::Config) -> Self {
+        Self::resolve_values(
+            std::env::var("TOMTE_INLINE").ok().as_deref(),
+            &config.render_mode,
+        )
     }
 
-    /// Pure parse of the `TOMTE_INLINE` value, split out so it can be tested
-    /// without mutating process-global environment state. The alternate screen is
-    /// the default; only an explicit truthy value selects the inline viewport.
-    pub fn from_env_value(v: Option<&str>) -> Self {
-        match v {
-            Some(s) if matches!(s.trim(), "1" | "true" | "yes" | "on") => Self::Inline,
-            _ => Self::AltScreen,
+    /// Pure resolution of env value + config value, split out so it can be
+    /// tested without mutating process-global environment state. An explicit
+    /// truthy/falsy env value wins; otherwise the config decides, with inline
+    /// as the default for anything unrecognized.
+    pub fn resolve_values(env: Option<&str>, config_mode: &str) -> Self {
+        match env.map(str::trim) {
+            Some("1" | "true" | "yes" | "on") => Self::Inline,
+            Some("0" | "false" | "no" | "off") => Self::AltScreen,
+            _ => match config_mode.trim().to_ascii_lowercase().as_str() {
+                "alt" | "altscreen" | "alt-screen" | "alt_screen" | "fullscreen" => Self::AltScreen,
+                _ => Self::Inline,
+            },
         }
     }
 }

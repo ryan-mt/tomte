@@ -96,6 +96,14 @@ pub struct Config {
     /// runs). Optional; unset uses tomte's built-in pool. See [`SpinnerVerbs`].
     #[serde(default)]
     pub spinner_verbs: Option<SpinnerVerbs>,
+    /// How the TUI occupies the terminal: `"inline"` (default — SOUL Pillar 4,
+    /// finished turns flow into the terminal's native scrollback, no mouse
+    /// capture so selection/copy stay native) or `"alt"` (the full-screen
+    /// alternate-buffer renderer with in-app scroll + drag-selection). The
+    /// `TOMTE_INLINE` env var overrides this both ways (`1` forces inline,
+    /// `0` forces alt-screen); an unrecognized value falls back to inline.
+    #[serde(default = "default_render_mode")]
+    pub render_mode: String,
 }
 
 /// User overrides for the spinner companion words: a `verbs` list that either
@@ -334,6 +342,9 @@ fn default_show_thinking() -> bool {
 fn default_permission_mode() -> String {
     "default".to_string()
 }
+fn default_render_mode() -> String {
+    "inline".to_string()
+}
 
 /// Map model ids that tomte once surfaced but that don't resolve at the
 /// OpenAI API onto the closest current model, so a returning user keeps a
@@ -407,6 +418,7 @@ impl Default for Config {
             fallback_models: Vec::new(),
             sandbox: SandboxConfig::default(),
             spinner_verbs: None,
+            render_mode: default_render_mode(),
         }
     }
 }

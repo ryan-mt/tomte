@@ -465,25 +465,42 @@ fn streaming_assistant(text: &str, done: bool) -> Block {
 }
 
 #[test]
-fn render_mode_parses_env_value() {
+fn render_mode_resolves_env_and_config() {
     use RenderMode::{AltScreen, Inline};
-    // The full-screen alternate screen is the default; only an explicit truthy
-    // value (TOMTE_INLINE=1 / true / yes / on) opts into the inline viewport
-    // (Pillar 4).
+    // Inline (Pillar 4) is the default. An explicit truthy/falsy TOMTE_INLINE
+    // wins over config; otherwise `render_mode: "alt"` opts into the alternate
+    // screen and anything else (including garbage) stays inline.
     let cases = [
-        (None, AltScreen),
-        (Some("1"), Inline),
-        (Some(" on "), Inline),
-        (Some("true"), Inline),
-        (Some("yes"), Inline),
-        (Some("nope"), AltScreen),
-        (Some("0"), AltScreen),
-        (Some(" off "), AltScreen),
-        (Some("false"), AltScreen),
-        (Some("no"), AltScreen),
+        // env unset → config decides, inline default
+        (None, "inline", Inline),
+        (None, "", Inline),
+        (None, "garbage", Inline),
+        (None, "alt", AltScreen),
+        (None, " ALT ", AltScreen),
+        (None, "altscreen", AltScreen),
+        (None, "alt-screen", AltScreen),
+        (None, "alt_screen", AltScreen),
+        (None, "fullscreen", AltScreen),
+        // truthy env forces inline, even over config "alt"
+        (Some("1"), "alt", Inline),
+        (Some(" on "), "alt", Inline),
+        (Some("true"), "alt", Inline),
+        (Some("yes"), "alt", Inline),
+        // falsy env forces alt-screen, even over config "inline"
+        (Some("0"), "inline", AltScreen),
+        (Some(" off "), "inline", AltScreen),
+        (Some("false"), "inline", AltScreen),
+        (Some("no"), "inline", AltScreen),
+        // unrecognized env value falls through to config
+        (Some("nope"), "inline", Inline),
+        (Some("nope"), "alt", AltScreen),
     ];
-    for (value, want) in cases {
-        assert_eq!(RenderMode::from_env_value(value), want, "value={value:?}");
+    for (env, config_mode, want) in cases {
+        assert_eq!(
+            RenderMode::resolve_values(env, config_mode),
+            want,
+            "env={env:?} config={config_mode:?}"
+        );
     }
 }
 

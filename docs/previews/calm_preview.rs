@@ -9,9 +9,10 @@
 //! OWN scrollback while only the active turn stays live. That is the felt difference a
 //! "quiet custodian" owes you, and it is what static screenshots cannot show.
 //!
-//! Shipped state: this inline viewport is real but **opt-in via `TOMTE_INLINE=1`**; the
-//! 0.0.2 default is the full-screen alternate screen (input pinned to the bottom, in-app
-//! scroll + drag-selection). This preview demos what `TOMTE_INLINE=1` delivers.
+//! Shipped state: as of 0.0.4 this inline viewport is the **default** renderer; the
+//! full-screen alternate screen (input pinned to the bottom, in-app scroll +
+//! drag-selection) stays available via `render_mode: "alt"` in config.json or
+//! `TOMTE_INLINE=0`. This preview demos what the default delivers.
 //! Record this for the relaunch (asciinema / vhs):
 //!
 //!   rustc -D warnings docs/previews/calm_preview.rs -o /tmp/calm_preview && /tmp/calm_preview

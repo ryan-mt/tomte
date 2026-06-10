@@ -219,6 +219,17 @@ fn show_thinking_defaults_on_and_honors_explicit_off() {
 }
 
 #[test]
+fn render_mode_defaults_to_inline_and_honors_alt() {
+    assert_eq!(Config::default().render_mode, "inline");
+    // A config.json predating the field still deserializes as inline.
+    let cfg: Config = serde_json::from_str(r#"{"model":"gpt-5.5"}"#).unwrap();
+    assert_eq!(cfg.render_mode, "inline");
+    // An explicit alt-screen opt-out is honored.
+    let cfg: Config = serde_json::from_str(r#"{"model":"gpt-5.5","render_mode":"alt"}"#).unwrap();
+    assert_eq!(cfg.render_mode, "alt");
+}
+
+#[test]
 fn save_temp_paths_are_unique() {
     let path = PathBuf::from("config.json");
     assert_ne!(unique_tmp_path(&path), unique_tmp_path(&path));
