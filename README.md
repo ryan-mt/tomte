@@ -141,6 +141,9 @@ tomte chat "write a fibonacci function in Python"
 tomte chat --model gpt-5.5-pro --reasoning high "refactor module X"
 echo "read CLAUDE.md and summarize" | tomte chat
 
+tomte chat --continue "now add tests for it"   # chain onto this directory's last saved session
+tomte chat --prove "fix the flaky retry test"  # gate the run on the project's own checks; red exits non-zero
+
 tomte run --cwd /srv/project --prompt-file nightly-task.md   # scheduler-friendly alias
 ```
 
