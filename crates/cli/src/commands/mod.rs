@@ -12,6 +12,7 @@ pub mod prove;
 pub mod pulse;
 pub mod race;
 pub mod rounds;
+pub mod seal;
 pub mod twin;
 pub mod why;
 pub mod why_context;

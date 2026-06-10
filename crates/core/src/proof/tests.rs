@@ -167,7 +167,7 @@ fn capsule(checks: Vec<CheckResult>, files: Vec<String>) -> ProofCapsule {
 
 fn result(name: &'static str, outcome: Outcome) -> CheckResult {
     CheckResult {
-        name,
+        name: name.to_string(),
         command: "cargo test".into(),
         outcome,
         tail: String::new(),

@@ -250,6 +250,23 @@ enum Command {
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
     },
+    /// Commit Seal: notarize the Proof Capsule onto the commit itself. With no
+    /// action it collects the capsule at a clean HEAD (the project's own
+    /// test/typecheck/lint/build, real exit codes) and attaches it as a git
+    /// note under refs/notes/tomte-seal, bound to the commit and tree ids — so
+    /// the proof is pushed/fetched with the history it certifies. `seal show`
+    /// reads a commit's seal back; `seal verify` exits 0 only when the commit
+    /// is sealed and the sealed capsule is green, so it can gate CI.
+    Seal {
+        #[command(subcommand)]
+        action: Option<commands::seal::SealAction>,
+        /// Emit the freshly written seal as JSON instead of the rendered card.
+        #[arg(long)]
+        json: bool,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
     /// Night Rounds: the custodian's read-only inspection walk. Rebuilds the
     /// Repo Twin, diffs the Pulse against the last walk (risk risers, newly
     /// hot-and-untested files), reconciles the decision trail (drift watch),
@@ -453,6 +470,7 @@ async fn async_main() -> Result<()> {
         Some(Command::Hooks { action }) => commands::hooks::run(action).await,
         Some(Command::Mcp { action }) => commands::mcp::run(action).await,
         Some(Command::Prove { json, cwd }) => commands::prove::run(json, cwd).await,
+        Some(Command::Seal { action, json, cwd }) => commands::seal::run(action, json, cwd).await,
         Some(Command::Twin { rebuild, json, cwd }) => commands::twin::run(rebuild, json, cwd).await,
         Some(Command::Pulse { rebuild, json, cwd }) => {
             commands::pulse::run(rebuild, json, cwd).await
@@ -693,6 +711,57 @@ mod tests {
                 json: false,
                 out: None,
                 cwd: None
+            })
+        ));
+    }
+
+    #[test]
+    fn seal_parses_bare_show_and_verify() {
+        // Bare `tomte seal` writes a seal at HEAD; flags default off.
+        let bare = Cli::try_parse_from(["tomte", "seal"]).unwrap();
+        assert!(matches!(
+            bare.command,
+            Some(Command::Seal {
+                action: None,
+                json: false,
+                cwd: None
+            })
+        ));
+
+        let json = Cli::try_parse_from(["tomte", "seal", "--json", "--cwd", "/p"]).unwrap();
+        match json.command {
+            Some(Command::Seal { action, json, cwd }) => {
+                assert!(action.is_none());
+                assert!(json);
+                assert_eq!(cwd, Some(std::path::PathBuf::from("/p")));
+            }
+            other => panic!("expected seal command, got {other:?}"),
+        }
+
+        // `seal show [rev]` — rev optional, defaults to HEAD at run time.
+        let show = Cli::try_parse_from(["tomte", "seal", "show", "abc123", "--json"]).unwrap();
+        match show.command {
+            Some(Command::Seal {
+                action: Some(commands::seal::SealAction::Show { rev, json, .. }),
+                ..
+            }) => {
+                assert_eq!(rev, Some("abc123".to_string()));
+                assert!(json);
+            }
+            other => panic!("expected seal show, got {other:?}"),
+        }
+
+        // `seal verify` with no rev — the CI-gate spelling.
+        let verify = Cli::try_parse_from(["tomte", "seal", "verify"]).unwrap();
+        assert!(matches!(
+            verify.command,
+            Some(Command::Seal {
+                action: Some(commands::seal::SealAction::Verify {
+                    rev: None,
+                    json: false,
+                    cwd: None
+                }),
+                ..
             })
         ));
     }

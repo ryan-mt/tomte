@@ -32,7 +32,9 @@ terminal agent ships together — each one verifiable, none of them "trust me":
   changed, plus the **real exit codes** of your project's own test / typecheck / lint /
   build. The model never supplies those numbers, so it can't fabricate a green capsule;
   a check your project could define but doesn't surfaces as ⚠ unverified, never silently
-  dropped.
+  dropped. `tomte seal` notarizes that capsule onto the commit itself as a git note, so
+  the proof is pushed and fetched with the history it certifies — `tomte seal verify`
+  gates CI on it from any clone.
 - **It remembers *why* — across models.** `record_decision` appends the reasoning behind
   every non-obvious change to a decision trail that's re-injected each session, so next
   month's session — or a different model entirely — inherits the *why*, not just the diff.
@@ -146,6 +148,7 @@ tomte run --cwd /srv/project --prompt-file nightly-task.md   # scheduler-friendl
 
 ```bash
 tomte prove --json                       # run the project's own checks; non-zero exit on failure
+tomte seal                               # notarize the proof onto HEAD as a git note; `seal verify` gates CI
 tomte twin                               # build/inspect the repo's verifiable map
 tomte why-context src/auth/session.rs    # which files belong in context, and why
 tomte pulse                              # which files break next — scored, formula on the card

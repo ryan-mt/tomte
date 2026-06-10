@@ -20,7 +20,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 use crate::doctor::binary_on_path;
@@ -36,7 +36,7 @@ const TAIL_LINES: usize = 20;
 /// The recognized project ecosystems. The capsule verifies one primary
 /// ecosystem (chosen by [`detect_kind`] priority) — a polyglot repo verifies its
 /// primary toolchain, which is the one whose checks the user most likely means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectKind {
     Rust,
@@ -87,7 +87,7 @@ impl PlannedCheck {
 }
 
 /// What the CLI observed when it ran (or couldn't run) a planned check.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
 pub enum Outcome {
     /// The command ran and exited 0.
@@ -101,19 +101,19 @@ pub enum Outcome {
 }
 
 /// One check, after the CLI ran it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckResult {
-    pub name: &'static str,
+    pub name: String,
     pub command: String,
     #[serde(flatten)]
     pub outcome: Outcome,
     /// Last lines of output, kept only for a failure so the card can show why.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(skip_serializing_if = "String::is_empty", default)]
     pub tail: String,
 }
 
 /// The collected evidence bundle.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofCapsule {
     pub timestamp: String,
     pub project_kind: ProjectKind,
@@ -386,7 +386,7 @@ pub async fn collect(cwd: &Path) -> ProofCapsule {
     for p in &planned {
         if !p.present {
             checks.push(CheckResult {
-                name: p.name,
+                name: p.name.to_string(),
                 command: String::new(),
                 outcome: Outcome::Skipped,
                 tail: String::new(),
@@ -483,7 +483,7 @@ async fn run_check(check: &PlannedCheck, cwd: &Path) -> CheckResult {
         }
     };
     CheckResult {
-        name: check.name,
+        name: check.name.to_string(),
         command: check.command.clone(),
         outcome,
         tail,

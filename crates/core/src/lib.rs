@@ -23,6 +23,7 @@ pub mod race;
 pub mod repo_twin;
 mod retry;
 pub mod rounds;
+pub mod seal;
 pub mod secret_env;
 mod sensitive;
 pub mod session;
