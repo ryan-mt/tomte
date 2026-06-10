@@ -627,3 +627,59 @@ async fn undo_last_edit_unwinds_two_stacked_edits_to_the_same_file() {
         "both stacked edits undone to the pre-edit content"
     );
 }
+
+#[tokio::test]
+async fn undo_unwinds_edits_interleaved_across_files() {
+    // Regression: the post-restore snapshot refresh only looked at the TOP of
+    // the undo stack. With edits interleaved across files (A, B, A), undoing
+    // the second A-edit left the first A-entry's snapshot stale (B sat on top),
+    // so the third undo was refused as "modified since the edit". The refresh
+    // must find the newest remaining same-path entry wherever it sits.
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
+    std::fs::write(&a, "a0").unwrap();
+    std::fs::write(&b, "b0").unwrap();
+    let ctx = ctx(dir.path().to_path_buf());
+
+    ReadFile
+        .execute(json!({"path": "a.txt"}), &ctx)
+        .await
+        .unwrap();
+    ReadFile
+        .execute(json!({"path": "b.txt"}), &ctx)
+        .await
+        .unwrap();
+    EditFile
+        .execute(
+            json!({"path": "a.txt", "old_string": "a0", "new_string": "a1"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    EditFile
+        .execute(
+            json!({"path": "b.txt", "old_string": "b0", "new_string": "b1"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    EditFile
+        .execute(
+            json!({"path": "a.txt", "old_string": "a1", "new_string": "a2"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    UndoLastEdit.execute(json!({}), &ctx).await.unwrap(); // a2 -> a1
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "a1");
+    UndoLastEdit.execute(json!({}), &ctx).await.unwrap(); // b1 -> b0
+    assert_eq!(std::fs::read_to_string(&b).unwrap(), "b0");
+    UndoLastEdit.execute(json!({}), &ctx).await.unwrap(); // a1 -> a0 (previously refused)
+    assert_eq!(
+        std::fs::read_to_string(&a).unwrap(),
+        "a0",
+        "interleaved edits unwind all the way back"
+    );
+}

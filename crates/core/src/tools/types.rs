@@ -285,20 +285,21 @@ impl SessionState {
     }
 
     /// After an `/undo` restores `path` to a previous edit's post-state, the file
-    /// carries a fresh mtime. If the NEXT undo entry targets that same `path`, its
+    /// carries a fresh mtime. If a LATER undo entry targets that same `path`, its
     /// recorded post-snapshot is now stale — the staleness guard would read our
-    /// own restore as an external edit and refuse the next `/undo`. Refresh it to
-    /// the file's current `(mtime, size)` so stacked edits to one file unwind all
-    /// the way; a genuine external edit afterwards still moves the mtime and trips
-    /// the guard, so the protection is intact. Call only after a content restore
+    /// own restore as an external edit and refuse that undo. Refresh the NEWEST
+    /// remaining same-path entry (not just the top: edits interleaved across
+    /// files put another file's entry on top, but the restored content is exactly
+    /// that entry's post-state, so refreshing it is semantically exact) to the
+    /// file's current `(mtime, size)` so stacked edits unwind all the way. A
+    /// genuine external edit afterwards still moves the mtime and trips the
+    /// guard, so the protection is intact. Call only after a content restore
     /// (not a new-file deletion) and after the just-undone entry is popped.
     pub fn refresh_top_snapshot_for(&mut self, path: &std::path::Path) {
-        if let Some(top) = self.undo_stack.back_mut() {
-            if top.path == path {
-                let meta = std::fs::metadata(path);
-                top.post_edit_mtime = meta.as_ref().ok().and_then(|m| m.modified().ok());
-                top.post_edit_size = meta.as_ref().ok().map(|m| m.len());
-            }
+        if let Some(entry) = self.undo_stack.iter_mut().rev().find(|e| e.path == path) {
+            let meta = std::fs::metadata(path);
+            entry.post_edit_mtime = meta.as_ref().ok().and_then(|m| m.modified().ok());
+            entry.post_edit_size = meta.as_ref().ok().map(|m| m.len());
         }
     }
 }
