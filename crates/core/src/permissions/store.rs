@@ -107,7 +107,7 @@ pub(super) fn user_permissions_path(cwd: &Path) -> PathBuf {
 pub(super) fn read_permissions_at(path: &Path) -> ProjectPermissions {
     const MAX_PERMISSIONS_BYTES: u64 = 64 * 1024;
     match crate::config::read_text_file_capped(path, MAX_PERMISSIONS_BYTES) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        Ok(text) => serde_json::from_str(crate::config::strip_bom(&text)).unwrap_or_default(),
         Err(_) => ProjectPermissions::default(),
     }
 }
@@ -222,6 +222,24 @@ mod tests {
             decide(&perms, "run_shell", &json!({"command": "rm -rf /"})),
             Decision::Deny
         );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn bom_prefixed_permissions_file_still_parses() {
+        // A Windows editor adding a UTF-8 BOM must not silently turn the file
+        // into "empty" — that would drop a repo's deny rules.
+        let tmp = std::env::temp_dir().join(format!(
+            "tomte-perm-bom-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("permissions.json");
+        std::fs::write(&path, "\u{feff}{\"deny\":[\"run_shell(rm:*)\"]}").unwrap();
+        let perms = read_permissions_at(&path);
+        assert_eq!(perms.deny, vec!["run_shell(rm:*)".to_string()]);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

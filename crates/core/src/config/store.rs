@@ -72,7 +72,9 @@ pub fn config_file() -> PathBuf {
 /// user-edited file (config.json, settings.json, a project's package.json)
 /// into "unparseable", falling back to defaults / empty as if the file weren't
 /// there. npm itself tolerates a BOM'd package.json, so tomte should too.
-pub(crate) fn strip_bom(s: &str) -> &str {
+/// `pub` so the CLI's settings.json read-modify-write paths share the same
+/// tolerance as the core loaders.
+pub fn strip_bom(s: &str) -> &str {
     s.strip_prefix('\u{feff}').unwrap_or(s)
 }
 

@@ -235,10 +235,11 @@ fn read_settings(path: &Path) -> Result<Map<String, Value>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
         Err(e) => return Err(e).context("read settings.json"),
     };
+    let text = tomte_core::config::strip_bom(&text);
     if text.trim().is_empty() {
         return Ok(Map::new());
     }
-    match serde_json::from_str::<Value>(&text).context("parse settings.json")? {
+    match serde_json::from_str::<Value>(text).context("parse settings.json")? {
         Value::Object(map) => Ok(map),
         _ => Err(anyhow!("settings.json is not a JSON object")),
     }
@@ -284,6 +285,17 @@ mod tests {
 
     fn read(path: &Path) -> Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn read_settings_tolerates_a_utf8_bom() {
+        // Same tolerance as the core loaders: a BOM'd settings.json must not
+        // error `tomte mcp add/remove`'s read-modify-write path.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "\u{feff}{\"mcp_servers\":{}}").unwrap();
+        let root = read_settings(&path).unwrap();
+        assert!(root.contains_key("mcp_servers"));
     }
 
     #[test]

@@ -209,10 +209,11 @@ fn read_settings(path: &Path) -> Result<Map<String, Value>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
         Err(e) => return Err(e).context("read settings.json"),
     };
+    let text = crate::config::strip_bom(&text);
     if text.trim().is_empty() {
         return Ok(Map::new());
     }
-    match serde_json::from_str::<Value>(&text).context("parse settings.json")? {
+    match serde_json::from_str::<Value>(text).context("parse settings.json")? {
         Value::Object(map) => Ok(map),
         _ => Err(anyhow!("settings.json is not a JSON object")),
     }
@@ -246,6 +247,17 @@ mod tests {
         }
         assert!(get("rustfmt").is_some());
         assert!(get("nope").is_none());
+    }
+
+    #[test]
+    fn read_settings_tolerates_a_utf8_bom() {
+        // Same tolerance as the core loaders: a BOM'd settings.json must not
+        // error the preset read-modify-write path.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        std::fs::write(&path, "\u{feff}{\"hooks\":{}}").unwrap();
+        let root = read_settings(&path).unwrap();
+        assert!(root.contains_key("hooks"));
     }
 
     #[test]
