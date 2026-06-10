@@ -253,6 +253,10 @@ pub(super) fn take_orphan_args(
 }
 
 pub(super) fn display_tool_name(name: &str) -> &str {
+    // Trim first so a whitespace-only name reads `<missing>` in error text
+    // instead of a backtick-wrapped run of spaces (the execution path trims
+    // before matching, so this is display-only parity).
+    let name = name.trim();
     if name.is_empty() {
         "<missing>"
     } else {

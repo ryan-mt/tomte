@@ -11,8 +11,33 @@ pub(super) fn history_tool_arguments(tool_name: &str, args: &Value) -> String {
     serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
 }
 
-pub(super) fn approval_args_json(args: &Value) -> String {
-    serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string())
+/// Arguments shown on the approval card, in the SAME canonical shape the
+/// history records — a user must never approve `cmd=…` and have history record
+/// `command=…`. Null placeholders the canonical fold inserts for absent fields
+/// are stripped so the card shows only what the call actually carries; a tool
+/// without a canonical mapping passes its args through unchanged.
+pub(super) fn approval_args_json(tool_name: &str, args: &Value) -> String {
+    let value = canonical_history_arguments(tool_name, args)
+        .map(|mut v| {
+            if let Value::Object(map) = &mut v {
+                map.retain(|_, val| !val.is_null());
+            }
+            v
+        })
+        .unwrap_or_else(|| args.clone());
+    serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The target path of a file-mutating call, under any alias the executing
+/// tool's deserializer accepts (`path`/`file_path`/`filePath`). Consumers that
+/// surface per-file context (house rules) must look up the same file the tool
+/// will actually write — a call spelled `filePath` executes fine, so it must
+/// not silently skip the lookup.
+pub(super) fn edit_path_argument(args: &Value) -> Option<&str> {
+    let obj = args.as_object()?;
+    ["path", "file_path", "filePath"]
+        .iter()
+        .find_map(|k| obj.get(*k)?.as_str())
 }
 
 pub(super) fn canonical_history_arguments(tool_name: &str, args: &Value) -> Option<Value> {

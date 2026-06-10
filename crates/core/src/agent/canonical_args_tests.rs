@@ -202,20 +202,58 @@ fn history_tool_arguments_canonicalize_common_camel_case_aliases() {
 }
 
 #[test]
-fn approval_args_json_uses_parsed_tool_arguments() {
-    let raw = approval_args_json(&json!({
-        "command": "cargo test",
-        "timeout": "1000"
-    }));
+fn approval_args_json_shows_the_canonical_shape_history_records() {
+    // The approval card and the recorded history must show the SAME call: a
+    // user must never approve `cmd=…` and have history record `command=…`.
+    // Alias keys fold to canonical names; the null placeholders the canonical
+    // fold inserts for absent fields are stripped so the card stays clean.
+    let raw = approval_args_json(
+        "run_shell",
+        &json!({
+            "cmd": "cargo test",
+            "timeout": "1000"
+        }),
+    );
     let value: Value = serde_json::from_str(&raw).unwrap();
 
     assert_eq!(value["command"], "cargo test");
-    assert_eq!(value["timeout"], "1000");
+    assert_eq!(value["timeout_ms"], 1000);
+    assert!(
+        value.get("run_in_background").is_none(),
+        "absent fields must not appear as null noise on the card: {raw}"
+    );
 }
 
 #[test]
 fn approval_args_json_serializes_empty_arguments_as_object() {
-    assert_eq!(approval_args_json(&json!({})), "{}");
+    assert_eq!(approval_args_json("run_shell", &json!({})), "{}");
+}
+
+#[test]
+fn approval_args_json_passes_unmapped_tools_through_unchanged() {
+    let raw = approval_args_json("memory", &json!({"action": "view"}));
+    let value: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(value["action"], "view");
+}
+
+#[test]
+fn edit_path_argument_accepts_every_executing_alias() {
+    // House-rule surfacing must find the same file the tool will write: a call
+    // spelled `filePath`/`file_path` executes fine, so the lookup must too.
+    assert_eq!(
+        edit_path_argument(&json!({"path": "src/a.rs"})),
+        Some("src/a.rs")
+    );
+    assert_eq!(
+        edit_path_argument(&json!({"file_path": "src/b.rs"})),
+        Some("src/b.rs")
+    );
+    assert_eq!(
+        edit_path_argument(&json!({"filePath": "src/c.rs"})),
+        Some("src/c.rs")
+    );
+    assert_eq!(edit_path_argument(&json!({"content": "x"})), None);
+    assert_eq!(edit_path_argument(&json!("not an object")), None);
 }
 
 #[test]

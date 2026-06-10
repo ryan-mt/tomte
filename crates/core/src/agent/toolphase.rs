@@ -374,7 +374,7 @@ impl Agent {
                                             tx,
                                             &pc.call_id,
                                             &tool_name,
-                                            approval_args_json(&args),
+                                            approval_args_json(&tool_name, &args),
                                             diff_preview,
                                             APPROVAL_TIMEOUT,
                                         )
@@ -466,9 +466,10 @@ impl Agent {
                 // Only the file-targeting mutating tools carry a path to look up.
                 let house_rules = if self.config.conscience_surfaces() {
                     match tool.name() {
-                        "edit_file" | "write_file" | "multi_edit" => args
-                            .get("path")
-                            .and_then(|v| v.as_str())
+                        // Look the path up under every alias the executing tool
+                        // accepts — a `filePath` edit runs fine, so its house
+                        // rules must not silently fail to surface.
+                        "edit_file" | "write_file" | "multi_edit" => edit_path_argument(args)
                             .map(|p| crate::decisions::house_rules(&ctx.cwd, p))
                             .unwrap_or_default(),
                         _ => Vec::new(),

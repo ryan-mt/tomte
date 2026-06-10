@@ -401,3 +401,13 @@ fn wrapper_concatenated_empty_prefix_arguments_are_recovered() {
         Some(r#"{"path":"Cargo.toml"}"#)
     );
 }
+
+#[test]
+fn display_tool_name_reads_missing_for_blank_or_whitespace_names() {
+    // The truncation error path interpolates this into "tool `{name}`" — a
+    // whitespace-only name must read `<missing>`, not a run of spaces.
+    assert_eq!(display_tool_name(""), "<missing>");
+    assert_eq!(display_tool_name("   "), "<missing>");
+    assert_eq!(display_tool_name(" grep "), "grep");
+    assert_eq!(display_tool_name("read_file"), "read_file");
+}
