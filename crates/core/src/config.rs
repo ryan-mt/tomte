@@ -8,8 +8,14 @@ use serde::{Deserialize, Serialize};
 mod sandbox;
 pub use sandbox::SandboxConfig;
 
-const CONFIG_DIR_NAME: &str = "tomte";
-static SAVE_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+mod overlay;
+mod providers;
+mod store;
+
+pub use overlay::*;
+pub use providers::*;
+pub use store::*;
+
 // `ultracode` is a top-tier effort: it pairs `xhigh` thinking with standing
 // permission to launch multi-agent workflows. It is not a distinct API effort
 // level — tomte accepts it as a selectable effort and maps it onto `xhigh` on
@@ -24,6 +30,7 @@ pub const VALID_REASONING_EFFORTS: &[&str] = &[
     "ultracode",
     "max",
 ];
+
 pub const VALID_VERBOSITIES: &[&str] = &["low", "medium", "high"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,175 +138,6 @@ pub struct SpinnerVerbs {
     pub exclude_default: bool,
 }
 
-/// Configuration for one OpenAI-compatible (`/v1/chat/completions`) provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderConfig {
-    /// API base URL, e.g. `https://api.groq.com/openai/v1`. The adapter appends
-    /// `/chat/completions`.
-    pub base_url: String,
-    /// Literal API key. Prefer `api_key_env` so keys stay out of config.json.
-    #[serde(default)]
-    pub api_key: Option<String>,
-    /// Name of an environment variable to read the API key from (checked first).
-    #[serde(default)]
-    pub api_key_env: Option<String>,
-    /// True input context window (in tokens) of this endpoint's model. tomte
-    /// cannot probe a custom OpenAI-compatible provider, so the catalog's
-    /// guess-by-model-name is usually wrong (it may claim 1M for a 128K model),
-    /// which makes auto-compaction fire too late and the provider reject the
-    /// request with "input exceeds the context window". Set this to the model's
-    /// real window so compaction triggers in time. Falls back to a conservative
-    /// [`DEFAULT_PROVIDER_CONTEXT_LIMIT`] when unset.
-    #[serde(default)]
-    pub context_limit: Option<u64>,
-    /// Forward the selected reasoning effort to this provider as the Chat
-    /// Completions `reasoning_effort` field. Off by default because many
-    /// OpenAI-compatible endpoints reject unknown fields with a 400; enable it
-    /// only for reasoning models that accept `reasoning_effort` (OpenAI, Groq,
-    /// DeepSeek, Together, …). `minimal`/`low`/`medium`/`high` pass through;
-    /// `xhigh`/`max`/`ultracode` clamp to `high`; `none` and unknown levels have
-    /// no standard value and are simply not forwarded.
-    #[serde(default)]
-    pub forward_reasoning_effort: bool,
-}
-
-/// Conservative input-window assumed for a configured provider that does not
-/// declare `context_limit`. Most OpenAI-compatible models are 128K–256K, so
-/// 200K leaves headroom while still being low enough that auto-compaction
-/// fires before a real overflow. Users with a larger model raise it explicitly.
-pub const DEFAULT_PROVIDER_CONTEXT_LIMIT: u64 = 200_000;
-
-/// Env var that overrides the resolved context-window size (tokens). Lets a user
-/// pin the window for a gateway/proxy whose real limit tomte can't infer, or
-/// shrink it to force earlier compaction. Accepts a bare integer or a `k`/`m`
-/// suffix (`200000`, `200k`, `1m`). Mirrors Claude Code's
-/// `CLAUDE_CODE_MAX_CONTEXT_TOKENS`.
-pub const CONTEXT_OVERRIDE_ENV: &str = "TOMTE_MAX_CONTEXT_TOKENS";
-
-/// Floor for a [`CONTEXT_OVERRIDE_ENV`] value. Below this a typo (`2000`) would
-/// make every turn read as ≥100% full and thrash the compaction path, so a
-/// too-small override is clamped up rather than honored.
-pub const MIN_CONTEXT_OVERRIDE: u64 = 8_000;
-/// Ceiling for a [`CONTEXT_OVERRIDE_ENV`] value, so an absurd number can't skew
-/// the gauge math or starve the warn/compact thresholds.
-pub const MAX_CONTEXT_OVERRIDE: u64 = 20_000_000;
-
-/// Parse a human token-count override: a bare integer, or a `k`/`m` suffix
-/// (`"200k"` → 200_000, `"1m"` → 1_000_000; case-insensitive, underscores and
-/// surrounding whitespace tolerated). Returns `None` for anything unparseable or
-/// non-positive so the caller falls back to the catalog/provider value. A valid
-/// value is clamped to `[MIN_CONTEXT_OVERRIDE, MAX_CONTEXT_OVERRIDE]`.
-pub fn parse_context_override(raw: &str) -> Option<u64> {
-    let s = raw.trim().replace('_', "").to_ascii_lowercase();
-    let (num, mult) = if let Some(n) = s.strip_suffix('m') {
-        (n, 1_000_000f64)
-    } else if let Some(n) = s.strip_suffix('k') {
-        (n, 1_000f64)
-    } else {
-        (s.as_str(), 1f64)
-    };
-    let value: f64 = num.trim().parse().ok()?;
-    if !value.is_finite() || value <= 0.0 {
-        return None;
-    }
-    let tokens = (value * mult) as u64;
-    Some(tokens.clamp(MIN_CONTEXT_OVERRIDE, MAX_CONTEXT_OVERRIDE))
-}
-
-/// Apply a context-window override on top of `base`. Pure (`raw` is the literal
-/// env value) so the precedence is unit-testable without mutating process env.
-/// An unset or unparseable override leaves `base` untouched.
-pub(crate) fn apply_context_override(base: u64, raw: Option<&str>) -> u64 {
-    raw.and_then(parse_context_override).unwrap_or(base)
-}
-
-impl ProviderConfig {
-    /// Resolve the API key: the env var named by `api_key_env` (if set and
-    /// non-empty) wins, then the literal `api_key`, else empty (local servers
-    /// such as Ollama/LM Studio accept no key).
-    pub fn resolve_api_key(&self) -> String {
-        if let Some(var) = &self.api_key_env {
-            if let Ok(v) = std::env::var(var) {
-                if !v.is_empty() {
-                    return v;
-                }
-            }
-        }
-        self.api_key.clone().unwrap_or_default()
-    }
-}
-
-/// Built-in base URLs + key-env conventions for well-known OpenAI-compatible
-/// providers, so a `<id>/<model>` spec works out of the box (e.g.
-/// `groq/llama-3.3-70b`) without hand-writing a `providers` entry. Each tuple is
-/// `(id, base_url, api_key_env, forward_reasoning_effort)`; local servers
-/// (Ollama / LM Studio) take no key.
-const BUILTIN_PROVIDERS: &[(&str, &str, Option<&str>, bool)] = &[
-    (
-        "groq",
-        "https://api.groq.com/openai/v1",
-        Some("GROQ_API_KEY"),
-        true,
-    ),
-    (
-        "openrouter",
-        "https://openrouter.ai/api/v1",
-        Some("OPENROUTER_API_KEY"),
-        false,
-    ),
-    (
-        "deepseek",
-        "https://api.deepseek.com/v1",
-        Some("DEEPSEEK_API_KEY"),
-        true,
-    ),
-    ("xai", "https://api.x.ai/v1", Some("XAI_API_KEY"), true),
-    (
-        "together",
-        "https://api.together.xyz/v1",
-        Some("TOGETHER_API_KEY"),
-        true,
-    ),
-    (
-        "fireworks",
-        "https://api.fireworks.ai/inference/v1",
-        Some("FIREWORKS_API_KEY"),
-        false,
-    ),
-    (
-        "cerebras",
-        "https://api.cerebras.ai/v1",
-        Some("CEREBRAS_API_KEY"),
-        false,
-    ),
-    (
-        "mistral",
-        "https://api.mistral.ai/v1",
-        Some("MISTRAL_API_KEY"),
-        false,
-    ),
-    ("ollama", "http://localhost:11434/v1", None, false),
-    ("lmstudio", "http://localhost:1234/v1", None, false),
-];
-
-/// Synthesize a [`ProviderConfig`] for a well-known provider id (see
-/// [`BUILTIN_PROVIDERS`]), or `None` if the id isn't recognized. The API key is
-/// resolved later from the conventional `<ID>_API_KEY` env var. This is only a
-/// fallback: a user's own `config.providers["<id>"]` always takes precedence.
-pub fn builtin_provider(id: &str) -> Option<ProviderConfig> {
-    let id = id.trim();
-    BUILTIN_PROVIDERS
-        .iter()
-        .find(|entry| entry.0.eq_ignore_ascii_case(id))
-        .map(|entry| ProviderConfig {
-            base_url: entry.1.to_string(),
-            api_key: None,
-            api_key_env: entry.2.map(str::to_string),
-            context_limit: None,
-            forward_reasoning_effort: entry.3,
-        })
-}
-
 impl Config {
     /// Effective input context window (tokens) for the active model — the value
     /// the warn/auto-compact thresholds and the status bar must use. A model
@@ -333,27 +171,35 @@ impl Config {
 fn default_model() -> String {
     "gpt-5.5".to_string()
 }
+
 fn default_reasoning_effort() -> String {
     "medium".to_string()
 }
+
 fn default_verbosity() -> String {
     "medium".to_string()
 }
+
 fn default_auto_compact() -> bool {
     true
 }
+
 fn default_auto_fallback() -> bool {
     true
 }
+
 fn default_auto_capture() -> bool {
     true
 }
+
 fn default_show_thinking() -> bool {
     true
 }
+
 fn default_permission_mode() -> String {
     "default".to_string()
 }
+
 fn default_render_mode() -> String {
     "inline".to_string()
 }
@@ -436,368 +282,6 @@ impl Default for Config {
     }
 }
 
-pub fn config_dir() -> PathBuf {
-    // An explicit `TOMTE_CONFIG_DIR` relocates the whole config tree (config,
-    // auth, sessions, logs). Used by power users to keep state off the default
-    // OS location, and by tests to isolate onto a scratch dir on every platform
-    // — `dirs::config_dir()` only honors `XDG_CONFIG_HOME` on Unix, so a Windows
-    // test that set that alone would silently write to the real `%APPDATA%`.
-    if let Some(dir) = std::env::var_os("TOMTE_CONFIG_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    // Never fall back to the current working directory: that risks writing
-    // `auth.json` (OAuth tokens) into a project checkout that then gets
-    // git-committed. Prefer the OS config dir, then `~/.config`, then a temp
-    // dir — anything but the cwd.
-    dirs::config_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join(CONFIG_DIR_NAME)
-}
-
-/// Create `dir` (recursively) restricted to the owner. The config dir holds
-/// `auth.json` (mode 0o600) and `config.json`; the directory itself must be
-/// 0o700 too, or with the usual umask it lands at 0o755 and other local users
-/// can list it and stat the files (leaking login/refresh timestamps).
-pub fn create_dir_secure(dir: &std::path::Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)?;
-        // Repair an existing dir created before this (or under a looser umask).
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::create_dir_all(dir)
-    }
-}
-
-/// Tighten a secret-bearing file to the current user — the cross-platform
-/// `chmod 600`: Unix file mode, Windows owner-only ACL via `icacls`. Public so
-/// CLI-side writers of credential-adjacent files (e.g. settings.json, whose MCP
-/// server `env` may carry tokens) can apply the same enforcement `auth.json`
-/// and `config.json` get. Best-effort, matching `save_auth`'s Windows posture.
-pub fn restrict_file_to_owner(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(windows)]
-    crate::auth::storage::restrict_to_owner_windows(path);
-    #[cfg(not(any(unix, windows)))]
-    let _ = path;
-}
-
-pub fn config_file() -> PathBuf {
-    config_dir().join("config.json")
-}
-
-/// Strip a leading UTF-8 BOM before JSON parsing. Editors on Windows commonly
-/// write one, and `serde_json` rejects it — which silently turned a valid
-/// user-edited file (config.json, settings.json, a project's package.json)
-/// into "unparseable", falling back to defaults / empty as if the file weren't
-/// there. npm itself tolerates a BOM'd package.json, so tomte should too.
-pub(crate) fn strip_bom(s: &str) -> &str {
-    s.strip_prefix('\u{feff}').unwrap_or(s)
-}
-
-pub fn load() -> Config {
-    let path = config_file();
-    let mut cfg = match std::fs::read_to_string(&path) {
-        Ok(s) => match serde_json::from_str::<Config>(strip_bom(&s)) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                // Silently resetting to defaults on a corrupt file used to make
-                // model/effort changes appear to vanish — log loudly so the
-                // user sees something is wrong instead of debugging mystery
-                // setting resets.
-                tracing::warn!(
-                    config = %path.display(),
-                    error = %e,
-                    "config.json parse failed; falling back to defaults"
-                );
-                Config::default()
-            }
-        },
-        Err(_) => Config::default(),
-    };
-    // Normalise the configured model: accept an explicit built-in
-    // `provider/model` spec, preserve custom provider specs, then auto-upgrade
-    // legacy placeholder names from earlier tomte builds.
-    let normalized = normalize_model_name(&cfg.model);
-    if normalized != cfg.model {
-        tracing::info!(
-            old = %cfg.model,
-            new = %normalized,
-            "normalizing model name in config.json"
-        );
-        cfg.model = normalized;
-    }
-    cfg
-}
-
-/// `<cwd>/.tomte/config.json` — the optional project-local config overlay.
-pub fn project_config_file(cwd: &Path) -> PathBuf {
-    cwd.join(".tomte").join("config.json")
-}
-
-/// Top-level keys a project config may NOT override. A project `.tomte/`
-/// ships in cloned repos, so letting one set these would let an untrusted repo
-/// disable approval prompts, auto-approve writes, or redirect the model to an
-/// arbitrary endpoint (leaking prompts / API keys). They stay global-only;
-/// present keys are ignored with a warning.
-const PROJECT_PROTECTED_KEYS: &[&str] = &[
-    "default_permission_mode",
-    "auto_approve_read",
-    "auto_approve_write",
-    "providers",
-];
-
-/// Safe, behavioral fields a project `.tomte/config.json` may override on top
-/// of the global config. All optional; unknown keys (including the protected
-/// ones) are dropped by serde and never applied here.
-#[derive(Debug, Default, Deserialize)]
-struct ProjectOverlay {
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    reasoning_effort: Option<String>,
-    #[serde(default)]
-    verbosity: Option<String>,
-    #[serde(default)]
-    auto_compact: Option<bool>,
-    #[serde(default)]
-    auto_capture: Option<bool>,
-    #[serde(default)]
-    conscience: Option<String>,
-    #[serde(default)]
-    fallback_models: Option<Vec<String>>,
-}
-
-/// Load the global config, then overlay a project-local `.tomte/config.json`
-/// from `cwd` if present. Only safe behavioral fields are overlaid (see
-/// [`PROJECT_PROTECTED_KEYS`]); a missing, oversized, or unparseable project
-/// file is ignored and the global config stands.
-pub fn load_for_cwd(cwd: &Path) -> Config {
-    overlay_project_config(load(), cwd)
-}
-
-fn overlay_project_config(mut cfg: Config, cwd: &Path) -> Config {
-    let path = project_config_file(cwd);
-    let Some(text) = read_project_config(&path) else {
-        return cfg;
-    };
-    let value: serde_json::Value = match serde_json::from_str(strip_bom(&text)) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(config = %path.display(), error = %e, "project config.json parse failed; ignoring it");
-            return cfg;
-        }
-    };
-    if let Some(obj) = value.as_object() {
-        for key in PROJECT_PROTECTED_KEYS {
-            if obj.contains_key(*key) {
-                tracing::warn!(
-                    "ignoring project config override of `{key}` (global-only for safety)"
-                );
-            }
-        }
-    }
-    match serde_json::from_value::<ProjectOverlay>(value) {
-        Ok(overlay) => apply_project_overlay(&mut cfg, overlay),
-        Err(e) => {
-            tracing::warn!(config = %path.display(), error = %e, "project config overlay parse failed; ignoring it");
-        }
-    }
-    cfg
-}
-
-/// Read an attacker-influenceable text file bounded to `max_bytes`, restricted
-/// to a non-symlink regular file. A planted symlink must not redirect a project
-/// instruction/config path to local secrets, and a multi-GB planted file must
-/// not exhaust memory in `read_to_string`. Returns `NotFound` when absent so
-/// callers can distinguish "missing" from "rejected".
-pub(crate) fn read_text_file_capped(path: &Path, max_bytes: u64) -> std::io::Result<String> {
-    let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{} is a symlink", path.display()),
-        ));
-    }
-    if !meta.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{} is not a regular file", path.display()),
-        ));
-    }
-    if meta.len() > max_bytes {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("{} exceeds the {max_bytes} byte cap", path.display()),
-        ));
-    }
-    std::fs::read_to_string(path)
-}
-
-/// Read a project config file, bounded to a sane size — it is attacker-influenced
-/// (it ships in cloned repos) and a real config is tiny. Returns `None` when the
-/// file is absent, not a regular file, too large, or unreadable.
-fn read_project_config(path: &Path) -> Option<String> {
-    const MAX_PROJECT_CONFIG_BYTES: u64 = 64 * 1024;
-    match read_text_file_capped(path, MAX_PROJECT_CONFIG_BYTES) {
-        Ok(s) => Some(s),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            tracing::warn!(config = %path.display(), error = %e, "project config.json unreadable or too large; ignoring it");
-            None
-        }
-    }
-}
-
-/// Apply a validated project overlay onto `cfg`. Model names are normalized and
-/// effort/verbosity are validated; an invalid enum value is dropped rather than
-/// overriding the global with garbage.
-/// True when a project-supplied model spec would route the turn — and with it the
-/// prompt and all file context — to a non-native third-party endpoint: its
-/// `provider/` prefix resolves to a built-in preset or a user-configured provider
-/// rather than the native OpenAI/Anthropic path (see [`crate::client::LlmClient::for_config`]).
-/// A cloned repo's `.tomte/config.json` must not be able to do that — it would
-/// silently exfiltrate prompts using the user's own `<PROVIDER>_API_KEY`. This
-/// extends the [`PROJECT_PROTECTED_KEYS`] `providers` block to the `model` /
-/// `fallback_models` that can reach the same endpoints. A bare id, or a native
-/// `openai/` / `anthropic/` spec, is safe and allowed.
-fn project_model_redirects_offsite(cfg: &Config, spec: &str) -> bool {
-    let Some((prefix, _rest)) = spec.trim().split_once('/') else {
-        return false; // a bare id never routes off-site
-    };
-    // A native `openai/`/`anthropic/` prefix is safe; any other recognized
-    // provider prefix routes off-site. `for_config` keys routing on the prefix
-    // ALONE — an empty model after the slash (`openrouter/`) still reaches that
-    // endpoint with the prompt attached — so an empty `rest` must NOT be treated
-    // as safe.
-    if crate::provider::Provider::from_name(prefix).is_some() {
-        return false;
-    }
-    builtin_provider(prefix).is_some() || cfg.providers.contains_key(prefix)
-}
-
-fn apply_project_overlay(cfg: &mut Config, overlay: ProjectOverlay) {
-    if let Some(model) = overlay.model {
-        if project_model_redirects_offsite(cfg, &model) {
-            tracing::warn!(
-                "ignoring project config `model` = `{model}` — it routes to a non-native provider endpoint (global-only for safety, like `providers`)"
-            );
-        } else {
-            cfg.model = normalize_model_name(&model);
-        }
-    }
-    if let Some(effort) = overlay.reasoning_effort {
-        if let Some(v) = normalize_reasoning_effort(&effort) {
-            cfg.reasoning_effort = v;
-        }
-    }
-    if let Some(verbosity) = overlay.verbosity {
-        if let Some(v) = normalize_verbosity(&verbosity) {
-            cfg.verbosity = v;
-        }
-    }
-    if let Some(auto_compact) = overlay.auto_compact {
-        cfg.auto_compact = auto_compact;
-    }
-    if let Some(auto_capture) = overlay.auto_capture {
-        cfg.auto_capture = auto_capture;
-    }
-    if let Some(conscience) = overlay.conscience {
-        if let Some(v) = normalize_conscience(&conscience) {
-            cfg.conscience = v;
-        }
-    }
-    if let Some(fallbacks) = overlay.fallback_models {
-        // Failover routes the same way as `model`, so an off-site fallback is the
-        // same prompt/key-leak vector — drop those, keep the safe entries.
-        let filtered: Vec<String> = fallbacks
-            .into_iter()
-            .filter(|m| {
-                let offsite = project_model_redirects_offsite(cfg, m);
-                if offsite {
-                    tracing::warn!(
-                        "ignoring project fallback model `{m}` — it routes to a non-native provider endpoint"
-                    );
-                }
-                !offsite
-            })
-            .collect();
-        cfg.fallback_models = filtered;
-    }
-}
-
-pub fn save(cfg: &Config) -> std::io::Result<()> {
-    save_to_path(&config_file(), cfg)
-}
-
-fn save_to_path(path: &Path, cfg: &Config) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        create_dir_secure(dir)?;
-        // Windows: config.json can hold a literal provider `api_key` (a real
-        // credential), so it deserves the same owner-only ACL `auth.json` gets —
-        // Unix already writes it `0o600` below. Harden the dir with inheritance
-        // first so the temp file is owner-only from birth, mirroring `save_auth`.
-        #[cfg(windows)]
-        crate::auth::storage::restrict_dir_to_owner_windows(dir);
-    }
-    let persistable = persist_view(cfg);
-    let text = serde_json::to_string_pretty(&persistable).unwrap();
-    // Atomic write: a SIGKILL between truncate and write previously left
-    // config.json empty, silently resetting all settings on next launch.
-    let tmp = unique_tmp_path(path);
-    write_config_file(&tmp, text.as_bytes())?;
-    std::fs::rename(&tmp, path)
-}
-
-#[cfg(unix)]
-pub(crate) fn write_config_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut f = std::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-pub(crate) fn write_config_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, bytes)?;
-    // Owner-only ACL parity with auth.json and the Unix 0o600 path: config.json
-    // may carry a literal provider api_key. No-op on a non-Windows, non-Unix
-    // target (which can't enforce owner-only perms anyway).
-    #[cfg(windows)]
-    crate::auth::storage::restrict_to_owner_windows(path);
-    Ok(())
-}
-
-pub fn redacted_view(cfg: &Config) -> Config {
-    let mut out = cfg.clone();
-    for provider in out.providers.values_mut() {
-        if provider.api_key.as_ref().is_some_and(|key| !key.is_empty()) {
-            provider.api_key = Some("<redacted>".to_string());
-        }
-    }
-    out
-}
-
 /// Validate a sandbox mode supplied on the CLI (`--sandbox`). Returns the
 /// canonical lowercase form, or `None` for an unrecognized value so the caller
 /// can surface a hard error (env/file paths fall back instead).
@@ -825,21 +309,6 @@ pub(crate) fn unique_tmp_path(path: &Path) -> PathBuf {
         .unwrap_or(0);
     let seq = SAVE_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     path.with_extension(format!("tmp.{}.{}.{}", std::process::id(), now, seq))
-}
-
-/// `max` is the heaviest adaptive-thinking tier on Anthropic and is
-/// deliberately session-only — relaunching the CLI should not silently
-/// re-engage the heaviest spend tier. Persist it as `xhigh` (next step
-/// down). OpenAI models are untouched.
-fn persist_view(cfg: &Config) -> Config {
-    let mut out = cfg.clone();
-    out.model = normalize_model_name(&out.model);
-    if out.reasoning_effort == "max"
-        && crate::provider::Provider::from_model(&out.model) == crate::provider::Provider::Anthropic
-    {
-        out.reasoning_effort = "xhigh".to_string();
-    }
-    out
 }
 
 #[cfg(test)]
