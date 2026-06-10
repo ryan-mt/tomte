@@ -61,27 +61,34 @@ impl ProjectKind {
 /// A check the CLI intends to run: which category, and the exact command line.
 /// `present` is false when the project *could* define this check but doesn't
 /// (e.g. a Node project with no `typecheck` script) — those surface as a
-/// deterministic "not verified", never silently dropped.
+/// deterministic "not verified", never silently dropped. A monorepo
+/// sub-project's check carries the sub-directory it runs in and a
+/// `<dir>:`-prefixed name (e.g. `website:lint`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedCheck {
-    pub name: &'static str,
+    pub name: String,
     pub command: String,
     pub present: bool,
+    /// Directory the check runs in, relative to the capsule root; `None` runs
+    /// at the root itself.
+    pub subdir: Option<String>,
 }
 
 impl PlannedCheck {
-    fn present(name: &'static str, command: impl Into<String>) -> Self {
+    fn present(name: impl Into<String>, command: impl Into<String>) -> Self {
         Self {
-            name,
+            name: name.into(),
             command: command.into(),
             present: true,
+            subdir: None,
         }
     }
-    fn missing(name: &'static str) -> Self {
+    fn missing(name: impl Into<String>) -> Self {
         Self {
-            name,
+            name: name.into(),
             command: String::new(),
             present: false,
+            subdir: None,
         }
     }
 }
@@ -253,16 +260,67 @@ fn detect_node_pm(cwd: &Path) -> &'static str {
 /// disk only to learn the project kind, the Node package manager + scripts, and
 /// (for Python) which tools are installed. The per-kind matrix itself is the
 /// testable [`plan_for_kind`].
+///
+/// Monorepo coverage: an immediate sub-directory carrying a *different*
+/// ecosystem's manifest (a Next.js site beside a Rust workspace, a `src-tauri/`
+/// beside a Node app) gets its checks appended too — named `<dir>:<check>` and
+/// run inside that directory — so the secondary stack can't silently skip
+/// verification. Same-kind sub-projects are left to the root toolchain (a cargo
+/// workspace or npm workspaces already cover their members), so nothing runs
+/// twice.
 pub fn plan_checks(cwd: &Path) -> (ProjectKind, Vec<PlannedCheck>) {
     let kind = detect_kind(cwd);
-    let node = if kind == ProjectKind::Node {
-        let scripts = read_node_scripts(cwd);
-        Some((detect_node_pm(cwd), scripts))
-    } else {
-        None
-    };
     let py_tool = |bin: &str| binary_on_path(bin);
-    (kind, plan_for_kind(kind, node.as_ref(), &py_tool))
+    let plan_at = |dir: &Path, k: ProjectKind| {
+        let node = if k == ProjectKind::Node {
+            Some((detect_node_pm(dir), read_node_scripts(dir)))
+        } else {
+            None
+        };
+        plan_for_kind(k, node.as_ref(), &py_tool)
+    };
+    let mut checks = plan_at(cwd, kind);
+    for (dir_name, sub_kind) in sub_projects(cwd, kind) {
+        for mut check in plan_at(&cwd.join(&dir_name), sub_kind) {
+            check.name = format!("{dir_name}:{}", check.name);
+            check.subdir = Some(dir_name.clone());
+            checks.push(check);
+        }
+    }
+    (kind, checks)
+}
+
+/// Immediate sub-directories that are their own project of a *different*
+/// ecosystem than the primary one. Sorted by name so equal trees plan equal
+/// capsules. Hidden directories and dependency/build output dirs are never
+/// project roots.
+fn sub_projects(cwd: &Path, primary: ProjectKind) -> Vec<(String, ProjectKind)> {
+    const NEVER_PROJECTS: &[&str] = &[
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        "out",
+        "vendor",
+        "__pycache__",
+    ];
+    let Ok(entries) = std::fs::read_dir(cwd) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(String, ProjectKind)> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_string();
+            if name.starts_with('.') || NEVER_PROJECTS.contains(&name.as_str()) {
+                return None;
+            }
+            let kind = detect_kind(&e.path());
+            (kind != ProjectKind::Unknown && kind != primary).then_some((name, kind))
+        })
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
 }
 
 /// Read the `scripts` object of `package.json` as name→command. Missing file or
@@ -361,12 +419,17 @@ fn plan_node_script(
 }
 
 /// The reproduce line: the present checks' commands joined with `&&`, so the user
-/// can paste one line to re-run exactly what the capsule ran.
+/// can paste one line to re-run exactly what the capsule ran. A sub-project's
+/// command is wrapped `(cd <dir> && …)` so the pasted line runs it where the
+/// capsule did.
 fn reproduce_line(checks: &[PlannedCheck]) -> Vec<String> {
-    let cmds: Vec<&str> = checks
+    let cmds: Vec<String> = checks
         .iter()
         .filter(|c| c.present)
-        .map(|c| c.command.as_str())
+        .map(|c| match &c.subdir {
+            Some(dir) => format!("(cd {dir} && {})", c.command),
+            None => c.command.clone(),
+        })
         .collect();
     if cmds.is_empty() {
         Vec::new()
@@ -386,14 +449,19 @@ pub async fn collect(cwd: &Path) -> ProofCapsule {
     for p in &planned {
         if !p.present {
             checks.push(CheckResult {
-                name: p.name.to_string(),
+                name: p.name.clone(),
                 command: String::new(),
                 outcome: Outcome::Skipped,
                 tail: String::new(),
             });
             continue;
         }
-        checks.push(run_check(p, cwd).await);
+        // A monorepo sub-project's check runs inside its own directory.
+        let run_dir = match &p.subdir {
+            Some(dir) => cwd.join(dir),
+            None => cwd.to_path_buf(),
+        };
+        checks.push(run_check(p, &run_dir).await);
     }
 
     ProofCapsule {

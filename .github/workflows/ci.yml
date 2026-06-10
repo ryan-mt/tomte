@@ -88,3 +88,20 @@ jobs:
         with:
           key: release-smoke-linux
       - run: make smoke
+
+  website:
+    name: website (lint + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tomte-website
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tomte-website/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build

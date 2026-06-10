@@ -24,7 +24,7 @@ export const site = {
   license: "MIT",
   language: "Rust",
   /** Canonical version; the UI prefers linking to the latest release. */
-  version: "0.0.3",
+  version: "0.0.4",
   repoUrl: "https://github.com/ryan-mt/tomte",
   releasesUrl: "https://github.com/ryan-mt/tomte/releases",
   latestReleaseUrl: "https://github.com/ryan-mt/tomte/releases/latest",
@@ -169,7 +169,7 @@ export const vitals: Vital[] = [
     excerpt: [
       "# Handoff — your/repo",
       "## Where the tree stands",
-      "- branch `0.0.3` · working tree clean",
+      "- branch `0.0.4` · working tree clean",
       "## Why things are the way they are",
       "- `parser.rs:88` — Err, not panic",
       "- drift watch: 4 hold · 2 healed · 1 needs eyes",

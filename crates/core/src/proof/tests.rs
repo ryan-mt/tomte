@@ -38,7 +38,7 @@ fn python_kind_detected_from_any_of_its_manifests() {
 #[test]
 fn rust_plans_all_four_cargo_checks() {
     let checks = plan_for_kind(ProjectKind::Rust, None, &|_| false);
-    let names: Vec<_> = checks.iter().map(|c| c.name).collect();
+    let names: Vec<_> = checks.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["test", "typecheck", "lint", "build"]);
     assert!(checks.iter().all(|c| c.present));
     assert_eq!(checks[0].command, "cargo test");
@@ -97,7 +97,7 @@ fn node_with_no_scripts_reports_all_four_unverified() {
 #[test]
 fn go_plans_test_vet_build() {
     let checks = plan_for_kind(ProjectKind::Go, None, &|_| false);
-    let names: Vec<_> = checks.iter().map(|c| c.name).collect();
+    let names: Vec<_> = checks.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["test", "lint", "build"]);
     assert_eq!(checks[0].command, "go test ./...");
     assert_eq!(checks[1].command, "go vet ./...");
@@ -135,6 +135,65 @@ fn reproduce_line_joins_only_present_checks() {
     ];
     assert_eq!(reproduce_line(&checks), vec!["cargo test && cargo build"]);
     assert!(reproduce_line(&[PlannedCheck::missing("test")]).is_empty());
+
+    // A sub-project's command is wrapped so the pasted line runs it in place.
+    let mut sub = PlannedCheck::present("website:lint", "npm run lint");
+    sub.subdir = Some("website".into());
+    assert_eq!(
+        reproduce_line(&[PlannedCheck::present("test", "cargo test"), sub]),
+        vec!["cargo test && (cd website && npm run lint)"]
+    );
+}
+
+// Monorepo: an immediate sub-directory of a *different* ecosystem is planned
+// too (prefixed, run in its dir); same-kind members, hidden dirs, and
+// dependency/build dirs are left to the root toolchain.
+#[test]
+fn plan_checks_appends_different_kind_sub_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    std::fs::write(p.join("Cargo.toml"), "[package]").unwrap();
+    // A Node site beside the Rust workspace → planned, prefixed.
+    std::fs::create_dir(p.join("website")).unwrap();
+    std::fs::write(
+        p.join("website").join("package.json"),
+        r#"{"scripts":{"lint":"eslint","build":"next build"}}"#,
+    )
+    .unwrap();
+    // Same-kind sub-project → covered by the root cargo workspace, not re-run.
+    std::fs::create_dir(p.join("member")).unwrap();
+    std::fs::write(p.join("member").join("Cargo.toml"), "[package]").unwrap();
+    // Never project roots: hidden and dependency/build output dirs.
+    for never in [".hidden", "node_modules", "target"] {
+        std::fs::create_dir(p.join(never)).unwrap();
+        std::fs::write(p.join(never).join("package.json"), "{}").unwrap();
+    }
+
+    let (kind, checks) = plan_checks(p);
+    assert_eq!(kind, ProjectKind::Rust);
+    let names: Vec<_> = checks.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "test",
+            "typecheck",
+            "lint",
+            "build",
+            "website:test",
+            "website:typecheck",
+            "website:lint",
+            "website:build",
+        ]
+    );
+    let lint = checks.iter().find(|c| c.name == "website:lint").unwrap();
+    assert!(lint.present);
+    assert_eq!(lint.command, "npm run lint");
+    assert_eq!(lint.subdir.as_deref(), Some("website"));
+    // The website has no test script → honest "not verified", never dropped.
+    let test = checks.iter().find(|c| c.name == "website:test").unwrap();
+    assert!(!test.present);
+    // Root checks run at the root.
+    assert!(checks.iter().take(4).all(|c| c.subdir.is_none()));
 }
 
 #[test]
