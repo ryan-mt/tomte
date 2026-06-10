@@ -104,12 +104,20 @@ enum Command {
     },
     /// Show the decision trail: why earlier changes were made, and by which
     /// model. `tomte why <file:line>` explains one location; `tomte why --all`
-    /// lists the whole trail. The agent records it with the `record_decision`
-    /// tool, and it survives across sessions and model switches.
+    /// lists the whole trail; `tomte why diff [base]` reviews the *reasoning*
+    /// against a diff range — new decisions, superseded ones, and changed
+    /// files with no recorded why. The agent records the trail with the
+    /// `record_decision` tool, and it survives across sessions and model
+    /// switches.
     Why {
-        /// Code location to explain, e.g. `src/parser.rs:88`. Omit (or pass
+        /// Code location to explain, e.g. `src/parser.rs:88` — or the word
+        /// `diff` to review the reasoning against a base rev. Omit (or pass
         /// `--all`) to list the whole trail.
         loc: Option<String>,
+        /// With `diff`: the base rev (e.g. `main`, `origin/main`, a commit).
+        /// Omitted, the first of origin/main · main · origin/master · master
+        /// that resolves is used.
+        base: Option<String>,
         /// List every recorded decision.
         #[arg(long)]
         all: bool,
@@ -484,11 +492,12 @@ async fn async_main() -> Result<()> {
         }) => commands::config_cmd::run(show, set_model, set_reasoning).await,
         Some(Command::Why {
             loc,
+            base,
             all,
             reconcile,
             json,
             cwd,
-        }) => commands::why::run(loc, all, reconcile, json, cwd).await,
+        }) => commands::why::run(loc, base, all, reconcile, json, cwd).await,
         Some(Command::Blame { file, json, cwd }) => commands::blame::run(file, json, cwd).await,
         Some(Command::Cost { session, cwd }) => commands::cost::run(session, cwd).await,
         Some(Command::Hooks { action }) => commands::hooks::run(action).await,
@@ -692,6 +701,27 @@ mod tests {
         let off = Cli::try_parse_from(["tomte", "why", "src/x.rs:1"]).unwrap();
         match off.command {
             Some(Command::Why { json, .. }) => assert!(!json, "why defaults to rendered text"),
+            other => panic!("expected why command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn why_diff_parses_with_and_without_a_base() {
+        let with_base = Cli::try_parse_from(["tomte", "why", "diff", "origin/main"]).unwrap();
+        match with_base.command {
+            Some(Command::Why { loc, base, .. }) => {
+                assert_eq!(loc.as_deref(), Some("diff"));
+                assert_eq!(base.as_deref(), Some("origin/main"));
+            }
+            other => panic!("expected why command, got {other:?}"),
+        }
+
+        let bare = Cli::try_parse_from(["tomte", "why", "diff"]).unwrap();
+        match bare.command {
+            Some(Command::Why { loc, base, .. }) => {
+                assert_eq!(loc.as_deref(), Some("diff"));
+                assert!(base.is_none(), "base defaults to auto-detection");
+            }
             other => panic!("expected why command, got {other:?}"),
         }
     }

@@ -36,7 +36,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  /init               create CLAUDE.md for this project\n  \
                  /memory             show CLAUDE.md\n  \
                  /diff               show `git diff` for the working tree\n  \
-                 /why [loc]          decision trail: why changes were made (--all, --reconcile)\n  \
+                 /why [loc]          decision trail: why changes were made (--all, --reconcile, diff [base])\n  \
                  /blame <file>       the decision trail for one file (greppable)\n  \
                  /twin [--rebuild]   the Repo Twin: five verifiable indexes of this repo\n  \
                  /pulse              repo pulse: files most likely to break next, scored from the twin\n  \

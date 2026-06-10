@@ -34,6 +34,7 @@ pub mod subagent;
 mod tool_args;
 pub mod tools;
 pub mod usage;
+pub mod why_diff;
 
 #[cfg(test)]
 mod reasoning_wire_tests;

@@ -202,7 +202,7 @@ fn house_rules_from(records: Vec<DecisionRecord>, file: &str) -> Vec<String> {
 
 /// Normalize a file path for trail matching: trim and fold `\` to `/`, so a
 /// query typed with Windows separators lines up with the forward-slash `loc`s.
-fn normalize_file(file: &str) -> String {
+pub(crate) fn normalize_file(file: &str) -> String {
     file.trim().replace('\\', "/")
 }
 
@@ -211,7 +211,7 @@ fn normalize_file(file: &str) -> String {
 /// Split a `loc` into its file part and an optional 1-based line number. A
 /// trailing `:<digits>` is the line; anything else is a file-only location.
 /// `src/a.rs:88` -> (`src/a.rs`, Some(88)); `src/a.rs` -> (`src/a.rs`, None).
-fn parse_loc(loc: &str) -> (&str, Option<usize>) {
+pub(crate) fn parse_loc(loc: &str) -> (&str, Option<usize>) {
     match loc.rsplit_once(':') {
         Some((file, line)) if !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit()) => {
             match line.parse::<usize>() {

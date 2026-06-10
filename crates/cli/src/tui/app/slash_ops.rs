@@ -347,7 +347,8 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
             // Read-only view of the decision trail (Pillar 2): why earlier
             // changes were made, and by which model. No arg or `--all` lists
             // everything; `--reconcile` runs Drift Watch (audits the trail
-            // against the tree); otherwise `arg` narrows to one `file:line`.
+            // against the tree); `diff [base]` reviews the reasoning against a
+            // diff range; otherwise `arg` narrows to one `file:line`.
             let report = match arg.trim() {
                 "" | "--all" => {
                     tomte_core::decisions::render_all(&tomte_core::decisions::load(&app.cwd))
@@ -355,6 +356,14 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
                 "--reconcile" => tomte_core::decisions::render_reconcile(
                     &tomte_core::decisions::reconcile(&app.cwd),
                 ),
+                d if d == "diff" || d.starts_with("diff ") => {
+                    let base = d.strip_prefix("diff").unwrap_or("").trim();
+                    let base = (!base.is_empty()).then_some(base);
+                    match tomte_core::why_diff::collect(&app.cwd, base) {
+                        Ok(r) => tomte_core::why_diff::render(&r),
+                        Err(e) => format!("why diff: {e}"),
+                    }
+                }
                 loc => tomte_core::decisions::render_for_loc(
                     &tomte_core::decisions::for_loc(&app.cwd, loc),
                     loc,
