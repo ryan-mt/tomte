@@ -553,7 +553,8 @@ fn committed_end_holds_at_first_inflight_tool() {
         "while busy, nothing past the first in-flight tool may commit"
     );
     // Idle: turn end settles every tool (see settle_inflight_tools), so a
-    // None here is already-settled territory — everything commits.
+    // lingering None should not exist — but if one does, the boundary still
+    // holds there rather than freeze "working…" into scrollback.
     assert_eq!(committed_end(&blocks, false), 2);
 }
 
