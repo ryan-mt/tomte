@@ -334,24 +334,32 @@ pub async fn main_loop(
             finish_hatch(&mut app);
         }
 
-        // Batch this iteration's terminal writes — the scrollback commit and
-        // the frame diff — into one synchronized update (DECSET 2026) so the
-        // terminal paints them atomically. Without it a fast stream's big
-        // diffs (auto-follow shifts the whole chat region every frame) paint
-        // mid-write as tearing/shimmer. Best-effort: terminals without the
-        // mode ignore the markers, and errors are swallowed so a legacy
-        // console can't wedge the loop.
-        let _ = execute!(terminal.backend_mut(), BeginSynchronizedUpdate);
-
-        // Inline mode (Pillar 4): push finished turns into the terminal's native
-        // scrollback before drawing, so the slim live viewport only ever holds
-        // the active turn. A no-op in alt-screen mode.
-        if app.render_mode == RenderMode::Inline && app.screen == Screen::Chat {
-            commit_finished_blocks(&mut app, terminal);
-        }
-
+        // Paint only when the frame budget (or idle/input latency) says so.
+        // The loop itself can iterate hundreds of times a second under an
+        // agent-event storm (each batch wakes it), so everything that writes
+        // to the terminal — the synchronized-update markers, the scrollback
+        // commit, the frame diff — must live inside this gate. Emitting the
+        // Begin/End markers on every iteration flooded the terminal with
+        // escape writes between draws, which read as whole-app lag (and made
+        // native scrollback unusable) during multi-agent turns.
+        let will_draw = !app.busy || input_dirty || last_draw.elapsed() >= frame_budget;
         let mut draw_result = Ok(());
-        if !app.busy || input_dirty || last_draw.elapsed() >= frame_budget {
+        if will_draw {
+            // Batch this frame's terminal writes — the scrollback commit and
+            // the frame diff — into one synchronized update (DECSET 2026) so
+            // the terminal paints them atomically. Without it a fast stream's
+            // big diffs paint mid-write as tearing/shimmer. Best-effort:
+            // terminals without the mode ignore the markers, and errors are
+            // swallowed so a legacy console can't wedge the loop.
+            let _ = execute!(terminal.backend_mut(), BeginSynchronizedUpdate);
+
+            // Inline mode (Pillar 4): push finished turns into the terminal's
+            // native scrollback before drawing, so the slim live viewport only
+            // ever holds the active turn. A no-op in alt-screen mode.
+            if app.render_mode == RenderMode::Inline && app.screen == Screen::Chat {
+                commit_finished_blocks(&mut app, terminal);
+            }
+
             draw_result = terminal
                 .draw(|f| {
                     app.last_width = f.area().width;
@@ -382,11 +390,11 @@ pub async fn main_loop(
             last_draw = std::time::Instant::now();
             dirty = false;
             input_dirty = false;
+            // Always close the synchronized update — even when the draw failed
+            // — before propagating the error, so the terminal is never left
+            // holding frames.
+            let _ = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
         }
-        // Always close the synchronized update — even when the draw failed —
-        // before propagating the error, so the terminal is never left holding
-        // frames.
-        let _ = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
         draw_result?;
 
         // While a deferred frame is pending (busy + inside the budget), wake on
@@ -622,15 +630,25 @@ pub fn finish_hatch(app: &mut App) {
 /// renders the active turn. "Finished" = every block but the last while a turn
 /// streams (the last may still grow); when idle, every block. Already-committed
 /// blocks are tracked by `app.committed_blocks`.
-/// Index one past the last block safe to push to scrollback this tick: while a
-/// turn streams, the final block may still grow, so it stays live; when idle,
-/// every block is finished. Split out as a pure fn for testing.
-pub fn committed_end(blocks_len: usize, busy: bool) -> usize {
-    if busy {
-        blocks_len.saturating_sub(1)
+/// Index one past the last block safe to push to scrollback this tick. While a
+/// turn streams, the final block may still grow, so it stays live — and so does
+/// everything from the first still-running tool block on: parallel tool calls
+/// (a `dispatch_agent` fleet, concurrent shells) leave in-flight Tool blocks
+/// BEFORE the last block, and committing one freezes its "working…" row into
+/// native scrollback forever (`insert_before` can never repaint it, so the
+/// transcript lies about finished work). When idle, every block is finished
+/// (turn end settles any still-open tool — see `settle_inflight_tools`).
+/// Split out as a pure fn for testing.
+pub fn committed_end(blocks: &[Block], busy: bool) -> usize {
+    let cap = if busy {
+        blocks.len().saturating_sub(1)
     } else {
-        blocks_len
-    }
+        blocks.len()
+    };
+    blocks[..cap]
+        .iter()
+        .position(|b| matches!(b, Block::Tool { output: None, .. }))
+        .unwrap_or(cap)
 }
 
 pub fn commit_finished_blocks<B: ratatui::backend::Backend>(
@@ -649,7 +667,7 @@ pub fn commit_finished_blocks<B: ratatui::backend::Backend>(
     if app.blocks.len() == 1 && matches!(app.blocks.first(), Some(Block::Welcome)) {
         return;
     }
-    let end = committed_end(app.blocks.len(), app.busy);
+    let end = committed_end(&app.blocks, app.busy);
     if app.committed_blocks >= end {
         return;
     }

@@ -153,6 +153,10 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             collapse_reasoning_into_thought(app);
             app.is_thinking = false;
             finish_open_assistant_block(&mut app.blocks);
+            // No more results can arrive: settle any tool block still showing
+            // "working…" so it never freezes that way in the transcript (or,
+            // inline, in native scrollback).
+            settle_inflight_tools(&mut app.blocks);
             // SOUL Pillar 4: leave a tidy "left in order" receipt of what this
             // turn changed (files / tests / why), pushed as the turn's last block.
             // A pure Q&A turn that changed nothing produces no receipt.
@@ -305,6 +309,9 @@ pub fn apply_agent_event(app: &mut App, ev: AgentEvent) {
             app.status_line.clear();
             app.current_turn = None;
             app.subagents.clear();
+            // The errored turn delivers no further tool results — settle any
+            // block still showing "working…".
+            settle_inflight_tools(&mut app.blocks);
         }
         AgentEvent::FallbackSwitched { from, to, .. } => {
             // Adopt the fallback as the session's model so the status bar is

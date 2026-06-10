@@ -40,7 +40,7 @@ mod todo_panel_tests {
             item("completed four", TodoStatus::Completed),
         ];
 
-        let visible = visible_todo_indices(&todos, &HashSet::new());
+        let visible = visible_todo_indices(&todos, &HashSet::new(), TODO_VISIBLE_ROWS);
 
         assert_eq!(visible, vec![3, 1, 4, 6, 0, 2]);
         assert_eq!(
@@ -63,7 +63,7 @@ mod todo_panel_tests {
         ];
         let recent_completed = HashSet::from([6usize]);
 
-        let visible = visible_todo_indices(&todos, &recent_completed);
+        let visible = visible_todo_indices(&todos, &recent_completed, TODO_VISIBLE_ROWS);
 
         assert_eq!(visible, vec![6, 2, 0, 1, 3, 4]);
         assert_eq!(
@@ -79,9 +79,32 @@ mod todo_panel_tests {
             .collect::<Vec<_>>();
         let recent_completed = HashSet::from([5usize, 2usize, 4usize, 1usize, 3usize, 0usize]);
 
-        let visible = visible_todo_indices(&todos, &recent_completed);
+        let visible = visible_todo_indices(&todos, &recent_completed, TODO_VISIBLE_ROWS);
 
         assert_eq!(visible, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn truncated_todos_respect_a_smaller_row_grant() {
+        // The viewport budget can grant the panel fewer than the 6-row ideal
+        // (see `split_frame`); the visible set must shrink to the grant so the
+        // hidden-summary row still fits on screen.
+        let todos = vec![
+            item("completed one", TodoStatus::Completed),
+            item("pending one", TodoStatus::Pending),
+            item("active one", TodoStatus::InProgress),
+            item("pending two", TodoStatus::Pending),
+            item("pending three", TodoStatus::Pending),
+        ];
+
+        let visible = visible_todo_indices(&todos, &HashSet::new(), 2);
+        assert_eq!(visible, vec![2, 1]);
+        assert_eq!(
+            hidden_todos_summary(&todos, &visible),
+            Some("… +2 pending, 1 completed".to_string())
+        );
+
+        assert!(visible_todo_indices(&todos, &HashSet::new(), 0).is_empty());
     }
 
     #[test]

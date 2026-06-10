@@ -506,10 +506,77 @@ fn render_mode_resolves_env_and_config() {
 
 #[test]
 fn committed_end_keeps_streaming_block_while_busy() {
-    assert_eq!(committed_end(5, true), 4);
-    assert_eq!(committed_end(5, false), 5);
-    assert_eq!(committed_end(0, true), 0);
-    assert_eq!(committed_end(0, false), 0);
+    let tool = |output: Option<&str>| Block::Tool {
+        call_id: "c".into(),
+        name: "run_shell".into(),
+        args: String::new(),
+        output: output.map(str::to_string),
+        error: false,
+        preflight: None,
+    };
+    let finished = vec![
+        Block::User("q".into()),
+        tool(Some("ok")),
+        tool(Some("ok")),
+        tool(Some("ok")),
+        streaming_assistant("live", false),
+    ];
+    assert_eq!(committed_end(&finished, true), 4);
+    assert_eq!(committed_end(&finished, false), 5);
+    assert_eq!(committed_end(&[], true), 0);
+    assert_eq!(committed_end(&[], false), 0);
+}
+
+#[test]
+fn committed_end_holds_at_first_inflight_tool() {
+    // Parallel tool calls: an in-flight tool (output: None) sits BEFORE later
+    // finished blocks. Committing it would freeze "working…" into native
+    // scrollback forever, so the boundary must stop there while busy.
+    let tool = |output: Option<&str>| Block::Tool {
+        call_id: "c".into(),
+        name: "dispatch_agent".into(),
+        args: String::new(),
+        output: output.map(str::to_string),
+        error: false,
+        preflight: None,
+    };
+    let blocks = vec![
+        Block::User("q".into()),
+        tool(Some("done")),
+        tool(None), // still running
+        tool(Some("done")),
+        streaming_assistant("live", false),
+    ];
+    assert_eq!(
+        committed_end(&blocks, true),
+        2,
+        "while busy, nothing past the first in-flight tool may commit"
+    );
+    // Idle: turn end settles every tool (see settle_inflight_tools), so a
+    // None here is already-settled territory — everything commits.
+    assert_eq!(committed_end(&blocks, false), 2);
+}
+
+#[test]
+fn turn_end_settles_inflight_tool_blocks() {
+    // A turn that ends (complete / error / esc-interrupt) delivers no further
+    // tool results; an open tool block left behind renders "working…" forever.
+    let mut app = App::new();
+    apply_agent_event(
+        &mut app,
+        AgentEvent::ToolCallStarted {
+            name: "run_shell".to_string(),
+            call_id: "c1".to_string(),
+        },
+    );
+    apply_agent_event(&mut app, AgentEvent::TurnComplete);
+    let settled = app.blocks.iter().any(|b| {
+        matches!(b, Block::Tool { output: Some(o), error: true, .. } if o.contains("interrupted"))
+    });
+    assert!(
+        settled,
+        "TurnComplete must settle the open tool block instead of leaving 'working…'"
+    );
 }
 
 #[test]
@@ -543,6 +610,64 @@ fn render_inline_shows_live_tail_not_committed_history() {
     assert!(
         !dump.contains("OLDANSWERMARK") && !dump.contains("OLDUSERMARK"),
         "committed history must NOT be redrawn in the viewport (it lives in scrollback)"
+    );
+}
+
+#[test]
+fn inline_busy_panels_never_clip_input_or_status() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use tomte_core::tools::TodoStatus;
+    // The worst-case live region from a real multi-agent turn: spinner (1) +
+    // queue (2) + fleet (4) + todos (7) + input (3) + status (1) = 18 rows,
+    // more than the whole 15-row inline viewport. The budget in `split_frame`
+    // must clip the PANELS, never the input box or status line — clipping
+    // those made the app look frozen (typing echoed nowhere).
+    let mut app = App::new();
+    app.render_mode = RenderMode::Inline;
+    app.busy = true;
+    app.turn_started_at = Some(std::time::Instant::now());
+    app.blocks = vec![streaming_assistant("live", false)];
+    app.message_queue = vec!["queued message".into()];
+    for i in 0..3 {
+        app.subagents.push(SubagentView {
+            id: format!("a{i}"),
+            kind: "Explore".into(),
+            prompt: format!("review area {i}"),
+            activity: "reading files".into(),
+            tokens: 1000,
+            started_at: std::time::Instant::now(),
+            done: None,
+            expanded: false,
+        });
+    }
+    app.session_todos = (0..7)
+        .map(|i| super::app_test_support::todo(&format!("task {i}"), TodoStatus::Pending))
+        .collect();
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 15)).unwrap();
+    terminal
+        .draw(|f| crate::tui::ui::render_inline(f, &mut app))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let row = |y: u16| -> String {
+        (0..80)
+            .map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+            .collect()
+    };
+    let dump: String = (0..15).map(|y| row(y) + "\n").collect();
+
+    assert!(
+        dump.contains("what shall we build today?"),
+        "the input row must survive the panel squeeze:\n{dump}"
+    );
+    assert!(
+        row(14).contains(&app.config.model),
+        "the status line must survive as the last row:\n{dump}"
+    );
+    assert!(
+        dump.contains("Sub-agents") && dump.contains("tasks (") && dump.contains("queued"),
+        "the panels still render (clipped, not dropped):\n{dump}"
     );
 }
 

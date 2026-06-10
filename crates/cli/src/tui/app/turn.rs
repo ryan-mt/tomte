@@ -171,6 +171,10 @@ pub async fn cancel_current_turn(app: &mut App) {
     app.status_line.clear();
     // The aborted turn won't emit TurnComplete, so collapse the fleet view here.
     app.subagents.clear();
+    // …and settle any tool block still showing "working…": the aborted turn
+    // will never deliver its result, and the inline renderer would otherwise
+    // commit the frozen row into native scrollback.
+    settle_inflight_tools(&mut app.blocks);
     if let Some(goal) = app.active_goal.take() {
         app.pending_goal_replacement = None;
         remove_pending_goal_continuations(&mut app.message_queue);

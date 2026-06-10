@@ -45,16 +45,34 @@ mod tests;
 /// inline viewport lets the live tail shrink to nothing.
 fn split_frame(f: &Frame, app: &App, chat_min: u16) -> std::rc::Rc<[Rect]> {
     let spinner_h: u16 = if app.busy || app.compacting { 1 } else { 0 };
+    let input_h = input_height(app);
+    // The optional panels must never squeeze the input or status rows out of
+    // the frame: a busy multi-agent turn wants spinner + queue + fleet + todos
+    // ≈ 13+ rows on its own, more than the whole 13–16-row inline viewport,
+    // and the unbudgeted layout answered by clipping the input box and status
+    // line (the app then LOOKS frozen — typing echoes nowhere). Reserve the
+    // always-on rows first; queue → fleet → todos share what's left, each
+    // clipped to the remaining budget.
+    let reserved = chat_min
+        .saturating_add(spinner_h)
+        .saturating_add(input_h)
+        .saturating_add(1); // status line
+    let mut budget = f.area().height.saturating_sub(reserved);
+    let queued_h = queued_height(app).min(budget);
+    budget = budget.saturating_sub(queued_h);
+    let fleet_h = fleet_height(app).min(budget);
+    budget = budget.saturating_sub(fleet_h);
+    let todos_h = todos_height(app).min(budget);
     Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(chat_min),              // chat            [0]
-            Constraint::Length(spinner_h),          // spinner         [1]
-            Constraint::Length(queued_height(app)), // queued messages [2]
-            Constraint::Length(fleet_height(app)),  // sub-agent fleet [3]
-            Constraint::Length(todos_height(app)),  // todos           [4]
-            Constraint::Length(input_height(app)),  // input           [5]
-            Constraint::Length(1),                  // status line     [6]
+            Constraint::Min(chat_min),     // chat            [0]
+            Constraint::Length(spinner_h), // spinner         [1]
+            Constraint::Length(queued_h),  // queued messages [2]
+            Constraint::Length(fleet_h),   // sub-agent fleet [3]
+            Constraint::Length(todos_h),   // todos           [4]
+            Constraint::Length(input_h),   // input           [5]
+            Constraint::Length(1),         // status line     [6]
         ])
         .split(f.area())
 }
@@ -87,10 +105,13 @@ fn render_panels(f: &mut Frame, layout: &[Rect], app: &mut App) {
 /// everything: the hatch animation / corner buddy over the chat area, then the
 /// overlay picker and the approval/conscience modals anchored above the input.
 fn render_overlays(f: &mut Frame, layout: &[Rect], app: &mut App) {
-    // Buddy companion: the hatch animation takes over the chat area; otherwise
-    // the adopted pet tucks into the bottom-right corner.
+    // Buddy companion: the hatch animation centers over the WHOLE frame — the
+    // inline renderer's chat slot can be 0 rows tall while panels fill the
+    // viewport, which used to play the entire animation invisibly. The adopted
+    // pet still tucks into the chat area's bottom-right corner (and simply
+    // stays hidden when that slot is too small to host it).
     if app.hatch.is_some() {
-        render_hatch(f, layout[0], app);
+        render_hatch(f, f.area(), app);
     } else if let (Some(pet), false) = (app.buddy_pet, app.buddy_hidden) {
         render_corner_buddy(f, layout[0], pet);
     }

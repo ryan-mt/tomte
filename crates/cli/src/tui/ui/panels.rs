@@ -93,6 +93,15 @@ pub(super) fn render_queue(f: &mut Frame, area: Rect, app: &App) {
         ),
         chev,
     )));
+    // The granted area may be shorter than the ideal (viewport budget — see
+    // `split_frame`): drop message rows, never the summary, so the count
+    // ("N queued") survives instead of being clipped off the bottom.
+    let cap = area.height as usize;
+    if lines.len() > cap && cap > 0 {
+        let summary = lines.pop().expect("summary line just pushed");
+        lines.truncate(cap - 1);
+        lines.push(summary);
+    }
     f.render_widget(Paragraph::new(lines), area);
 }
 
@@ -157,13 +166,20 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
 
     let mut rows: Vec<(Rect, String)> = Vec::new();
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // Only the alt-screen renderer captures the mouse; promising "click to
+    // expand" in inline mode (where clicks never reach the app) is a lie.
+    let click_hint = if app.render_mode == crate::tui::app::RenderMode::AltScreen {
+        "   click a row to expand"
+    } else {
+        ""
+    };
     lines.push(Line::from(vec![
         Span::styled(" ⛓ ", accent),
         Span::styled(
             format!("Sub-agents · {running} running / {total}"),
             header_dim.add_modifier(Modifier::BOLD),
         ),
-        Span::styled("   click a row to expand", header_dim),
+        Span::styled(click_hint, header_dim),
     ]));
 
     for s in &app.subagents {
@@ -278,7 +294,18 @@ pub(super) fn render_todos(f: &mut Frame, area: Rect, app: &App) {
 
     let label_width = (area.width as usize).saturating_sub(4);
     let recent_completed = recent_completed_todo_indices(app);
-    let visible = visible_todo_indices(&app.session_todos, &recent_completed);
+    // The granted area may be shorter than the 6-row ideal (the viewport
+    // budget clips todos first — see `split_frame`): size the visible set to
+    // the grant so the "+N hidden" summary renders instead of being clipped
+    // off the panel's bottom.
+    let body_rows = (area.height as usize).saturating_sub(1); // minus header
+    let max_visible = if app.session_todos.len() > body_rows {
+        body_rows.saturating_sub(1) // leave a row for the hidden-summary line
+    } else {
+        body_rows
+    }
+    .min(TODO_VISIBLE_ROWS);
+    let visible = visible_todo_indices(&app.session_todos, &recent_completed, max_visible);
     let completed_ids: HashSet<&str> = app
         .session_todos
         .iter()
@@ -448,12 +475,16 @@ pub(super) fn recent_completed_todo_indices(app: &App) -> HashSet<usize> {
 pub(super) fn visible_todo_indices(
     todos: &[TodoItem],
     recent_completed: &HashSet<usize>,
+    max_rows: usize,
 ) -> Vec<usize> {
-    if todos.len() <= TODO_VISIBLE_ROWS {
+    if todos.len() <= max_rows {
         return (0..todos.len()).collect();
     }
+    if max_rows == 0 {
+        return Vec::new();
+    }
 
-    let mut indices = Vec::with_capacity(TODO_VISIBLE_ROWS);
+    let mut indices = Vec::with_capacity(max_rows);
     let mut recent_completed = recent_completed.iter().copied().collect::<Vec<_>>();
     recent_completed.sort_unstable();
     for idx in recent_completed {
@@ -462,7 +493,7 @@ pub(super) fn visible_todo_indices(
             Some(TodoStatus::Completed)
         ) {
             indices.push(idx);
-            if indices.len() == TODO_VISIBLE_ROWS {
+            if indices.len() == max_rows {
                 return indices;
             }
         }
@@ -476,7 +507,7 @@ pub(super) fn visible_todo_indices(
         for (idx, todo) in todos.iter().enumerate() {
             if todo.status == status && !indices.contains(&idx) {
                 indices.push(idx);
-                if indices.len() == TODO_VISIBLE_ROWS {
+                if indices.len() == max_rows {
                     return indices;
                 }
             }

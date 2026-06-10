@@ -37,6 +37,21 @@ pub fn find_tool_mut<'a>(blocks: &'a mut [Block], call_id: &str) -> Option<&'a m
         .find(|b| matches!(b, Block::Tool { call_id: c, .. } if c == call_id))
 }
 
+/// A turn that ended — completed, errored, or interrupted — can no longer
+/// deliver tool results, so settle any still-open tool block. Left as
+/// `output: None` it renders "working…" forever, and the inline renderer
+/// would commit that frozen row into native scrollback.
+pub fn settle_inflight_tools(blocks: &mut [Block]) {
+    for b in blocks.iter_mut() {
+        if let Block::Tool { output, error, .. } = b {
+            if output.is_none() {
+                *output = Some("interrupted — no result".to_string());
+                *error = true;
+            }
+        }
+    }
+}
+
 pub fn finish_open_assistant_block(blocks: &mut Vec<Block>) {
     let Some(i) = blocks
         .iter()
