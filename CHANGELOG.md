@@ -8,6 +8,7 @@
 - Moved `agent/usage.rs`'s trailing inline test module out to `agent/usage/tests.rs` (same convention as above). Pure structural move; suite count unchanged (910).
 - Moved `repo_twin/select.rs`'s trailing inline test module out to `repo_twin/select/tests.rs` (same convention). Pure structural move; suite count unchanged (910).
 - Moved `tui/ui/chat.rs`'s trailing inline test module out to `tui/ui/chat/tests.rs` (same convention). Pure structural move; CLI suite count unchanged (306).
+- Moved `main.rs`'s trailing 572-line inline test module out to `src/tests.rs` in the CLI crate (same convention), so the entrypoint file reads as just the clap surface + bootstrap again. Pure structural move; CLI suite count unchanged (306).
 - Repo hygiene: removed stray ad-hoc debug binaries (`test_contains.exe`/`.pdb`) from the repository root and added root-level `/*.exe` + `/*.pdb` ignore rules so a quick local compile can never ride into a commit. No tracked file matched the new patterns.
 
 ## 0.0.4
