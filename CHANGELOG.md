@@ -13,6 +13,7 @@
 
 ### Changed
 
+- Split the monolithic `tui/ui/tests.rs` (1.5k lines, 18 unrelated render areas in one file) into one file per test module under `tui/ui/tests/` — the parent file is now just the module list, and each render area (todo panel, spinner, markdown, preflight, diff, …) is findable by filename. Pure structural move; CLI suite count unchanged (308).
 - Moved `decisions.rs`'s trailing 369-line inline test module out to `decisions/tests.rs`, matching the repo's existing convention for large test modules (`danger.rs`, `config.rs`, `mcp.rs`, …). Pure structural move — test code is unchanged and the suite count is identical (910 core tests before and after).
 - Moved `agent/usage.rs`'s trailing inline test module out to `agent/usage/tests.rs` (same convention as above). Pure structural move; suite count unchanged (910).
 - Moved `repo_twin/select.rs`'s trailing inline test module out to `repo_twin/select/tests.rs` (same convention). Pure structural move; suite count unchanged (910).
