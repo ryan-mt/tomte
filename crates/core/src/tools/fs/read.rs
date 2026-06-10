@@ -53,6 +53,7 @@ Parameters:\n\
 \n\
 Output rules:\n\
 - Default cap is 2000 lines per call when `limit` is null; the response includes a truncation notice telling you how to read the next slice with `offset` + `limit`.\n\
+- A read is also capped by total size (~32k tokens): a file of long lines stops early — even under 2000 lines — with the same continue-with-`offset` notice, so one read can't flood your context. Reading only the slice you need (`offset` + `limit`, or `grep` first) is cheaper than a capped full read.\n\
 - Lines longer than 2000 characters are truncated and marked `… [line truncated]` so a minified file can't blow out your context window.\n\
 - An empty file returns a `<system-reminder>` warning instead of a blank string, so you don't assume the read failed.\n\
 - A Jupyter `.ipynb` read whole is rendered as cells (ids + text outputs; images omitted) instead of raw JSON, so you can cite a cell and edit it with `notebook_edit`; pass `offset`/`limit` to read the raw JSON slice instead.\n\
@@ -266,6 +267,37 @@ async fn record_successful_read(
         .insert(path.to_path_buf(), (meta.modified().ok(), Some(meta.len())));
 }
 
+/// Ceiling on a single read's rendered output, in bytes. The 2000-line and
+/// per-line caps bound line COUNT and width but not total size, so a file of
+/// long-but-under-2000-char lines could still dump hundreds of KB (≈hundreds of
+/// thousands of tokens) in one call. This keeps every read token-bounded
+/// regardless of line length, stopping early with a continue-with-offset notice.
+///
+/// Matches Claude Code's per-read output cap of 25000 tokens
+/// (`CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`): at tomte's ≈4-bytes/token
+/// estimate that is ~100 KB. A `TOMTE_READ_MAX_TOKENS` env override mirrors
+/// Claude Code's knob (see [`read_output_byte_cap`]).
+const READ_OUTPUT_TOKEN_CAP: usize = 25_000;
+/// Bytes/token estimate tomte uses elsewhere (`context_report::est`).
+const BYTES_PER_TOKEN: usize = 4;
+
+/// The effective per-read byte ceiling, honoring a `TOMTE_READ_MAX_TOKENS`
+/// override (clamped to a sane band) exactly as Claude Code honors
+/// `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`. Pure given `raw`, so the override
+/// parsing is unit-tested without touching process env.
+fn read_output_byte_cap_from(raw: Option<&str>) -> usize {
+    let tokens = raw
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|t| *t > 0)
+        .map(|t| t.clamp(2_000, 1_000_000))
+        .unwrap_or(READ_OUTPUT_TOKEN_CAP);
+    tokens.saturating_mul(BYTES_PER_TOKEN)
+}
+
+fn read_output_byte_cap() -> usize {
+    read_output_byte_cap_from(std::env::var("TOMTE_READ_MAX_TOKENS").ok().as_deref())
+}
+
 fn render_text_read(
     display_path: &str,
     text: &str,
@@ -283,23 +315,41 @@ fn render_text_read(
     let total = lines.len();
     let start = start.min(total);
     let end = start.saturating_add(limit).min(total);
+    let cap = read_output_byte_cap();
     let mut out = String::new();
+    // Line index after the last one we actually rendered. Equals `end` for a
+    // normal read; smaller when the byte cap stops us early.
+    let mut shown_end = end;
     for (i, line) in lines[start..end].iter().enumerate() {
-        out.push_str(&numbered_line(start + i + 1, line, false, max_line_chars));
+        let abs = start + i;
+        out.push_str(&numbered_line(abs + 1, line, false, max_line_chars));
+        // Stop once the rendered output passes the cap, so a file of long lines
+        // can't flood the context. Always emits at least one line; only stops
+        // when more lines remain in this window.
+        if out.len() >= cap && abs + 1 < end {
+            shown_end = abs + 1;
+            break;
+        }
     }
-    if end < total {
-        let remaining = total - end;
+    if shown_end < total {
+        let remaining = total - shown_end;
+        let cap_note = if shown_end < end {
+            " (stopped early to keep this read token-bounded)"
+        } else {
+            ""
+        };
         out.push_str(&format!(
-            "<system-reminder>Showing lines {}-{} of {}. {} more line(s) remain — call read_file again with offset={} and an explicit limit to continue.</system-reminder>\n",
+            "<system-reminder>Showing lines {}-{} of {}{}. {} more line(s) remain — call read_file again with offset={} and an explicit limit to continue.</system-reminder>\n",
             start + 1,
-            end,
+            shown_end,
             total,
+            cap_note,
             remaining,
-            end
+            shown_end
         ));
     }
     // A full read starts at the top and reaches the last line untruncated.
-    let fully_read = start == 0 && end >= total;
+    let fully_read = start == 0 && shown_end >= total;
     (out, fully_read)
 }
 
@@ -493,6 +543,7 @@ fn read_large_text_slice(
     let mut printed = 0usize;
     let mut hit_limit = false;
     let max_line_bytes = max_line_chars.saturating_mul(4);
+    let cap = read_output_byte_cap();
 
     while let Some((bytes, was_byte_truncated)) =
         read_next_line_capped(&mut reader, max_line_bytes)?
@@ -522,6 +573,16 @@ fn read_large_text_slice(
                 max_line_chars,
             ));
             printed += 1;
+            // Same token ceiling as the small-file path: stop once the rendered
+            // output passes the cap so a slice of long lines can't flood context.
+            if out.len() >= cap {
+                hit_limit = true;
+                out.push_str(&format!(
+                    "<system-reminder>Showing a slice of large file `{display_path}` (stopped early to keep this read token-bounded). More lines remain — call read_file again with offset={} and an explicit limit to continue.</system-reminder>\n",
+                    line_no + 1
+                ));
+                break;
+            }
         }
         line_no = line_no.saturating_add(1);
     }
@@ -584,4 +645,69 @@ fn bytes_to_line(bytes: &[u8], was_byte_truncated: bool) -> Result<String> {
         Err(e) => return Err(anyhow!("file is not valid UTF-8: {e}")),
     };
     Ok(text.trim_end_matches(['\r', '\n']).to_string())
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    #[test]
+    fn read_output_byte_cap_honors_and_clamps_override() {
+        // Default = Claude Code's 25k-token cap, in bytes.
+        assert_eq!(read_output_byte_cap_from(None), 25_000 * BYTES_PER_TOKEN);
+        // A valid override scales tokens → bytes.
+        assert_eq!(read_output_byte_cap_from(Some("10000")), 40_000);
+        // Out-of-band values clamp, never apply verbatim.
+        assert_eq!(
+            read_output_byte_cap_from(Some("500")),
+            2_000 * BYTES_PER_TOKEN
+        );
+        assert_eq!(
+            read_output_byte_cap_from(Some("9999999")),
+            1_000_000 * BYTES_PER_TOKEN
+        );
+        // Garbage / non-positive → the default, never a panic or zero.
+        for bad in ["", "  ", "abc", "0", "-5", "1e6"] {
+            assert_eq!(
+                read_output_byte_cap_from(Some(bad)),
+                25_000 * BYTES_PER_TOKEN,
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_text_read_stops_at_the_byte_cap_before_the_line_cap() {
+        // A file of many medium lines (well under 2000 lines and under 2000
+        // chars/line) still exceeds the byte cap, so the read must stop early —
+        // the token-bounding behavior that matches Claude Code's per-read cap.
+        let line = "x".repeat(180);
+        let text = std::iter::repeat_n(line.as_str(), 1500)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (out, fully_read) = render_text_read("big.rs", &text, 0, 2000, 2000);
+        assert!(!fully_read, "a capped read is not a full read");
+        assert!(
+            out.contains("stopped early to keep this read token-bounded"),
+            "missing cap notice"
+        );
+        assert!(out.contains("more line(s) remain"));
+        // Output stays near the cap, not the full ~270 KB the file would dump.
+        assert!(
+            out.len() < read_output_byte_cap_from(None) + 2_000,
+            "output not bounded: {} bytes",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn render_text_read_small_file_is_unchanged() {
+        // A normal small read completes fully with no cap notice (no regression).
+        let text = "fn a() {}\nfn b() {}\nfn c() {}";
+        let (out, fully_read) = render_text_read("small.rs", text, 0, 2000, 2000);
+        assert!(fully_read);
+        assert!(!out.contains("token-bounded"));
+        assert!(!out.contains("more line(s) remain"));
+        assert!(out.contains("fn c()"));
+    }
 }
