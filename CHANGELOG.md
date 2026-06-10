@@ -13,6 +13,7 @@
 
 ### Changed
 
+- Split `tools/search/grep.rs` (558 lines): the external-ripgrep backend moves to `grep/rg.rs` and the pure-Rust fallback walker (with its glob/type-filter and match helpers) to `grep/native.rs`, leaving the tool entry in `grep.rs`. Pure moves; core suite unchanged (912).
 - Split `mcp.rs` (643 lines): the per-OS process plumbing (process-group isolation, Windows program resolution) moves to `mcp/process.rs` and the JSON-RPC result handling (capped line reads, tool/resource result flattening, the untrusted-output fence, schema normalization) to `mcp/wire.rs`, leaving the client/state/spawn logic in `mcp.rs` beside the existing `adapter`/`resources` submodules. Pure moves; core suite unchanged (912).
 - Split `receipt.rs` (619 lines): the two output renderers move to `receipt/markdown.rs` and `receipt/html.rs` (with its escaping helper), leaving the receipt types and the collection logic in `receipt.rs`; names re-exported, callers unchanged. Pure moves; core suite unchanged (912).
 - Split `decisions.rs` (642 lines) into the `DecisionRecord` type plus five themed submodules — `decisions/store.rs` (append/load JSONL store, loc queries, anchors), `decisions/capture.rs` (the auto-capture answer parser), `decisions/reconcile.rs` (drift healing and the reconcile report), `decisions/render.rs` (the why/blame/reconcile cards), and `decisions/prompt.rs` (the AGENTS.md trail block) — with all names re-exported from `decisions::` so callers are unchanged. Pure moves; core suite unchanged (912).
