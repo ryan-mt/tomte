@@ -87,6 +87,14 @@ enum Command {
         /// (only meaningful in `workspace-write`; off by default).
         #[arg(long)]
         sandbox_allow_net: bool,
+        /// After the turn completes, collect a Proof Capsule — run the
+        /// project's own verification checks (test / typecheck / lint / build)
+        /// and append the ✅/❌ card, exiting non-zero when a check fails, so
+        /// an unattended run can be gated on "done means verified". With
+        /// `--output-format json` the capsule is the final line, tagged
+        /// `"kind":"proof_capsule"`.
+        #[arg(long)]
+        prove: bool,
     },
     /// Open the TUI with the resume-session picker open
     Resume,
@@ -505,6 +513,7 @@ async fn async_main() -> Result<()> {
             dangerously_skip_permissions,
             sandbox,
             sandbox_allow_net,
+            prove,
         }) => {
             commands::chat::run(
                 prompt.join(" "),
@@ -517,6 +526,7 @@ async fn async_main() -> Result<()> {
                 dangerously_skip_permissions,
                 sandbox,
                 sandbox_allow_net,
+                prove,
             )
             .await
         }

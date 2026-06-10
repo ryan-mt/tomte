@@ -23,6 +23,7 @@ pub async fn run(
     dangerously_skip_permissions: bool,
     sandbox: Option<String>,
     sandbox_allow_net: bool,
+    prove: bool,
 ) -> Result<()> {
     let mut prompt = prompt;
     // Prompt precedence: positional argument → --prompt-file → stdin.
@@ -179,11 +180,38 @@ pub async fn run(
             if let Some(message) = event_error {
                 anyhow::bail!(message);
             }
-            Ok(())
         }
-        Ok(Err(e)) => Err(event_error.map_or(e, anyhow::Error::msg)),
-        Err(e) => Err(anyhow::anyhow!("agent task failed: {e}")),
+        Ok(Err(e)) => return Err(event_error.map_or(e, anyhow::Error::msg)),
+        Err(e) => return Err(anyhow::anyhow!("agent task failed: {e}")),
     }
+
+    // --prove: the turn finished cleanly — now collect the Proof Capsule the
+    // same way `tomte prove` does (the CLI runs the project's own checks and
+    // records the real exit codes; the model is never in the loop). A failed
+    // turn above never reaches this point: it already exits non-zero.
+    if prove {
+        let here = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let capsule = tomte_core::proof::collect(&here).await;
+        if json_mode {
+            // One JSON line, tagged like the AgentEvent lines above so a
+            // line-by-line consumer can dispatch on `kind`.
+            if let Ok(line) = serde_json::to_string(
+                &serde_json::json!({ "kind": "proof_capsule", "capsule": capsule }),
+            ) {
+                writeln!(stdout, "{line}").ok();
+                stdout.flush().ok();
+            }
+        } else {
+            writeln!(stdout, "\n{}", capsule.render()).ok();
+            stdout.flush().ok();
+        }
+        // Same gate semantics as `tomte prove`: a failed or errored check makes
+        // the whole run non-zero so a scheduler/script can refuse unverified work.
+        if !capsule.verified() {
+            std::process::exit(1);
+        }
+    }
+    Ok(())
 }
 
 fn normalize_output_format(value: &str) -> Result<String> {

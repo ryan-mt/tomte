@@ -49,6 +49,21 @@ fn hidden_plan_mode_required_flag_parses_after_subcommand() {
 }
 
 #[test]
+fn chat_prove_flag_parses_and_defaults_off() {
+    let cli = Cli::try_parse_from(["tomte", "chat", "say ok", "--prove"]).unwrap();
+    match cli.command {
+        Some(Command::Chat { prove, .. }) => assert!(prove),
+        other => panic!("expected chat command, got {other:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["tomte", "chat", "say ok"]).unwrap();
+    match cli.command {
+        Some(Command::Chat { prove, .. }) => assert!(!prove),
+        other => panic!("expected chat command, got {other:?}"),
+    }
+}
+
+#[test]
 fn continue_flag_parses_with_no_subcommand() {
     let cli = Cli::try_parse_from(["tomte", "--continue"]).unwrap();
     assert!(cli.continue_session);

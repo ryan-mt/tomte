@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Added `--prove` to `tomte chat` — "done means verified" for unattended runs. After the headless turn completes cleanly, the CLI collects a Proof Capsule exactly like `tomte prove` (it runs the project's own test/typecheck/lint/build itself and records the real exit codes; the model is never in the loop) and appends the ✅/❌ card to the output. A failed or errored check makes the whole run exit non-zero, so a cron job or script can refuse work that isn't actually verified — and a turn that already failed never reaches the capsule (it was already non-zero). With `--output-format json` the capsule is emitted as the final line tagged `"kind":"proof_capsule"`, matching the per-line `kind` dispatch of the AgentEvent stream. Smoke-tested end-to-end: green path exits 0 with the card appended (text and JSON), a deliberately failing `npm test` flips the card to ❌ and the exit code to 1.
+
 ### Changed
 
 - Moved `decisions.rs`'s trailing 369-line inline test module out to `decisions/tests.rs`, matching the repo's existing convention for large test modules (`danger.rs`, `config.rs`, `mcp.rs`, …). Pure structural move — test code is unchanged and the suite count is identical (910 core tests before and after).
