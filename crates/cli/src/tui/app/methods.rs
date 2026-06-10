@@ -40,6 +40,7 @@ impl App {
             jump_to_bottom_hint: None,
             subagents: Vec::new(),
             subagent_rows: Vec::new(),
+            thought_rows: Vec::new(),
             status_line: String::new(),
             selection: None,
             last_buffer: None,

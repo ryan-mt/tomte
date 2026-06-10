@@ -283,6 +283,7 @@ pub fn rebuild_blocks_from_history(history: &[tomte_core::openai::InputItem]) ->
                         done: true,
                         thought_for_secs: None,
                         reasoning_started_at: None,
+                        thinking_expanded: false,
                     });
                 }
             }

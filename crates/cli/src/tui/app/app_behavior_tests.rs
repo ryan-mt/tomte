@@ -239,6 +239,7 @@ fn markdown_export_preserves_fences_and_details_markers() {
             done: true,
             thought_for_secs: None,
             reasoning_started_at: None,
+            thinking_expanded: false,
         },
         Block::Tool {
             call_id: "call_1".to_string(),
@@ -459,6 +460,7 @@ fn streaming_assistant(text: &str, done: bool) -> Block {
         done,
         thought_for_secs: None,
         reasoning_started_at: None,
+        thinking_expanded: false,
     }
 }
 

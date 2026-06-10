@@ -1289,6 +1289,7 @@ mod thinking_render_tests {
             done: false,
             thought_for_secs: None,
             reasoning_started_at: None,
+            thinking_expanded: false,
         }
     }
 
@@ -1350,6 +1351,7 @@ mod chat_cache_tests {
             done,
             thought_for_secs: None,
             reasoning_started_at: None,
+            thinking_expanded: false,
         }
     }
 

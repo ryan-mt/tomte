@@ -108,27 +108,73 @@ pub(super) fn render_chat(f: &mut Frame, area: Rect, app: &mut App) {
         stable_blocks: 0,
         stable_fp: 0,
         lines: Vec::new(),
+        thought_marks: Vec::new(),
     });
     if cache.stable_blocks < stable {
         // The boundary moved forward (a turn settled): wrap the newly stable
         // blocks once and append them; everything already cached is untouched.
-        let mut more = super::inline_blocks_to_lines(
+        let base_line = cache.lines.len();
+        let base_block = cache.stable_blocks;
+        let (mut more, more_marks) = super::inline_blocks_to_lines_marked(
             &app.blocks[cache.stable_blocks..stable],
             inner_width,
             expanded,
             app,
         );
+        // Rebase the slice-local marks onto absolute (cache line, block) coords,
+        // append-only just like `lines`.
+        for (line_off, block_off) in more_marks {
+            cache
+                .thought_marks
+                .push((base_line + line_off, base_block + block_off));
+        }
         cache.stable_fp = fold_fp(cache.stable_fp, &app.blocks[cache.stable_blocks..stable]);
         cache.stable_blocks = stable;
         cache.lines.append(&mut more);
     }
     // The live tail — the streaming turn — re-wraps every frame; it's bounded
     // by one turn, not the whole transcript.
-    let tail = super::inline_blocks_to_lines(&app.blocks[stable..], inner_width, expanded, app);
+    let (tail, tail_marks) =
+        super::inline_blocks_to_lines_marked(&app.blocks[stable..], inner_width, expanded, app);
     let (scroll, auto) = render_window(f, area, &cache.lines, &tail, app.auto_scroll, app.scroll);
     app.scroll = scroll;
     app.auto_scroll = auto;
+    // Map every visible collapsed-thought line to a screen rect so a left-click
+    // can toggle it open (click-to-expand). Tail marks sit after the cached
+    // prefix's lines/blocks.
+    let mut all_marks = cache.thought_marks.clone();
+    for (line_off, block_off) in tail_marks {
+        all_marks.push((cache.lines.len() + line_off, stable + block_off));
+    }
+    app.thought_rows = visible_thought_rows(&all_marks, scroll, area);
     app.chat_render_cache = Some(cache);
+}
+
+/// Screen rects for the collapsed-thought lines visible in the window, paired
+/// with their block index. Pure: maps each `(flat line index, block index)` mark
+/// to its on-screen row via the resolved `scroll`, dropping marks scrolled out
+/// of `area`. The whole row is the click target.
+fn visible_thought_rows(marks: &[(usize, usize)], scroll: u16, area: Rect) -> Vec<(Rect, usize)> {
+    let scroll = scroll as usize;
+    let height = area.height as usize;
+    marks
+        .iter()
+        .filter_map(|&(flat, block)| {
+            if flat < scroll || flat >= scroll + height {
+                return None;
+            }
+            let row = area.y + (flat - scroll) as u16;
+            Some((
+                Rect {
+                    x: area.x,
+                    y: row,
+                    width: area.width,
+                    height: 1,
+                },
+                block,
+            ))
+        })
+        .collect()
 }
 
 /// Index of the first LIVE block: while a turn streams, everything from the
@@ -184,6 +230,35 @@ fn welcome_fp(app: &App) -> u64 {
     h.finish()
 }
 
+/// Push reasoning text as muted-italic rows (a `✦` marker on the first row, a
+/// 2-col indent after). No trailing blank — the caller owns spacing. Shared by
+/// the live-thinking display and the click-to-expand of a collapsed thought, so
+/// both render identically.
+fn push_reasoning_lines(lines: &mut Vec<Line<'static>>, reasoning: &str, inner_width: usize) {
+    let think_style = Style::default()
+        .fg(palette::TEXT_MUTED)
+        .add_modifier(Modifier::ITALIC);
+    let marker_style = Style::default()
+        .fg(palette::INFO)
+        .add_modifier(Modifier::ITALIC);
+    let content_width = inner_width.saturating_sub(2);
+    let mut first = true;
+    for raw in reasoning.split('\n') {
+        for w in wrap(raw, content_width) {
+            let row = if first {
+                vec![
+                    Span::styled("✦ ", marker_style),
+                    Span::styled(w, think_style),
+                ]
+            } else {
+                vec![Span::raw("  "), Span::styled(w, think_style)]
+            };
+            first = false;
+            lines.push(Line::from(row));
+        }
+    }
+}
+
 /// Render a single `Assistant` block's wrapped lines into `lines`. Pulled out
 /// of `render_chat`'s main loop so the streaming fast path can re-wrap just the
 /// final block. A no-op for non-Assistant blocks.
@@ -197,43 +272,33 @@ pub(super) fn push_assistant_lines(
         text,
         reasoning,
         thought_for_secs,
+        thinking_expanded,
         ..
     } = block
     else {
         return;
     };
     // Live reasoning: while the model is thinking (reasoning is streaming and
-    // hasn't collapsed yet), show it muted + italic so the user can follow the
-    // thought, like Claude Code. It's cleared into the "Thought for Xs" line
-    // below the moment the answer starts, so the two are never shown together.
-    if show_thinking && !reasoning.is_empty() {
-        let think_style = Style::default()
-            .fg(palette::TEXT_MUTED)
-            .add_modifier(Modifier::ITALIC);
-        let marker_style = Style::default()
-            .fg(palette::INFO)
-            .add_modifier(Modifier::ITALIC);
-        let content_width = inner_width.saturating_sub(2);
-        let mut first = true;
-        for raw in reasoning.split('\n') {
-            for w in wrap(raw, content_width) {
-                let row = if first {
-                    vec![
-                        Span::styled("✦ ", marker_style),
-                        Span::styled(w, think_style),
-                    ]
-                } else {
-                    vec![Span::raw("  "), Span::styled(w, think_style)]
-                };
-                first = false;
-                lines.push(Line::from(row));
-            }
-        }
+    // hasn't collapsed into a "Thought for Xs" line yet), show it muted + italic
+    // so the user can follow the thought, like Claude Code. Gated on
+    // `thought_for_secs.is_none()` because the reasoning text is now RETAINED
+    // after collapse (for click-to-expand), so without this gate it would keep
+    // showing as "live" forever — the collapsed line + its expansion handle it.
+    if show_thinking && !reasoning.is_empty() && thought_for_secs.is_none() {
+        push_reasoning_lines(lines, reasoning, inner_width);
         lines.push(Line::raw(""));
     }
     // Compact "Thought for Xs" line once reasoning has completed for this
-    // assistant block — it replaces the live reasoning text above.
+    // assistant block — it replaces the live reasoning text above. This line is
+    // the click target (`thought_rows`): clicking it toggles `thinking_expanded`,
+    // which re-shows the retained reasoning right below it. Kept as the FIRST line
+    // of the block's output so the recorded mark offset lands on it.
     if let Some(secs) = thought_for_secs {
+        let hint = if *thinking_expanded {
+            "  (click to hide)"
+        } else {
+            "  (click to show)"
+        };
         lines.push(Line::from(vec![
             Span::styled("· ", Style::default().fg(palette::INFO)),
             Span::styled(
@@ -242,7 +307,16 @@ pub(super) fn push_assistant_lines(
                     .fg(palette::TEXT_MUTED)
                     .add_modifier(Modifier::ITALIC),
             ),
+            Span::styled(
+                hint.to_string(),
+                Style::default()
+                    .fg(palette::TEXT_MUTED)
+                    .add_modifier(Modifier::DIM),
+            ),
         ]));
+        if *thinking_expanded && !reasoning.is_empty() {
+            push_reasoning_lines(lines, reasoning, inner_width);
+        }
         lines.push(Line::raw(""));
     }
     // Raw reasoning text is intentionally suppressed in chat history.
@@ -317,16 +391,20 @@ pub(super) fn block_fingerprint(block: &Block) -> usize {
             reasoning,
             thought_for_secs,
             done,
+            thinking_expanded,
             ..
         } => {
             // Multiply each field by a distinct prime so e.g. a block that
             // moves bytes from `reasoning` into `text` still produces a
             // different fingerprint instead of an accidental cache hit.
+            // `thinking_expanded` is included so clicking a collapsed thought
+            // open/closed re-wraps that block instead of hitting a stale cache.
             text.len()
                 .wrapping_mul(31)
                 .wrapping_add(reasoning.len().wrapping_mul(17))
                 .wrapping_add(thought_for_secs.unwrap_or(0) as usize)
                 .wrapping_add(if *done { 1 } else { 0 })
+                .wrapping_add(if *thinking_expanded { 13 } else { 0 })
         }
         Block::Tool {
             args,
@@ -413,8 +491,32 @@ fn resolve_scroll(
 
 #[cfg(test)]
 mod tests {
-    use super::{read_group_crosses, resolve_scroll, stable_boundary};
+    use super::{read_group_crosses, resolve_scroll, stable_boundary, visible_thought_rows};
     use crate::tui::app::Block;
+
+    fn collapsed_thought(reasoning: &str, expanded: bool) -> Block {
+        Block::Assistant {
+            text: "the answer".into(),
+            reasoning: reasoning.into(),
+            done: true,
+            thought_for_secs: Some(4),
+            reasoning_started_at: None,
+            thinking_expanded: expanded,
+        }
+    }
+
+    fn lines_text(lines: &[ratatui::text::Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     fn read_tool(id: &str) -> Block {
         Block::Tool {
@@ -501,5 +603,58 @@ mod tests {
     fn a_parked_scroll_is_clamped_to_max() {
         // A stale cur_scroll past the new max clamps down (no overscroll).
         assert_eq!(resolve_scroll(50, 22, false, 40), (30, true));
+    }
+
+    #[test]
+    fn visible_thought_rows_maps_only_on_screen_marks() {
+        use ratatui::layout::Rect;
+        // Chat area at y=2, height 5 → flat lines [scroll, scroll+5) are visible.
+        let area = Rect::new(0, 2, 40, 5);
+        let marks = vec![(0usize, 10usize), (3, 11), (7, 12), (100, 13)];
+        // scroll=3 → visible flat in [3, 8): mark 3 (block 11) and 7 (block 12).
+        let rows = visible_thought_rows(&marks, 3, area);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, 11);
+        assert_eq!(rows[0].0.y, 2); // flat 3 at top of area
+        assert_eq!(rows[1].1, 12);
+        assert_eq!(rows[1].0.y, 6); // flat 7 → 2 + (7-3)
+                                    // The whole row is the click target.
+        assert_eq!((rows[0].0.x, rows[0].0.width, rows[0].0.height), (0, 40, 1));
+    }
+
+    #[test]
+    fn collapsed_thought_hides_reasoning_until_expanded_and_marks_the_line() {
+        let app = crate::tui::app::App::new();
+        // Collapsed: the reasoning is retained but not shown; one click-mark at
+        // the block's first line (offset 0, block 0).
+        let (lines, marks) = super::super::inline_blocks_to_lines_marked(
+            std::slice::from_ref(&collapsed_thought("a deep thought", false)),
+            40,
+            false,
+            &app,
+        );
+        assert_eq!(marks, vec![(0, 0)]);
+        let text = lines_text(&lines);
+        assert!(text.contains("Thought for 4s"), "got: {text}");
+        assert!(
+            !text.contains("a deep thought"),
+            "collapsed must hide reasoning: {text}"
+        );
+
+        // Expanded: the same line stays the click target (offset 0), and the
+        // reasoning now renders below it.
+        let (lines2, marks2) = super::super::inline_blocks_to_lines_marked(
+            std::slice::from_ref(&collapsed_thought("a deep thought", true)),
+            40,
+            false,
+            &app,
+        );
+        assert_eq!(marks2, vec![(0, 0)]);
+        let text2 = lines_text(&lines2);
+        assert!(text2.contains("Thought for 4s"), "got: {text2}");
+        assert!(
+            text2.contains("a deep thought"),
+            "expanded must show reasoning: {text2}"
+        );
     }
 }

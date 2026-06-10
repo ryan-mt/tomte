@@ -181,7 +181,20 @@ pub fn inline_blocks_to_lines(
     expanded: bool,
     app: &App,
 ) -> Vec<Line<'static>> {
+    inline_blocks_to_lines_marked(blocks, inner_width, expanded, app).0
+}
+
+/// Like [`inline_blocks_to_lines`] but also returns `(line_offset, block_index)`
+/// for each collapsed "Thought for Xs" line — the click-to-expand targets.
+/// Offsets are relative to the returned `Vec`/`blocks`; callers add their base.
+pub fn inline_blocks_to_lines_marked(
+    blocks: &[Block],
+    inner_width: usize,
+    expanded: bool,
+    app: &App,
+) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut marks: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
     while i < blocks.len() {
         // Group consecutive read_file calls into one stanza, mirroring render_chat.
@@ -199,12 +212,22 @@ pub fn inline_blocks_to_lines(
         match &blocks[i] {
             Block::Welcome => render_welcome(&mut lines, app),
             Block::User(text) => push_user_lines(&mut lines, text, inner_width),
-            Block::Assistant { .. } => push_assistant_lines(
-                &mut lines,
-                &blocks[i],
-                inner_width,
-                app.config.show_thinking,
-            ),
+            Block::Assistant {
+                thought_for_secs, ..
+            } => {
+                // A collapsed thought renders its "Thought for Xs" line first (the
+                // live-reasoning branch is gated off once collapsed), so the click
+                // target sits at the current line offset.
+                if thought_for_secs.is_some() {
+                    marks.push((lines.len(), i));
+                }
+                push_assistant_lines(
+                    &mut lines,
+                    &blocks[i],
+                    inner_width,
+                    app.config.show_thinking,
+                )
+            }
             Block::Tool {
                 name,
                 args,
@@ -240,5 +263,5 @@ pub fn inline_blocks_to_lines(
         }
         i += 1;
     }
-    lines
+    (lines, marks)
 }

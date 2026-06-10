@@ -358,6 +358,7 @@ fn finishing_open_assistant_drops_empty_block() {
         done: false,
         thought_for_secs: None,
         reasoning_started_at: None,
+        thinking_expanded: false,
     }];
 
     finish_open_assistant_block(&mut blocks);
@@ -372,6 +373,7 @@ fn finishing_open_assistant_marks_non_empty_block_done() {
         done: false,
         thought_for_secs: None,
         reasoning_started_at: None,
+        thinking_expanded: false,
     }];
 
     finish_open_assistant_block(&mut blocks);
@@ -439,6 +441,7 @@ fn tool_result_leaves_render_cache_alone() {
         stable_blocks: 0,
         stable_fp: 0,
         lines: Vec::new(),
+        thought_marks: Vec::new(),
     });
     apply_agent_event(
         &mut app,

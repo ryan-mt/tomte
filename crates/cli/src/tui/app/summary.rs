@@ -252,6 +252,7 @@ mod tests {
             done: true,
             thought_for_secs: None,
             reasoning_started_at: None,
+            thinking_expanded: false,
         }
     }
 

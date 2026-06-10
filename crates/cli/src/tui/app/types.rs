@@ -127,6 +127,10 @@ pub enum Block {
         thought_for_secs: Option<u64>,
         /// Marks the moment we received the first reasoning event for this block.
         reasoning_started_at: Option<std::time::Instant>,
+        /// When the block has collapsed to a "Thought for Xs" line, whether the
+        /// user has clicked it open to re-show the retained reasoning text below
+        /// it. Toggled via [`App::thought_rows`] click hit-testing.
+        thinking_expanded: bool,
     },
     Tool {
         call_id: String,
@@ -204,6 +208,10 @@ pub struct App {
     /// Screen rect of each fleet row paired with its sub-agent id, set by
     /// `render` each frame so a left-click can toggle the row's detail.
     pub subagent_rows: Vec<(ratatui::layout::Rect, String)>,
+    /// Screen rect of each visible "Thought for Xs" line paired with its block
+    /// index, set by `render_chat` each frame so a left-click can toggle the
+    /// block's reasoning open/closed (click-to-expand the collapsed thought).
+    pub thought_rows: Vec<(ratatui::layout::Rect, usize)>,
     pub status_line: String,
     /// In-progress / completed left-drag text selection over the screen, in
     /// cell coordinates. Drawn as a highlight and copied to the clipboard on
@@ -429,6 +437,11 @@ pub struct ChatRenderCache {
     /// transcript wholesale) drops the cache.
     pub stable_fp: u64,
     pub lines: Vec<ratatui::text::Line<'static>>,
+    /// `(flat line index into `lines`, absolute block index)` for each collapsed
+    /// "Thought for Xs" line in the cached prefix — the click targets, computed
+    /// once when the slice is appended (same append-only discipline as `lines`).
+    /// `render_chat` maps these (plus the live tail's) to screen rects each frame.
+    pub thought_marks: Vec<(usize, usize)>,
 }
 
 #[derive(Debug, Clone)]

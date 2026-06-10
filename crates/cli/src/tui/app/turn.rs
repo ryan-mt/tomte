@@ -125,6 +125,7 @@ pub async fn launch_turn(
         done: false,
         thought_for_secs: None,
         reasoning_started_at: None,
+        thinking_expanded: false,
     });
     let agent_clone = agent.clone();
     let tx_clone = tx.clone();
@@ -252,6 +253,20 @@ pub fn handle_left_click(app: &mut App, col: u16, row: u16) {
     {
         if let Some(s) = app.subagents.iter_mut().find(|s| s.id == id) {
             s.expanded = !s.expanded;
+        }
+    } else if let Some(idx) = app
+        .thought_rows
+        .iter()
+        .find(|(r, _)| point_in(*r, col, row))
+        .map(|(_, i)| *i)
+    {
+        // Click a collapsed "Thought for Xs" line to re-show (or hide) its
+        // reasoning — the same click-target pattern as the fleet rows.
+        if let Some(Block::Assistant {
+            thinking_expanded, ..
+        }) = app.blocks.get_mut(idx)
+        {
+            *thinking_expanded = !*thinking_expanded;
         }
     }
 }

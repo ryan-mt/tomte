@@ -15,7 +15,10 @@ pub fn collapse_reasoning_into_thought(app: &mut App) {
                 .map(|t| t.elapsed().as_secs())
                 .unwrap_or(0);
             *thought_for_secs = Some(secs);
-            reasoning.clear();
+            // Keep the reasoning text (don't clear it): the collapsed "Thought
+            // for Xs" line is click-to-expand, and re-showing the thought needs
+            // the original text. The render suppresses it while collapsed unless
+            // `thinking_expanded` is set, so retaining it costs no extra rows.
         }
     }
 }
@@ -86,6 +89,7 @@ pub fn rotate_assistant_block(blocks: &mut Vec<Block>) {
         done: false,
         thought_for_secs: None,
         reasoning_started_at: None,
+        thinking_expanded: false,
     });
 }
 
@@ -100,6 +104,7 @@ mod tests {
             done: false,
             thought_for_secs: None,
             reasoning_started_at: None,
+            thinking_expanded: false,
         }
     }
 
