@@ -81,14 +81,23 @@ pub struct Config {
     /// Ordered models to fall back to when the active model is rate-limited or
     /// its provider is overloaded. Each entry is a spec in the same form as
     /// [`model`](Config::model) (`gpt-5.5`, `claude-opus-4-8`, or
-    /// `<provider-id>/<model>` for a configured endpoint). Empty by default, so
-    /// existing and single-model setups are unaffected. The list is
+    /// `<provider-id>/<model>` for a configured endpoint). The list is
     /// provider-agnostic: a fallback may target a different provider or a local
     /// endpoint. Wired into the turn loop via [`crate::fallback`] and
     /// `agent::turn`'s `try_fail_over` — reactive failover that only fires before
-    /// any answer text has streamed.
+    /// any answer text has streamed. Empty by default; with
+    /// [`auto_fallback`](Config::auto_fallback) on, an empty list uses the
+    /// built-in same-provider ladder instead.
     #[serde(default)]
     pub fallback_models: Vec<String>,
+    /// Whether an empty [`fallback_models`](Config::fallback_models) falls back
+    /// to the built-in same-provider ladder (see
+    /// [`crate::fallback::default_fallbacks`]) when the active model is
+    /// overloaded — same-or-lower capability tier only, so failover never
+    /// silently moves a session onto a more expensive model. `false` restores
+    /// the old behavior: no configured fallbacks → the overload error surfaces.
+    #[serde(default = "default_auto_fallback")]
+    pub auto_fallback: bool,
     /// OS-level sandbox for `run_shell` child processes — see [`SandboxConfig`].
     #[serde(default)]
     pub sandbox: SandboxConfig,
@@ -333,6 +342,9 @@ fn default_verbosity() -> String {
 fn default_auto_compact() -> bool {
     true
 }
+fn default_auto_fallback() -> bool {
+    true
+}
 fn default_auto_capture() -> bool {
     true
 }
@@ -416,6 +428,7 @@ impl Default for Config {
             default_permission_mode: default_permission_mode(),
             providers: HashMap::new(),
             fallback_models: Vec::new(),
+            auto_fallback: true,
             sandbox: SandboxConfig::default(),
             spinner_verbs: None,
             render_mode: default_render_mode(),

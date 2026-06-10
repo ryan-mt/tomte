@@ -49,17 +49,73 @@ pub fn is_quota_or_overload(error: &str) -> bool {
     NEEDLES.iter().any(|needle| e.contains(needle))
 }
 
+/// Built-in same-provider ladders for [`default_fallbacks`], ordered by
+/// descending capability tier: `(tier substring, fallback id)`. Conservative by
+/// design on two axes:
+/// - every id is accepted by every auth mode of its provider (the ChatGPT
+///   subscription OAuth backend rejects mini/nano/pro ids with a 400, so the
+///   OpenAI ladder stays on the two ids it takes);
+/// - the Anthropic ladder stops at Sonnet — auto-dropping a coding session to
+///   Haiku would trade a visible overload error for silently weaker edits.
+const ANTHROPIC_LADDER: &[(&str, &str)] = &[
+    ("fable", "claude-fable-5"),
+    ("opus", "claude-opus-4-8"),
+    ("sonnet", "claude-sonnet-4-6"),
+];
+const OPENAI_LADDER: &[(&str, &str)] = &[("gpt-5.5", "gpt-5.5"), ("gpt-5.4", "gpt-5.4")];
+
+/// The built-in failover chain for `model` when the user configured none:
+/// same-provider entries at the same or LOWER capability tier than the active
+/// model, so reactive failover never moves a session onto a more expensive
+/// model uninvited. Anchored on the model's tier (`fable`/`opus`/`sonnet`,
+/// `gpt-5.5`/`gpt-5.4`); a model whose tier is not on the ladder — Haiku,
+/// `gpt-5.2`, a local or third-party endpoint — gets NO default chain: tomte
+/// never reroutes a model it can't place onto a provider the user didn't pick.
+/// Entries that are a prefix of the active id are skipped, so a dated snapshot
+/// (`claude-opus-4-8-20260101`) is not "rescued" by its own base id.
+pub fn default_fallbacks(model: &str) -> Vec<String> {
+    let (_, bare) = crate::provider::Provider::parse_model(model);
+    let m = bare.trim().to_ascii_lowercase();
+    let ladder: &[(&str, &str)] = if m.starts_with("claude") {
+        ANTHROPIC_LADDER
+    } else if m.starts_with("gpt-") {
+        OPENAI_LADDER
+    } else {
+        return Vec::new();
+    };
+    let Some(tier) = ladder.iter().position(|(t, _)| m.contains(t)) else {
+        return Vec::new();
+    };
+    ladder[tier..]
+        .iter()
+        .filter(|(_, id)| !m.starts_with(id))
+        .map(|(_, id)| (*id).to_string())
+        .collect()
+}
+
 /// The next fallback model to try, given the configured
 /// [`Config::fallback_models`] and the models already attempted this turn.
-/// Returns the first configured fallback not present in `tried`, or `None` when
-/// the list is empty or exhausted. Entries are treated as opaque specs — no
-/// provider/model parsing happens here, so the chain works across providers and
-/// local endpoints alike.
+/// A non-empty configured list is authoritative and its entries are treated as
+/// opaque specs — no provider/model parsing happens here, so the chain works
+/// across providers and local endpoints alike. With the list empty (the
+/// default) and [`Config::auto_fallback`] on, the built-in same-provider
+/// ladder from [`default_fallbacks`] is used instead. Returns the first entry
+/// not present in `tried`, or `None` when the chain is exhausted (or
+/// `auto_fallback` is off with nothing configured).
 pub fn next_fallback(cfg: &Config, tried: &[String]) -> Option<String> {
-    cfg.fallback_models
-        .iter()
-        .find(|m| !tried.iter().any(|t| t == *m))
-        .cloned()
+    if !cfg.fallback_models.is_empty() {
+        return cfg
+            .fallback_models
+            .iter()
+            .find(|m| !tried.iter().any(|t| t == *m))
+            .cloned();
+    }
+    if !cfg.auto_fallback {
+        return None;
+    }
+    default_fallbacks(&cfg.model)
+        .into_iter()
+        .find(|m| !tried.iter().any(|t| t == m))
 }
 
 #[cfg(test)]
@@ -119,9 +175,124 @@ mod tests {
         );
     }
 
+    // The built-in ladder only ever moves sideways or DOWN in capability/price:
+    // failover must never silently upgrade the bill.
     #[test]
-    fn next_fallback_empty_list_is_none() {
-        let cfg = Config::default();
+    fn default_ladder_never_upgrades() {
+        assert_eq!(
+            default_fallbacks("claude-fable-5"),
+            vec!["claude-opus-4-8".to_string(), "claude-sonnet-4-6".into()]
+        );
+        assert_eq!(
+            default_fallbacks("claude-opus-4-8"),
+            vec!["claude-sonnet-4-6".to_string()]
+        );
+        // Sonnet has nothing below it on the ladder (Haiku is deliberately
+        // excluded — silently weaker edits are worse than a visible error).
+        assert!(default_fallbacks("claude-sonnet-4-6").is_empty());
+        assert_eq!(default_fallbacks("gpt-5.5"), vec!["gpt-5.4".to_string()]);
+        assert!(default_fallbacks("gpt-5.4").is_empty());
+        // A mini variant must not be "upgraded" to its full-size base id.
+        assert!(default_fallbacks("gpt-5.4-mini").is_empty());
+    }
+
+    #[test]
+    fn default_ladder_handles_specs_snapshots_and_variants() {
+        // A provider-prefixed spec is parsed, not treated as an unknown id.
+        assert_eq!(
+            default_fallbacks("anthropic/claude-fable-5"),
+            vec!["claude-opus-4-8".to_string(), "claude-sonnet-4-6".into()]
+        );
+        // A dated snapshot skips its own base id rather than "failing over" to
+        // the same overloaded model.
+        assert_eq!(
+            default_fallbacks("claude-opus-4-8-20260101"),
+            vec!["claude-sonnet-4-6".to_string()]
+        );
+        // A same-tier sibling is allowed (separate id, same price tier).
+        assert_eq!(
+            default_fallbacks("claude-opus-4-7"),
+            vec!["claude-opus-4-8".to_string(), "claude-sonnet-4-6".into()]
+        );
+        assert_eq!(
+            default_fallbacks("gpt-5.5-codex"),
+            vec!["gpt-5.4".to_string()]
+        );
+    }
+
+    // Models tomte can't place on a ladder get NO default chain — never reroute
+    // a local/third-party/unplaceable model to a provider the user didn't pick.
+    #[test]
+    fn default_ladder_unknown_or_unplaceable_is_empty() {
+        for model in [
+            "groq/llama-3.3-70b",
+            "o3",
+            "gpt-5.2",
+            "gpt-5",
+            "claude-haiku-4-5",
+            "",
+        ] {
+            assert!(
+                default_fallbacks(model).is_empty(),
+                "{model} must get no default chain"
+            );
+        }
+    }
+
+    #[test]
+    fn next_fallback_uses_ladder_when_unconfigured() {
+        let cfg = Config {
+            model: "claude-fable-5".into(),
+            ..Config::default()
+        };
+        let started = vec!["claude-fable-5".to_string()];
+        assert_eq!(
+            next_fallback(&cfg, &started),
+            Some("claude-opus-4-8".into()),
+            "empty fallback_models + auto_fallback → the built-in ladder"
+        );
+        assert_eq!(
+            next_fallback(&cfg, &["claude-fable-5".into(), "claude-opus-4-8".into()]),
+            Some("claude-sonnet-4-6".into())
+        );
+        assert_eq!(
+            next_fallback(
+                &cfg,
+                &[
+                    "claude-fable-5".into(),
+                    "claude-opus-4-8".into(),
+                    "claude-sonnet-4-6".into(),
+                ]
+            ),
+            None,
+            "ladder exhausted"
+        );
+
+        // Opt-out restores the old fail-fast behavior.
+        let off = Config {
+            auto_fallback: false,
+            ..cfg.clone()
+        };
+        assert_eq!(next_fallback(&off, &started), None);
+
+        // A configured list is authoritative — the ladder never mixes in.
+        let configured = Config {
+            fallback_models: vec!["groq/llama-3.3-70b".into()],
+            ..cfg
+        };
+        assert_eq!(
+            next_fallback(&configured, &started),
+            Some("groq/llama-3.3-70b".into())
+        );
+    }
+
+    #[test]
+    fn next_fallback_empty_list_without_auto_is_none() {
+        let cfg = Config {
+            model: "local/primary".into(),
+            ..Config::default()
+        };
+        // Auto is on by default, but an unplaceable model still yields nothing.
         assert_eq!(next_fallback(&cfg, &[]), None);
     }
 }
