@@ -307,7 +307,7 @@ fn empty_checks_render_a_no_scripts_note() {
     let mut c = capsule(vec![], vec![]);
     c.project_kind = ProjectKind::Unknown;
     let out = c.render();
-    assert!(out.contains("no recognized verification scripts for a unknown project"));
+    assert!(out.contains("no recognized verification scripts for this unknown project"));
 }
 
 // The real exec path: `run_check` actually spawns the platform shell. `exit N`

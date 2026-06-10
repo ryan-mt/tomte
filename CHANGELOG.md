@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed the Proof Capsule / receipt empty-checks line reading "for a unknown project" — now "for this unknown project" (the article never agreed with vowel-initial kind labels; spotted smoke-testing `chat --prove`).
 - Fixed a UTF-8 BOM making user-edited JSON files silently unparseable (found smoke-testing `chat --prove` on Windows). Editors on Windows commonly save with a BOM, and `serde_json` rejects it, so a BOM'd file was treated exactly like a missing/corrupt one: `config.json` fell back to defaults (mystery setting resets), a project `.tomte/config.json` overlay was ignored, `settings.json` lost its hooks and MCP servers — and worst, a BOM'd `package.json` read as "no scripts", so every Proof Capsule check reported "no script" and `tomte prove` could exit 0 having verified nothing (npm itself tolerates a BOM'd `package.json`). A leading BOM is now stripped at every user-editable-JSON parse site (config, project overlay, hooks settings, MCP settings, package.json); interior content is untouched. Regression tests cover the stripped and non-stripped shapes.
 
 ### Changed

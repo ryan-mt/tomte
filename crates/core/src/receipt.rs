@@ -334,7 +334,7 @@ pub fn render_markdown(r: &Receipt) -> String {
     out.push_str("\n## Checks (run by the CLI, real exit codes)\n\n");
     if r.capsule.checks.is_empty() {
         out.push_str(&format!(
-            "- no recognized verification scripts for a {} project\n",
+            "- no recognized verification scripts for this {} project\n",
             r.capsule.project_kind.label()
         ));
     } else {
@@ -517,7 +517,7 @@ pub fn render_html(r: &Receipt) -> String {
         push_li(
             &mut body,
             &format!(
-                "no recognized verification scripts for a {} project",
+                "no recognized verification scripts for this {} project",
                 r.capsule.project_kind.label()
             ),
         );

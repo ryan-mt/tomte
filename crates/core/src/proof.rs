@@ -181,7 +181,7 @@ impl ProofCapsule {
         out.push_str("\nChecks:\n");
         if self.checks.is_empty() {
             out.push_str(&format!(
-                "  (no recognized verification scripts for a {} project)\n",
+                "  (no recognized verification scripts for this {} project)\n",
                 self.project_kind.label()
             ));
         } else {
