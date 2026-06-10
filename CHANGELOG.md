@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Moved `decisions.rs`'s trailing 369-line inline test module out to `decisions/tests.rs`, matching the repo's existing convention for large test modules (`danger.rs`, `config.rs`, `mcp.rs`, …). Pure structural move — test code is unchanged and the suite count is identical (910 core tests before and after).
 - Repo hygiene: removed stray ad-hoc debug binaries (`test_contains.exe`/`.pdb`) from the repository root and added root-level `/*.exe` + `/*.pdb` ignore rules so a quick local compile can never ride into a commit. No tracked file matched the new patterns.
 
 ## 0.0.4
