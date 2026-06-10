@@ -377,6 +377,16 @@ enum Command {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Update tomte to the latest GitHub release: resolves the newest tag,
+    /// downloads this platform's archive and its published .sha256, verifies
+    /// the checksum, and swaps the running binary in place (the same
+    /// checksum-gated install path the GitHub Action uses). A build newer than
+    /// the latest release is left alone — this never downgrades.
+    Update {
+        /// Only check whether a newer release exists; install nothing.
+        #[arg(long)]
+        check: bool,
+    },
     /// Context X-Ray: explain why a file or symbol is (or isn't) relevant. Pass a
     /// file (`src/auth/session.rs`), a stack-trace location (`src/x.rs:88`), or a
     /// symbol name (`createSession`). Prints the files the Repo Twin would pull
@@ -595,6 +605,7 @@ async fn async_main() -> Result<()> {
         Some(Command::Completions { shell }) => {
             commands::completions::run(shell, <Cli as clap::CommandFactory>::command())
         }
+        Some(Command::Update { check }) => commands::update::run(check).await,
         Some(Command::Race {
             task,
             agents,
