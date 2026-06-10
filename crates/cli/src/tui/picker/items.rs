@@ -39,7 +39,7 @@ pub fn slash_commands(cwd: &Path) -> Vec<PickerItem> {
         item("hooks", "/hooks", "list configured PreToolUse hooks"),
         item("mcp", "/mcp", "list configured MCP servers"),
         item("init", "/init", "create CLAUDE.md for this project"),
-        item("memory", "/memory", "show CLAUDE.md"),
+        item("memory", "/memory", "show CLAUDE.md (`edit` opens $EDITOR)"),
         item("diff", "/diff", "show `git diff` for the working tree"),
         item(
             "why",

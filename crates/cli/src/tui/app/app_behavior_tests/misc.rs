@@ -73,6 +73,28 @@ async fn prove_slash_arms_collection_and_guards_double_run() {
     );
 }
 
+// `/memory edit` arms the deferred editor open at rest; mid-turn it leaves the
+// flag down (the suspend would fight the streaming viewport — and the post-edit
+// refresh would stall on the agent mutex) and says so.
+#[tokio::test]
+async fn memory_edit_slash_arms_editor_only_at_rest() {
+    let mut app = App::new();
+    app.busy = false;
+    app.compacting = false;
+    handle_slash(&mut app, "memory edit").await;
+    assert!(app.open_memory_editor, "at rest → editor request");
+
+    let mut app = App::new();
+    app.busy = true;
+    handle_slash(&mut app, "memory edit").await;
+    assert!(!app.open_memory_editor, "mid-turn must not suspend the TUI");
+    let last = app.blocks.last().expect("a note");
+    assert!(
+        matches!(last, Block::System(s) if s.contains("mid-turn")),
+        "should explain why nothing opened"
+    );
+}
+
 // `/prove explain` arms the collection AND the explain follow-up; a bare
 // `/prove` must clear any stale explain flag; an unknown arg prints usage.
 #[tokio::test]

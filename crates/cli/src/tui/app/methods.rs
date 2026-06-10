@@ -67,6 +67,7 @@ impl App {
             is_thinking: false,
             expanded_tools: false,
             open_transcript_pager: false,
+            open_memory_editor: false,
             current_turn: None,
             approval: ApprovalMode::OnRequest,
             require_approval: true,

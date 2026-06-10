@@ -276,17 +276,31 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
             }
         }
         "memory" => {
-            let claude_md = app.cwd.join("CLAUDE.md");
-            match std::fs::read_to_string(&claude_md) {
-                Ok(text) => app.blocks.push(Block::System(format!(
-                    "CLAUDE.md ({}):\n{}",
-                    claude_md.display(),
-                    text
-                ))),
-                Err(_) => app.blocks.push(Block::System(format!(
-                    "No CLAUDE.md at {}. Run /init to create one.",
-                    claude_md.display()
-                ))),
+            if arg.trim().eq_ignore_ascii_case("edit") {
+                if app.can_run_deferred_agent_op() {
+                    // The main loop opens the editor on its next pass: the
+                    // suspend/restore needs the terminal handle, and the
+                    // post-edit context refresh needs the agent Arc — neither
+                    // of which this handler holds (same pattern as Ctrl+O).
+                    app.open_memory_editor = true;
+                } else {
+                    app.blocks.push(Block::System(
+                        "The agent is mid-turn — try /memory edit again when it finishes.".into(),
+                    ));
+                }
+            } else {
+                let claude_md = app.cwd.join("CLAUDE.md");
+                match std::fs::read_to_string(&claude_md) {
+                    Ok(text) => app.blocks.push(Block::System(format!(
+                        "CLAUDE.md ({}):\n{}",
+                        claude_md.display(),
+                        text
+                    ))),
+                    Err(_) => app.blocks.push(Block::System(format!(
+                        "No CLAUDE.md at {}. Run /init to create one, or /memory edit to write one by hand.",
+                        claude_md.display()
+                    ))),
+                }
             }
         }
         "diff" => {

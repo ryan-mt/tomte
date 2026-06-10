@@ -108,6 +108,11 @@ pub struct App {
     /// expanded-transcript pager on its next pass (the pager pumps the shared
     /// event stream, which the key handler doesn't hold).
     pub open_transcript_pager: bool,
+    /// Set by `/memory edit` at rest; the main loop suspends the TUI and opens
+    /// the project CLAUDE.md in `$VISUAL`/`$EDITOR` on its next pass (the
+    /// suspend/restore needs the terminal handle, which the slash handler
+    /// doesn't hold — same pattern as the pager flag above).
+    pub open_memory_editor: bool,
     /// Handle to the currently running turn task. Held so the user can cancel
     /// (Esc) a stuck turn — aborting the task drops the agent mutex guard and
     /// the in-flight HTTP request, freeing things up for the next turn.

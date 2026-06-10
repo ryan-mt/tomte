@@ -557,6 +557,39 @@ pub async fn main_loop(
                     // excursion — force a clean repaint of the live viewport.
                     let _ = terminal.clear();
                 }
+                // `/memory edit`: suspend the TUI around the user's editor on
+                // the project CLAUDE.md. Runs here rather than in handle_slash
+                // because the suspend/restore needs `terminal`, and the
+                // post-edit refresh needs the agent Arc. Only set at rest
+                // (`can_run_deferred_agent_op`), so the lock below can't stall
+                // behind a streaming turn or compaction.
+                if std::mem::take(&mut app.open_memory_editor) {
+                    let path = app.cwd.join("CLAUDE.md");
+                    match edit_file_in_editor(app.render_mode, &path).await {
+                        Ok(status) if status.success() => {
+                            app.blocks.push(Block::System(format!(
+                                "✏️ edited {}",
+                                path.display()
+                            )));
+                            // Same refresh as a `#`-note: rebuild the system
+                            // context so the edit lands in this session, not
+                            // the next one. With no agent yet, the first turn
+                            // reads the fresh file anyway.
+                            let mut guard = agent.lock().await;
+                            if let Some(a) = guard.as_mut() {
+                                a.refresh_system_context();
+                            }
+                        }
+                        Ok(status) => app.blocks.push(Block::System(format!(
+                            "editor exited with {status} — context not refreshed"
+                        ))),
+                        Err(e) => app.blocks.push(Block::System(format!("editor failed: {e}"))),
+                    }
+                    app.auto_scroll = true;
+                    // The editor owned the screen; repaint the live viewport
+                    // from scratch (same recovery as the pager above).
+                    let _ = terminal.clear();
+                }
             }
             Some(ev) = agent_rx.recv() => {
                 dirty = true;

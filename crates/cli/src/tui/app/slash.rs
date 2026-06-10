@@ -35,7 +35,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  /hooks              list configured PreToolUse hooks\n  \
                  /mcp                list configured MCP servers\n  \
                  /init               create CLAUDE.md for this project\n  \
-                 /memory             show CLAUDE.md\n  \
+                 /memory [edit]      show CLAUDE.md (edit: open it in $VISUAL/$EDITOR)\n  \
                  /diff               show `git diff` for the working tree\n  \
                  /why [loc]          decision trail: why changes were made (--all, --reconcile, diff [base])\n  \
                  /blame <file>       the decision trail for one file (greppable)\n  \

@@ -146,6 +146,7 @@ mod window_title_tests {
 mod agentevent;
 mod blocks;
 mod consts;
+mod editor;
 mod entry;
 mod helpers;
 mod keys;
@@ -165,6 +166,7 @@ mod types;
 pub use agentevent::*;
 pub use blocks::*;
 pub use consts::*;
+pub use editor::*;
 pub use entry::*;
 pub use helpers::*;
 pub use keys::*;
