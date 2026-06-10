@@ -37,6 +37,12 @@ pub const TODO_RECENT_COMPLETED_TTL: Duration = Duration::from_secs(30);
 /// it without bound. Oldest entries are dropped past this.
 pub const MAX_INPUT_HISTORY: usize = 1000;
 
+/// How long a first Ctrl+C keeps the quit guard armed: a second press inside
+/// this window exits, a later one re-arms. Two seconds — long enough for a
+/// deliberate double-press, short enough that a stale arm can't surprise-quit
+/// minutes later.
+pub const CTRL_C_QUIT_WINDOW: Duration = Duration::from_secs(2);
+
 pub fn todo_completion_key(todo: &TodoItem) -> String {
     format!("{}\n{}", todo.content, todo.active_form)
 }

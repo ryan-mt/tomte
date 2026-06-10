@@ -236,6 +236,12 @@ pub(super) fn status_left_text(app: &App) -> String {
         text.push_str(" · ");
         text.push_str(notice);
     }
+    // The armed quit guard's feedback: without it, a first Ctrl+C looks like
+    // the key was ignored. The 80ms idle tick re-renders, so the hint clears
+    // itself once the window lapses.
+    if app.quit_hint_active() {
+        text.push_str(" · ctrl+c again to quit");
+    }
     text
 }
 

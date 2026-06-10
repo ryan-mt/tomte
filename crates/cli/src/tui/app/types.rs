@@ -382,6 +382,10 @@ pub struct App {
     /// Draft text stashed when history browsing begins, restored when the user
     /// presses Down past the newest entry.
     pub history_draft: String,
+    /// When the last Ctrl+C landed, arming the quit guard: a second Ctrl+C
+    /// within [`CTRL_C_QUIT_WINDOW`] exits, any other key disarms. One reflexive
+    /// Ctrl+C (terminal copy/cancel habit) must never kill a live session.
+    pub ctrl_c_armed_at: Option<std::time::Instant>,
     /// Active `/goal` objective, if the host is automatically continuing turns
     /// until the model reports complete or blocked via `goal_update`.
     pub active_goal: Option<ActiveGoal>,

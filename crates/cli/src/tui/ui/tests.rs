@@ -368,6 +368,41 @@ mod status_footer_tests {
             "plan  ·  goal 12s  ·  (continuing active goal...)"
         );
     }
+
+    // The armed quit guard must be visible: without the hint, a first Ctrl+C
+    // looks like the key was ignored.
+    #[test]
+    fn status_left_text_appends_quit_hint_while_armed() {
+        use super::super::status_left_text;
+        use crate::tui::app::App;
+        let mut app = App::new();
+        assert!(!status_left_text(&app).contains("ctrl+c again to quit"));
+        app.ctrl_c_armed_at = Some(std::time::Instant::now());
+        assert!(status_left_text(&app).contains("ctrl+c again to quit"));
+    }
+}
+
+#[cfg(test)]
+mod spinner_tests {
+    use super::super::render_spinner;
+    use crate::tui::app::App;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    // Cancellation must be discoverable at the moment it's needed: the busy
+    // spinner line always carries the esc affordance.
+    #[test]
+    fn spinner_advertises_esc_to_interrupt() {
+        let mut app = App::new();
+        app.busy = true;
+        let mut t = Terminal::new(TestBackend::new(100, 1)).unwrap();
+        t.draw(|f| render_spinner(f, f.area(), &app)).unwrap();
+        let buf = t.backend().buffer();
+        let row: String = (0..buf.area.width)
+            .filter_map(|x| buf.cell((x, 0)).map(|c| c.symbol()))
+            .collect();
+        assert!(row.contains("esc to interrupt"), "got: {row}");
+    }
 }
 
 #[cfg(test)]

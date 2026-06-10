@@ -98,6 +98,7 @@ impl App {
             input_history: Vec::new(),
             history_pos: None,
             history_draft: String::new(),
+            ctrl_c_armed_at: None,
             active_goal: None,
             pending_goal_replacement: None,
             pending_plan_exit: None,
@@ -192,6 +193,42 @@ impl App {
             let draft = std::mem::take(&mut self.history_draft);
             self.input.set_text(draft);
         }
+    }
+
+    /// One Ctrl+C must never kill a live session (it's the terminal copy/cancel
+    /// reflex): the first press clears the composer — stashing any draft into
+    /// history so ↑ recovers it — and arms the quit guard; a second press within
+    /// [`CTRL_C_QUIT_WINDOW`] returns `true` (exit). A press after the window
+    /// has lapsed re-arms instead of quitting. `now` is a parameter so tests
+    /// can drive the clock.
+    pub fn handle_ctrl_c_at(&mut self, now: std::time::Instant) -> bool {
+        if let Some(t) = self.ctrl_c_armed_at {
+            if now.duration_since(t) <= CTRL_C_QUIT_WINDOW {
+                return true;
+            }
+        }
+        self.stash_input_to_history();
+        self.ctrl_c_armed_at = Some(now);
+        false
+    }
+
+    /// Whether the "ctrl+c again to quit" status hint should show: armed and
+    /// still within the quit window (the 80ms idle tick re-renders, so the hint
+    /// disappears on time once the window lapses).
+    pub fn quit_hint_active(&self) -> bool {
+        self.ctrl_c_armed_at
+            .is_some_and(|t| t.elapsed() <= CTRL_C_QUIT_WINDOW)
+    }
+
+    /// Clear the composer, preserving a non-empty draft as an input-history
+    /// entry so ↑ recovers it — Esc/Ctrl+C clearing a long draft must never be
+    /// an unrecoverable loss.
+    pub fn stash_input_to_history(&mut self) {
+        if self.input.is_empty() {
+            return;
+        }
+        let text = self.input.take();
+        self.record_history(&text);
     }
 
     /// Drop any active text selection and its copy confirmation.

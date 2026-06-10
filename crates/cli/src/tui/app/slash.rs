@@ -60,14 +60,15 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  !<command>          run a shell command now (!! to force past the guard)\n  \
                  #<note>             save a note to this project's CLAUDE.md\n\n\
                  Keyboard shortcuts:\n  \
+                 ?                   show this card (on an empty composer)\n  \
                  ↑ / ↓               recall older / newer messages (on the first / last composer line)\n  \
-                 Esc                 cancel the running turn (while busy)\n  \
+                 Esc                 cancel the running turn (while busy); clear the composer (draft stays in ↑ history)\n  \
                  Ctrl+O              toggle tool-call detail view\n  \
                  Ctrl+T              show / hide the live todo panel\n  \
                  Ctrl+L              clear the screen\n  \
                  Ctrl+V / Alt+V      paste text or image (use Alt+V on Windows Terminal)\n  \
                  Left-drag           select text and copy it to the clipboard\n  \
-                 Ctrl+C              quit"
+                 Ctrl+C twice        quit (the first press clears the composer and arms)"
                     .to_string(),
             ));
         }

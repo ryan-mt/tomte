@@ -143,10 +143,8 @@ pub fn handle_plan_exit_key(app: &mut App, key: KeyEvent) {
 }
 
 pub async fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Result<bool> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    if key.code == KeyCode::Char('c') && ctrl {
-        return Ok(true);
-    }
+    // Ctrl+C never reaches here — handle_key's quit guard intercepts it ahead
+    // of the overlay branch, so the double-press rule holds inside pickers too.
     let Some((kind, picker)) = app.overlay.as_mut() else {
         return Ok(false);
     };

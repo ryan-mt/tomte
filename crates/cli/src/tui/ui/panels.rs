@@ -360,6 +360,9 @@ pub(super) fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
     if app.is_thinking {
         extras.push_str(" · thinking");
     }
+    // Cancellation must be discoverable at the moment it's needed, not buried
+    // in /help — the same persistent affordance Claude Code shows while busy.
+    extras.push_str(" · esc to interrupt");
     // Claude-parity (its `a = d?.activeForm ?? r`): when a concrete task is in
     // progress, show *its* active form as the live word so the line says what
     // tomte is actually doing; otherwise the drifting companion word from the

@@ -27,6 +27,16 @@ pub async fn handle_key(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
 
+    // Quit guard, ahead of every modal branch so Ctrl+C behaves the same in any
+    // state (an open approval card used to swallow it entirely, while elsewhere
+    // a single reflexive press killed the whole session): the first press
+    // stashes any draft and arms, a second within the window quits. Any other
+    // key disarms.
+    if ctrl && key.code == KeyCode::Char('c') {
+        return Ok(app.handle_ctrl_c_at(std::time::Instant::now()));
+    }
+    app.ctrl_c_armed_at = None;
+
     if app.pending_conscience.is_some() {
         // Pillar 5 (A2 Tier 2) conscience card: 0 = abort, 1 = supersede,
         // 2 = edit anyway. Up/Down + Enter, with a/s/e and Esc (= abort) as
@@ -162,17 +172,11 @@ pub async fn handle_key(
     }
 
     if app.pending_goal_replacement.is_some() {
-        if key.code == KeyCode::Char('c') && ctrl {
-            return Ok(true);
-        }
         handle_goal_replacement_key(app, key);
         return Ok(false);
     }
 
     if app.pending_plan_exit.is_some() {
-        if key.code == KeyCode::Char('c') && ctrl {
-            return Ok(true);
-        }
         if app.busy {
             return Ok(false);
         }
@@ -195,7 +199,6 @@ pub async fn handle_key(
         return Ok(false);
     }
     match key.code {
-        KeyCode::Char('c') if ctrl => return Ok(true),
         KeyCode::Char('d') if ctrl && app.input.is_empty() => return Ok(true),
         KeyCode::Char('l') if ctrl => {
             app.blocks.clear();
@@ -228,6 +231,12 @@ pub async fn handle_key(
             // so users can keep typing to filter.
             app.input.insert_char('/');
             app.open_overlay(OverlayKind::SlashMenu);
+        }
+        KeyCode::Char('?') if app.input.is_empty() => {
+            // The status line advertises "? for shortcuts" — honor it: a bare
+            // `?` on an empty composer shows the same card as /help. A literal
+            // leading `?` can still be typed after any other character.
+            handle_slash(app, "help").await;
         }
         KeyCode::Char('@') if ctrl == alt => {
             // Insert '@' and open the file typeahead; characters typed after it
@@ -315,7 +324,10 @@ pub async fn handle_key(
             if app.busy {
                 cancel_current_turn(app).await;
             } else {
-                app.input.clear();
+                // Clear the composer, but keep the draft reachable via ↑ — a
+                // reflexive Esc on a long draft must not be an unrecoverable
+                // loss.
+                app.stash_input_to_history();
             }
         }
         _ => {}
