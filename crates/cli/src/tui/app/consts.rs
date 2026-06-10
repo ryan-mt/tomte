@@ -390,3 +390,36 @@ pub fn fleet_idle_verb(agent_id: &str) -> &'static str {
     let idx = spinner_word_index(seed, Duration::ZERO, FLEET_IDLE_VERBS.len());
     FLEET_IDLE_VERBS[idx]
 }
+
+/// A plain present-tense verb describing what a running tool call is doing, so
+/// the spinner can say what tomte is *actually* doing when there's no in-progress
+/// todo to borrow an `active_form` from — the spinner's word precedence is
+/// todo active-form → this → the whimsical pool. Returns `None` for meta tools
+/// (todo/goal/wait/ask) that have no user-meaningful action, so the line falls
+/// through to the cozy default rather than reading "Writing todos". Canonical
+/// tool names (post-alias); `mcp__*` tools fall through too.
+pub fn tool_action_verb(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "read_file" => "Reading",
+        "write_file" => "Writing",
+        "edit_file" | "multi_edit" => "Editing",
+        "undo_last_edit" => "Reverting",
+        "list_dir" | "glob" => "Looking",
+        "grep" => "Searching",
+        "run_shell" => "Running",
+        "bash_output" => "Checking output",
+        "kill_shell" => "Stopping",
+        "web_fetch" => "Fetching",
+        "web_search" => "Searching the web",
+        "lsp" => "Analyzing",
+        "notebook_edit" => "Editing",
+        "memory" => "Remembering",
+        "record_decision" => "Noting",
+        "why_context" => "Mapping context",
+        "skill" => "Studying",
+        "enter_worktree" | "exit_worktree" => "Branching",
+        "dispatch_agent" => "Delegating",
+        "list_mcp_resources" | "read_mcp_resource" => "Fetching",
+        _ => return None,
+    })
+}

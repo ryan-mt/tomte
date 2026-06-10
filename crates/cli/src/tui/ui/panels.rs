@@ -334,6 +334,23 @@ pub(super) fn render_todo_line(
     ])
 }
 
+/// The action verb of the tool currently executing (the most recent `Tool`
+/// block whose result hasn't arrived), or `None` when nothing is running or the
+/// running tool is a meta one without a user-meaningful action. Pure over the
+/// block list so the precedence is unit-testable.
+pub(super) fn running_tool_verb(app: &App) -> Option<&'static str> {
+    running_tool_verb_in(&app.blocks)
+}
+
+fn running_tool_verb_in(blocks: &[Block]) -> Option<&'static str> {
+    blocks.iter().rev().find_map(|b| match b {
+        Block::Tool {
+            name, output: None, ..
+        } => crate::tui::app::tool_action_verb(name),
+        _ => None,
+    })
+}
+
 pub(super) fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
     let elapsed = app.turn_started_at.map(|t| t.elapsed()).unwrap_or_default();
     // Drive the spinner from wall-clock elapsed, not a counter ticked by the
@@ -363,11 +380,13 @@ pub(super) fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
     // Cancellation must be discoverable at the moment it's needed, not buried
     // in /help — the same persistent affordance Claude Code shows while busy.
     extras.push_str(" · esc to interrupt");
-    // Claude-parity (its `a = d?.activeForm ?? r`): when a concrete task is in
-    // progress, show *its* active form as the live word so the line says what
-    // tomte is actually doing; otherwise the drifting companion word from the
-    // (possibly user-customized) pool. The drift index is pure, so it never
-    // flickers between draws.
+    // What the line says, most-specific first (Claude-parity `a = d?.activeForm ?? r`,
+    // extended): an in-progress todo's `active_form` (model-authored, the truest
+    // "what I'm doing") → the running tool's plain action verb (so a turn with no
+    // todo still narrates "Reading…/Running…" instead of a stock word) → the
+    // drifting whimsical companion word from the (possibly user-customized) pool,
+    // which keeps tomte's voice for the gaps between tool calls. The drift index
+    // is pure, so it never flickers between draws.
     let word: String = app
         .session_todos
         .iter()
@@ -375,6 +394,7 @@ pub(super) fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
         .map(|t| t.active_form.trim())
         .filter(|f| !f.is_empty())
         .map(|f| f.chars().take(48).collect::<String>())
+        .or_else(|| running_tool_verb(app).map(str::to_string))
         .unwrap_or_else(|| {
             let words = &app.spinner_words;
             let idx = spinner_word_index(app.spinner_seed, elapsed, words.len());
