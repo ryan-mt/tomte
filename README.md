@@ -156,6 +156,9 @@ tomte pulse                              # which files break next — scored, fo
 tomte handoff --out HANDOFF.md           # the shift report for the next session (or model)
 tomte rounds                             # the night walk: what changed since last rounds; red exits 1
 tomte race "fix the flaky retry test" --agents 4   # tournament: isolated worktrees, measured judge
+tomte sessions                           # the saved-session ledger: list · show <id> transcript · prune old ones
+tomte cost --all                         # one cost ledger across every saved session for this project
+tomte completions zsh                    # shell completions for the whole command surface
 ```
 
 ## Done means verified — in CI

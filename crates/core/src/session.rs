@@ -280,6 +280,14 @@ pub fn list(cwd: &Path) -> Vec<SessionMeta> {
     out
 }
 
+/// Delete one saved session's file. The id is validated against the same
+/// rules as save/load, so a crafted id can't escape the sessions dir. Backs
+/// `tomte sessions prune`.
+pub fn delete(cwd: &Path, id: &str) -> std::io::Result<()> {
+    validate_session_id(id)?;
+    std::fs::remove_file(sessions_dir_for(cwd).join(format!("{id}.json")))
+}
+
 /// The id of the most recently updated session for `cwd`, or `None` if this
 /// directory has no saved sessions. Backs `tomte --continue`, which resumes it
 /// directly without opening the picker. Relies on [`list`] being sorted

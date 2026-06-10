@@ -262,4 +262,23 @@ fn session_save_load_list_and_missing_id() {
         }
         other => panic!("expected reasoning item, got {other:?}"),
     }
+
+    // --- delete removes exactly one session (backs `sessions prune`) ------
+    session::delete(&cwd_b, "delta").expect("delete delta");
+    assert!(
+        session::list(&cwd_b).is_empty(),
+        "deleted session must not list"
+    );
+    assert_eq!(session::list(&cwd_a).len(), 4, "other cwds untouched");
+    let err = session::delete(&cwd_b, "delta").unwrap_err();
+    assert!(
+        matches!(err.kind(), std::io::ErrorKind::NotFound),
+        "got: {err:?}"
+    );
+    // A crafted id must never be used as a path.
+    let err = session::delete(&cwd_a, "../escape").unwrap_err();
+    assert!(
+        matches!(err.kind(), std::io::ErrorKind::InvalidInput),
+        "got: {err:?}"
+    );
 }

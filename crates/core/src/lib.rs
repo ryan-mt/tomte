@@ -30,6 +30,7 @@ pub mod seal;
 pub mod secret_env;
 mod sensitive;
 pub mod session;
+pub mod sessions_report;
 pub mod setup;
 pub mod skill;
 pub mod subagent;

@@ -160,11 +160,15 @@ enum Command {
     },
     /// Print the cost receipt for a saved session — a per-model breakdown plus
     /// normalized OpenAI/Anthropic subtotals. Defaults to the newest session for
-    /// this project; pass `--session <id>` to pick one. The headless `/cost`.
+    /// this project; pass `--session <id>` to pick one, or `--all` to merge
+    /// every saved session into one ledger. The headless `/cost`.
     Cost {
         /// Session id to report on (defaults to the newest for this project).
         #[arg(long)]
         session: Option<String>,
+        /// Merge every saved session for this project into one report.
+        #[arg(long, conflicts_with = "session")]
+        all: bool,
         /// Working directory (defaults to the current directory).
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
@@ -308,6 +312,21 @@ enum Command {
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
     },
+    /// Saved sessions for this project — the ledger behind `tomte resume` /
+    /// `--continue`. Bare it lists them (newest first, with age, model, and
+    /// preview); `sessions show [id]` prints one as a readable markdown
+    /// transcript; `sessions prune --keep N` / `--older-than-days N` deletes
+    /// old ones (dry-run unless --yes).
+    Sessions {
+        #[command(subcommand)]
+        action: Option<commands::sessions::SessionsAction>,
+        /// Emit the session list as JSON instead of the rendered text.
+        #[arg(long)]
+        json: bool,
+        /// Working directory (defaults to the current directory).
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+    },
     /// Night Rounds: the custodian's read-only inspection walk. Rebuilds the
     /// Repo Twin, diffs the Pulse against the last walk (risk risers, newly
     /// hot-and-untested files), reconciles the decision trail (drift watch),
@@ -328,6 +347,17 @@ enum Command {
         /// Working directory (defaults to the current directory).
         #[arg(long)]
         cwd: Option<std::path::PathBuf>,
+    },
+    /// Emit a shell completion script for tomte (bash, zsh, fish, powershell,
+    /// elvish) — generated from the same definition that parses the CLI, so
+    /// it never drifts from the real commands and flags. Examples:
+    /// `tomte completions bash > ~/.local/share/bash-completion/completions/tomte`;
+    /// in PowerShell, add `tomte completions powershell | Out-String |
+    /// Invoke-Expression` to $PROFILE.
+    Completions {
+        /// The shell to generate the script for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
     /// Context X-Ray: explain why a file or symbol is (or isn't) relevant. Pass a
     /// file (`src/auth/session.rs`), a stack-trace location (`src/x.rs:88`), or a
@@ -509,7 +539,7 @@ async fn async_main() -> Result<()> {
             cwd,
         }) => commands::why::run(loc, base, all, reconcile, json, cwd).await,
         Some(Command::Blame { file, json, cwd }) => commands::blame::run(file, json, cwd).await,
-        Some(Command::Cost { session, cwd }) => commands::cost::run(session, cwd).await,
+        Some(Command::Cost { session, all, cwd }) => commands::cost::run(session, all, cwd).await,
         Some(Command::Hooks { action }) => commands::hooks::run(action).await,
         Some(Command::Mcp { action }) => commands::mcp::run(action).await,
         Some(Command::Prove { json, cwd }) => commands::prove::run(json, cwd).await,
@@ -526,6 +556,9 @@ async fn async_main() -> Result<()> {
             out,
             cwd,
         }) => commands::receipt::run(json, html, session, out, cwd).await,
+        Some(Command::Sessions { action, json, cwd }) => {
+            commands::sessions::run(action, json, cwd).await
+        }
         Some(Command::Rounds {
             no_proof,
             json,
@@ -534,6 +567,9 @@ async fn async_main() -> Result<()> {
         }) => commands::rounds::run(no_proof, json, out, cwd).await,
         Some(Command::WhyContext { seed, json, cwd }) => {
             commands::why_context::run(seed, json, cwd).await
+        }
+        Some(Command::Completions { shell }) => {
+            commands::completions::run(shell, <Cli as clap::CommandFactory>::command())
         }
         Some(Command::Race {
             task,
@@ -904,21 +940,183 @@ mod tests {
         let cli =
             Cli::try_parse_from(["tomte", "cost", "--session", "abc-123", "--cwd", "/p"]).unwrap();
         match cli.command {
-            Some(Command::Cost { session, cwd }) => {
+            Some(Command::Cost { session, all, cwd }) => {
                 assert_eq!(session, Some("abc-123".to_string()));
+                assert!(!all, "--all defaults off");
                 assert_eq!(cwd, Some(std::path::PathBuf::from("/p")));
             }
             other => panic!("expected cost command, got {other:?}"),
         }
-        // Both flags are optional — `tomte cost` alone defaults to the newest session.
+        // All flags are optional — `tomte cost` alone defaults to the newest session.
         let bare = Cli::try_parse_from(["tomte", "cost"]).unwrap();
         assert!(matches!(
             bare.command,
             Some(Command::Cost {
                 session: None,
+                all: false,
                 cwd: None
             })
         ));
+    }
+
+    #[test]
+    fn cost_all_parses_and_conflicts_with_session() {
+        let cli = Cli::try_parse_from(["tomte", "cost", "--all"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Cost {
+                session: None,
+                all: true,
+                cwd: None
+            })
+        ));
+        // One report, one scope: --all and --session refuse to combine.
+        assert!(Cli::try_parse_from(["tomte", "cost", "--all", "--session", "s-1"]).is_err());
+    }
+
+    #[test]
+    fn completions_parses_known_shells_and_rejects_unknown() {
+        use clap_complete::Shell;
+        for (name, want) in [
+            ("bash", Shell::Bash),
+            ("zsh", Shell::Zsh),
+            ("fish", Shell::Fish),
+            ("powershell", Shell::PowerShell),
+            ("elvish", Shell::Elvish),
+        ] {
+            let cli = Cli::try_parse_from(["tomte", "completions", name]).unwrap();
+            match cli.command {
+                Some(Command::Completions { shell }) => assert_eq!(shell, want),
+                other => panic!("expected completions command, got {other:?}"),
+            }
+        }
+        // An unknown shell is a parse error with the choices listed, not a panic.
+        assert!(Cli::try_parse_from(["tomte", "completions", "tcsh"]).is_err());
+        // The shell argument is required.
+        assert!(Cli::try_parse_from(["tomte", "completions"]).is_err());
+    }
+
+    #[test]
+    fn completions_scripts_generate_for_every_shell() {
+        use clap::CommandFactory;
+        use clap_complete::Shell;
+        for shell in [
+            Shell::Bash,
+            Shell::Zsh,
+            Shell::Fish,
+            Shell::PowerShell,
+            Shell::Elvish,
+        ] {
+            let mut buf = Vec::new();
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "tomte", &mut buf);
+            let script = String::from_utf8(buf).expect("script is utf-8");
+            assert!(
+                script.contains("tomte"),
+                "{shell:?} script must mention the binary"
+            );
+            // The script must know the subcommands, not just the binary name.
+            assert!(
+                script.contains("sessions") && script.contains("prove"),
+                "{shell:?} script must cover the command surface"
+            );
+        }
+    }
+
+    #[test]
+    fn sessions_bare_lists_and_json_flag_parses() {
+        let bare = Cli::try_parse_from(["tomte", "sessions"]).unwrap();
+        assert!(matches!(
+            bare.command,
+            Some(Command::Sessions {
+                action: None,
+                json: false,
+                cwd: None
+            })
+        ));
+
+        let json = Cli::try_parse_from(["tomte", "sessions", "--json", "--cwd", "/p"]).unwrap();
+        match json.command {
+            Some(Command::Sessions { action, json, cwd }) => {
+                assert!(action.is_none());
+                assert!(json);
+                assert_eq!(cwd, Some(std::path::PathBuf::from("/p")));
+            }
+            other => panic!("expected sessions command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sessions_show_parses_optional_id_and_out() {
+        let with_id =
+            Cli::try_parse_from(["tomte", "sessions", "show", "abc-1", "--out", "t.md"]).unwrap();
+        match with_id.command {
+            Some(Command::Sessions {
+                action: Some(commands::sessions::SessionsAction::Show { id, json, out, .. }),
+                ..
+            }) => {
+                assert_eq!(id.as_deref(), Some("abc-1"));
+                assert!(!json, "show defaults to the markdown transcript");
+                assert_eq!(out, Some(std::path::PathBuf::from("t.md")));
+            }
+            other => panic!("expected sessions show, got {other:?}"),
+        }
+
+        // Bare `sessions show` — newest session, stdout.
+        let bare = Cli::try_parse_from(["tomte", "sessions", "show"]).unwrap();
+        assert!(matches!(
+            bare.command,
+            Some(Command::Sessions {
+                action: Some(commands::sessions::SessionsAction::Show {
+                    id: None,
+                    json: false,
+                    out: None,
+                    cwd: None
+                }),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn sessions_prune_parses_rules_and_defaults_to_dry_run() {
+        let cli = Cli::try_parse_from([
+            "tomte",
+            "sessions",
+            "prune",
+            "--keep",
+            "5",
+            "--older-than-days",
+            "30",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Sessions {
+                action:
+                    Some(commands::sessions::SessionsAction::Prune {
+                        keep,
+                        older_than_days,
+                        yes,
+                        ..
+                    }),
+                ..
+            }) => {
+                assert_eq!(keep, Some(5));
+                assert_eq!(older_than_days, Some(30));
+                assert!(!yes, "prune must default to the dry run");
+            }
+            other => panic!("expected sessions prune, got {other:?}"),
+        }
+
+        let armed =
+            Cli::try_parse_from(["tomte", "sessions", "prune", "--keep", "3", "--yes"]).unwrap();
+        match armed.command {
+            Some(Command::Sessions {
+                action: Some(commands::sessions::SessionsAction::Prune { yes, .. }),
+                ..
+            }) => assert!(yes),
+            other => panic!("expected sessions prune, got {other:?}"),
+        }
     }
 
     #[test]

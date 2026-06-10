@@ -1,5 +1,6 @@
 pub mod blame;
 pub mod chat;
+pub mod completions;
 #[path = "config.rs"]
 pub mod config_cmd;
 pub mod cost;
@@ -15,6 +16,7 @@ pub mod race;
 pub mod receipt;
 pub mod rounds;
 pub mod seal;
+pub mod sessions;
 pub mod twin;
 pub mod why;
 pub mod why_context;

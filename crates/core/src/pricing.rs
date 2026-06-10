@@ -85,6 +85,29 @@ pub fn pricing_for(model: &str) -> Pricing {
     Pricing::new(input, output, input * 0.1, input)
 }
 
+/// Merge several sessions' per-model usage into one ledger: token counts sum
+/// per model id (saturating), and the result is sorted by model id so equal
+/// inputs render byte-identical reports. Backs `tomte cost --all`.
+pub fn merge_usage<'a>(parts: impl IntoIterator<Item = &'a [ModelUsage]>) -> Vec<ModelUsage> {
+    let mut merged: Vec<ModelUsage> = Vec::new();
+    for part in parts {
+        for u in part {
+            match merged.iter_mut().find(|m| m.model == u.model) {
+                Some(m) => {
+                    m.input_tokens = m.input_tokens.saturating_add(u.input_tokens);
+                    m.output_tokens = m.output_tokens.saturating_add(u.output_tokens);
+                    m.cache_read_tokens = m.cache_read_tokens.saturating_add(u.cache_read_tokens);
+                    m.cache_write_tokens =
+                        m.cache_write_tokens.saturating_add(u.cache_write_tokens);
+                }
+                None => merged.push(u.clone()),
+            }
+        }
+    }
+    merged.sort_by(|a, b| a.model.cmp(&b.model));
+    merged
+}
+
 /// Render the `/cost` report: a per-model breakdown plus a session total.
 /// `current_model` is the active model; `turns` is the user-visible turn count.
 pub fn render_cost_report(usage: &[ModelUsage], current_model: &str, turns: u64) -> String {
@@ -241,6 +264,65 @@ mod tests {
     #[test]
     fn unknown_model_uses_fallback_not_panic() {
         assert_eq!(pricing_for("some-future-model").input, 1.25);
+    }
+
+    #[test]
+    fn merge_usage_sums_per_model_and_sorts() {
+        let a = vec![
+            ModelUsage {
+                model: "gpt-5.5".into(),
+                input_tokens: 100,
+                output_tokens: 10,
+                cache_read_tokens: 5,
+                cache_write_tokens: 1,
+            },
+            ModelUsage {
+                model: "claude-fable-5".into(),
+                input_tokens: 200,
+                output_tokens: 20,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            },
+        ];
+        let b = vec![ModelUsage {
+            model: "gpt-5.5".into(),
+            input_tokens: 50,
+            output_tokens: 5,
+            cache_read_tokens: 2,
+            cache_write_tokens: 3,
+        }];
+        let merged = merge_usage([a.as_slice(), b.as_slice()]);
+        // Sorted by model id, one entry per model.
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].model, "claude-fable-5");
+        assert_eq!(merged[1].model, "gpt-5.5");
+        assert_eq!(merged[1].input_tokens, 150);
+        assert_eq!(merged[1].output_tokens, 15);
+        assert_eq!(merged[1].cache_read_tokens, 7);
+        assert_eq!(merged[1].cache_write_tokens, 4);
+        // Empty input merges to empty, never panics.
+        assert!(merge_usage(std::iter::empty::<&[ModelUsage]>()).is_empty());
+    }
+
+    #[test]
+    fn merge_usage_saturates_instead_of_overflowing() {
+        let big = ModelUsage {
+            model: "gpt-5".into(),
+            input_tokens: u64::MAX,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        };
+        let more = ModelUsage {
+            model: "gpt-5".into(),
+            input_tokens: 1,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        };
+        let parts = [std::slice::from_ref(&big), std::slice::from_ref(&more)];
+        let merged = merge_usage(parts);
+        assert_eq!(merged[0].input_tokens, u64::MAX);
     }
 
     #[test]
