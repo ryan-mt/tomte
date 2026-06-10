@@ -83,7 +83,12 @@ pub fn default_fallbacks(model: &str) -> Vec<String> {
     } else {
         return Vec::new();
     };
-    let Some(tier) = ladder.iter().position(|(t, _)| m.contains(t)) else {
+    // Anchor at the LOWEST tier the id mentions (rposition: the ladder is
+    // ordered top tier first). An id carrying two tier words — say a
+    // hypothetical `claude-sonnet-opus-distill` — must anchor at sonnet, not
+    // opus: anchoring high would offer a pricier model than the one the user
+    // picked, breaking the "sideways or down, never up" promise.
+    let Some(tier) = ladder.iter().rposition(|(t, _)| m.contains(t)) else {
         return Vec::new();
     };
     ladder[tier..]
@@ -217,6 +222,21 @@ mod tests {
         assert_eq!(
             default_fallbacks("gpt-5.5-codex"),
             vec!["gpt-5.4".to_string()]
+        );
+    }
+
+    // An id mentioning TWO tier words must anchor at the lowest one — anchoring
+    // high would offer a pricier model than the one the user picked.
+    #[test]
+    fn default_ladder_multi_tier_id_anchors_at_the_lowest_tier() {
+        assert_eq!(
+            default_fallbacks("claude-sonnet-opus-distill"),
+            vec!["claude-sonnet-4-6".to_string()],
+            "must anchor at sonnet, never walk up to opus"
+        );
+        assert_eq!(
+            default_fallbacks("claude-fable-sonnet-blend"),
+            vec!["claude-sonnet-4-6".to_string()]
         );
     }
 
