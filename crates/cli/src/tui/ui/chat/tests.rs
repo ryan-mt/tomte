@@ -1,4 +1,3 @@
-
 use super::{read_group_crosses, resolve_scroll, stable_boundary, visible_thought_rows};
 use crate::tui::app::Block;
 

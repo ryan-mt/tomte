@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn rec(loc: &str, model: &str) -> DecisionRecord {
