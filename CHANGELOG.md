@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Repo hygiene: removed stray ad-hoc debug binaries (`test_contains.exe`/`.pdb`) from the repository root and added root-level `/*.exe` + `/*.pdb` ignore rules so a quick local compile can never ride into a commit. No tracked file matched the new patterns.
+
 ## 0.0.4
 
 ### Added

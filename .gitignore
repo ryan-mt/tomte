@@ -1,6 +1,8 @@
 /target
 /target-review
 /dist
+/*.exe
+/*.pdb
 CLAUDE.md
 **/*.rs.bk
 Cargo.lock.bak
