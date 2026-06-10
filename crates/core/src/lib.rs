@@ -15,6 +15,7 @@ pub mod handoff;
 pub mod hooks;
 pub mod mcp;
 pub mod memory;
+pub mod models_report;
 pub mod openai;
 pub mod permissions;
 pub mod pricing;

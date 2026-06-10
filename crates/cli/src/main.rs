@@ -102,6 +102,15 @@ enum Command {
         #[arg(long)]
         set_reasoning: Option<String>,
     },
+    /// List the model lineup: every model tomte can drive, its context window
+    /// and thinking capabilities, which credentials are present (presence
+    /// only, never contents), the active model, and the failover chain an
+    /// overload would walk.
+    Models {
+        /// Emit the report as JSON for scripting.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the decision trail: why earlier changes were made, and by which
     /// model. `tomte why <file:line>` explains one location; `tomte why --all`
     /// lists the whole trail; `tomte why diff [base]` reviews the *reasoning*
@@ -490,6 +499,7 @@ async fn async_main() -> Result<()> {
             set_model,
             set_reasoning,
         }) => commands::config_cmd::run(show, set_model, set_reasoning).await,
+        Some(Command::Models { json }) => commands::models::run(json).await,
         Some(Command::Why {
             loc,
             base,
@@ -723,6 +733,20 @@ mod tests {
                 assert!(base.is_none(), "base defaults to auto-detection");
             }
             other => panic!("expected why command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn models_parses_with_and_without_json() {
+        let cli = Cli::try_parse_from(["tomte", "models", "--json"]).unwrap();
+        match cli.command {
+            Some(Command::Models { json }) => assert!(json),
+            other => panic!("expected models command, got {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["tomte", "models"]).unwrap();
+        match cli.command {
+            Some(Command::Models { json }) => assert!(!json),
+            other => panic!("expected models command, got {other:?}"),
         }
     }
 

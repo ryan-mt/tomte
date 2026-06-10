@@ -15,6 +15,7 @@ pub async fn handle_slash(app: &mut App, cmd: &str) {
                  /apikey <sk-…>      save an API key\n  \
                  /logout             clear credentials\n  \
                  /model              pick model (arrow keys), then reasoning\n  \
+                 /models             the model lineup: windows, thinking, credentials, failover\n  \
                  /thinking           pick reasoning (none|low|medium|high|xhigh)\n  \
                  /verbosity          pick verbosity (low|medium|high)\n  \
                  /img <path>         attach a file as an image (or use Ctrl+V)\n  \

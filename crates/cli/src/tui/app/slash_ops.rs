@@ -388,6 +388,15 @@ pub async fn handle_slash_ops(app: &mut App, head: &str, arg: &str) {
                 app.blocks.push(Block::System(report));
             }
         }
+        "models" => {
+            // The model lineup from real state — catalog facts, credential
+            // presence (never contents), the active model, and the failover
+            // chain an overload would walk. Mirrors `tomte models`.
+            let report = tomte_core::models_report::render(
+                &tomte_core::models_report::collect_current(&app.config),
+            );
+            app.blocks.push(Block::System(report));
+        }
         "twin" => {
             // The Repo Twin from inside a session — the same five verifiable
             // indexes `tomte twin` builds (imports, symbols, test map, git

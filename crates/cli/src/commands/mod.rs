@@ -8,6 +8,7 @@ pub mod handoff;
 pub mod hooks;
 pub mod login;
 pub mod mcp;
+pub mod models;
 pub mod prove;
 pub mod pulse;
 pub mod race;

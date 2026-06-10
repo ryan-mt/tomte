@@ -15,6 +15,11 @@ pub fn slash_commands(cwd: &Path) -> Vec<PickerItem> {
     let mut items = vec![
         item("help", "/help", "list all commands"),
         item("model", "/model", "change the model"),
+        item(
+            "models",
+            "/models",
+            "the model lineup: windows, thinking, credentials, failover",
+        ),
         item("thinking", "/thinking", "change reasoning effort"),
         item("effort", "/effort", "alias for /thinking"),
         item("verbosity", "/verbosity", "change output verbosity"),
