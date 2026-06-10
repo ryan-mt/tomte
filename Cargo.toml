@@ -34,6 +34,8 @@ bytes = "1"
 axum = { version = "0.7", features = ["ws"] }
 once_cell = "1"
 webbrowser = "1"
+regex = "1"
+ignore = "0.4"
 # Do NOT enable the `scrolling-regions` feature. It makes `insert_before` use
 # DECSTBM scroll regions, and Windows Terminal discards lines scrolled out of
 # a region instead of pushing them into scrollback (microsoft/terminal#3673) —

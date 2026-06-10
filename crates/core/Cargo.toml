@@ -27,8 +27,8 @@ bytes.workspace = true
 once_cell.workspace = true
 webbrowser.workspace = true
 axum.workspace = true
-regex = "1"
-ignore = "0.4"
+regex.workspace = true
+ignore.workspace = true
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
