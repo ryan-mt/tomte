@@ -1,0 +1,217 @@
+# tomte — Done Means Verified, as a GitHub Action.
+#
+# Runs tomte's evidence collectors inside the job and fails when the evidence
+# is red, turning "done means verified" from a local habit into a PR gate:
+#
+#   - `tomte prove`        — the files git reports changed + the REAL exit codes
+#                            of the project's own test/typecheck/lint/build,
+#                            run by the CLI on the runner (exit 1 on a failure);
+#   - `tomte seal verify`  — does HEAD carry a Commit Seal that actually binds
+#                            to this commit and tree, with green checks (opt-in);
+#   - `tomte rounds`       — the inspection walk: drifted decisions, risk
+#                            risers, hot-and-untested files (exit 1 on red).
+#
+# The full evidence lands in the job's step summary (the PR check page), and
+# optionally as one self-updating PR comment. The runner must have the repo
+# checked out and the project's toolchain installed — tomte runs the project's
+# own checks, it doesn't bring a toolchain.
+#
+# Minimal usage:
+#
+#   - uses: actions/checkout@v6
+#     with: { fetch-depth: 0 }   # rounds/pulse read recent git history
+#   - uses: dtolnay/rust-toolchain@stable   # or your ecosystem's setup step
+#   - uses: ryan-mt/tomte@v0.0.4
+#     with:
+#       comment: "true"
+name: "tomte — Done Means Verified"
+description: >-
+  Verify a PR with evidence, not claims: run the project's own
+  test/typecheck/lint/build via `tomte prove` (real exit codes), optionally
+  require a bound Commit Seal on HEAD (`tomte seal verify`), and walk the
+  repo's decision trail and risk map (`tomte rounds`). Fails when red; posts
+  the evidence as a step summary and an optional PR comment.
+author: ryan-mt
+branding:
+  icon: check-circle
+  color: green
+
+inputs:
+  version:
+    description: >-
+      tomte release to install — a tag like `v0.0.4`, or `latest`.
+    required: false
+    default: latest
+  prove:
+    description: Run `tomte prove` (the proof capsule; fails the job on a red check).
+    required: false
+    default: "true"
+  seal-verify:
+    description: >-
+      Run `tomte seal verify` — require HEAD to carry a verified Commit Seal.
+      Off by default: a PR's merge ref is rarely the sealed commit.
+    required: false
+    default: "false"
+  rounds:
+    description: >-
+      Run `tomte rounds` (drift watch, risk risers, hot-and-untested files;
+      fails the job on red). Runs with `--no-proof` when `prove` already ran
+      the checks, so the suite isn't paid for twice.
+    required: false
+    default: "true"
+  comment:
+    description: >-
+      Post the evidence as one self-updating comment on the pull request
+      (needs `pull-requests: write` permission on the job).
+    required: false
+    default: "false"
+  github-token:
+    description: Token used to post the PR comment.
+    required: false
+    default: ${{ github.token }}
+  working-directory:
+    description: Directory to verify (defaults to the workspace root).
+    required: false
+    default: "."
+
+outputs:
+  verified:
+    description: '"true" when every selected gate passed, else "false".'
+    value: ${{ steps.gates.outputs.verified }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install tomte
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        repo="${GITHUB_ACTION_REPOSITORY:-ryan-mt/tomte}"
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64)   asset="tomte-x86_64-unknown-linux-gnu.tar.gz" ;;
+          macOS-ARM64) asset="tomte-aarch64-apple-darwin.tar.gz" ;;
+          macOS-X64)   asset="tomte-x86_64-apple-darwin.tar.gz" ;;
+          Windows-X64) asset="tomte-x86_64-pc-windows-msvc.zip" ;;
+          *)
+            echo "::error::no tomte release binary for ${RUNNER_OS}/${RUNNER_ARCH}"
+            exit 1
+            ;;
+        esac
+        if [ "$VERSION" = "latest" ]; then
+          url="https://github.com/${repo}/releases/latest/download/${asset}"
+        else
+          url="https://github.com/${repo}/releases/download/${VERSION}/${asset}"
+        fi
+        dir="${RUNNER_TEMP}/tomte-bin"
+        mkdir -p "$dir"
+        cd "$dir"
+        echo "downloading ${url}"
+        curl -fsSL --retry 3 -o "$asset" "$url"
+        curl -fsSL --retry 3 -o "${asset}.sha256" "${url}.sha256"
+        # Verify the published checksum — this action gates on evidence, so the
+        # binary doing the gating is itself verified.
+        want="$(cut -d' ' -f1 "${asset}.sha256" | tr '[:upper:]' '[:lower:]')"
+        if command -v sha256sum >/dev/null 2>&1; then
+          got="$(sha256sum "$asset" | cut -d' ' -f1)"
+        else
+          got="$(shasum -a 256 "$asset" | cut -d' ' -f1)"
+        fi
+        if [ "$want" != "$got" ]; then
+          echo "::error::checksum mismatch for ${asset} (want ${want}, got ${got})"
+          exit 1
+        fi
+        case "$asset" in
+          *.tar.gz) tar -xzf "$asset" ;;
+          *.zip)    pwsh -NoProfile -Command "Expand-Archive -Path '$asset' -DestinationPath '.' -Force" ;;
+        esac
+        folder="${asset%.tar.gz}"
+        folder="${folder%.zip}"
+        echo "${dir}/${folder}" >> "$GITHUB_PATH"
+
+    - name: Collect evidence
+      id: gates
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PROVE: ${{ inputs.prove }}
+        SEAL: ${{ inputs.seal-verify }}
+        ROUNDS: ${{ inputs.rounds }}
+      run: |
+        set -uo pipefail
+        report="${RUNNER_TEMP}/tomte-report.md"
+        fail=0
+        {
+          echo "## tomte — done means verified"
+          echo
+          echo "_Evidence collected by the tomte CLI on this runner — real exit codes, never a model's word._"
+        } > "$report"
+
+        collect() {
+          label="$1"; shift
+          out="$("$@" 2>&1)"; rc=$?
+          icon="✅"
+          if [ $rc -ne 0 ]; then icon="❌"; fail=1; fi
+          note=""
+          lines=$(printf '%s\n' "$out" | wc -l)
+          if [ "$lines" -gt 100 ]; then
+            out="$(printf '%s\n' "$out" | tail -n 100)"
+            note="_(output truncated to the last 100 of ${lines} lines)_"
+          fi
+          {
+            echo
+            echo "### ${icon} ${label} — exit ${rc}"
+            echo
+            if [ -n "$note" ]; then echo "$note"; echo; fi
+            echo '```text'
+            printf '%s\n' "$out"
+            echo '```'
+          } >> "$report"
+          echo "${icon} ${label}: exit ${rc}"
+        }
+
+        if [ "$PROVE" = "true" ]; then
+          collect "tomte prove" tomte prove
+        fi
+        if [ "$SEAL" = "true" ]; then
+          collect "tomte seal verify" tomte seal verify
+        fi
+        if [ "$ROUNDS" = "true" ]; then
+          if [ "$PROVE" = "true" ]; then
+            # prove already paid for the check suite — rounds skips its proof pass.
+            collect "tomte rounds (drift watch; --no-proof, prove ran the checks)" tomte rounds --no-proof
+          else
+            collect "tomte rounds" tomte rounds
+          fi
+        fi
+
+        cat "$report" >> "$GITHUB_STEP_SUMMARY"
+        echo "report=${report}" >> "$GITHUB_OUTPUT"
+        if [ $fail -eq 0 ]; then
+          echo "verified=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "verified=false" >> "$GITHUB_OUTPUT"
+        fi
+        exit $fail
+
+    - name: Comment on the pull request
+      # always(): the comment matters MOST when a gate just failed the job.
+      if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' && steps.gates.outputs.report != '' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPORT: ${{ steps.gates.outputs.report }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        marker="<!-- tomte-done-means-verified -->"
+        body="$(printf '%s\n\n' "$marker"; cat "$REPORT")"
+        existing="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+          --paginate --jq ".[] | select(.body | startswith(\"${marker}\")) | .id" | head -n 1)"
+        if [ -n "$existing" ]; then
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -f body="$body" > /dev/null
+        else
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="$body" > /dev/null
+        fi
+        echo "PR comment updated"

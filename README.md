@@ -6,7 +6,7 @@
 
 Calm, multi-model, Rust-fast · quiet and surgical — and it hatches a pixel companion.
 
-`0.0.3` · MIT · built in 🦀 Rust
+`0.0.4` · MIT · built in 🦀 Rust
 
 </div>
 
@@ -149,6 +149,7 @@ tomte run --cwd /srv/project --prompt-file nightly-task.md   # scheduler-friendl
 ```bash
 tomte prove --json                       # run the project's own checks; non-zero exit on failure
 tomte seal                               # notarize the proof onto HEAD as a git note; `seal verify` gates CI
+tomte receipt --out RECEIPT.md           # the work receipt for a PR: proof + seal + what the session ran + cost + why
 tomte twin                               # build/inspect the repo's verifiable map
 tomte why-context src/auth/session.rs    # which files belong in context, and why
 tomte pulse                              # which files break next — scored, formula on the card
@@ -156,6 +157,34 @@ tomte handoff --out HANDOFF.md           # the shift report for the next session
 tomte rounds                             # the night walk: what changed since last rounds; red exits 1
 tomte race "fix the flaky retry test" --agents 4   # tournament: isolated worktrees, measured judge
 ```
+
+## Done means verified — in CI
+
+The same evidence commands ship as a GitHub Action: it installs the released
+binary (checksum-verified), runs `tomte prove` (the project's own checks, real
+exit codes) and `tomte rounds` (drift watch, hot-and-untested files), fails the
+job when the evidence is red, and writes the full report to the PR check's step
+summary — optionally as one self-updating PR comment.
+
+```yaml
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write        # only needed for `comment: "true"`
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0 }  # rounds/pulse read recent git history
+      - uses: dtolnay/rust-toolchain@stable   # your project's toolchain — tomte runs *its* checks
+      - uses: ryan-mt/tomte@v0.0.4
+        with:
+          comment: "true"
+```
+
+Inputs: `version` (release tag or `latest`), `prove` / `rounds` / `seal-verify`
+(pick the gates), `comment` + `github-token`, `working-directory`. Output:
+`verified` (`"true"`/`"false"`).
 
 ## The tool belt
 
