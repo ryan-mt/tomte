@@ -1,5 +1,19 @@
 use super::*;
 
+/// Collapse session/model-authored text onto one capped line. The receipt
+/// sells itself as CLI-collected truth, so a multi-line shell command or
+/// decision `why` must not be able to inject raw markdown (e.g. a forged
+/// `## Verdict` heading) into it.
+fn one_line(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        let t: String = flat.chars().take(max.saturating_sub(1)).collect();
+        format!("{t}…")
+    }
+}
+
 /// Render the receipt as paste-ready markdown (the PR attachment).
 pub fn render_markdown(r: &Receipt) -> String {
     let mut out = String::new();
@@ -88,7 +102,7 @@ pub fn render_markdown(r: &Receipt) -> String {
         } else {
             out.push_str(&format!("- files edited ({}):\n", s.files_edited_total));
             for f in &s.files_edited {
-                out.push_str(&format!("  - `{f}`\n"));
+                out.push_str(&format!("  - `{}`\n", one_line(f, 160)));
             }
             if s.files_edited_total > s.files_edited.len() {
                 out.push_str(&format!(
@@ -102,7 +116,7 @@ pub fn render_markdown(r: &Receipt) -> String {
         } else {
             out.push_str(&format!("- commands run ({}):\n", s.commands_total));
             for c in &s.commands {
-                out.push_str(&format!("  - `{c}`\n"));
+                out.push_str(&format!("  - `{}`\n", one_line(c, 160)));
             }
             if s.commands_total > s.commands.len() {
                 out.push_str(&format!(
@@ -138,7 +152,10 @@ pub fn render_markdown(r: &Receipt) -> String {
         for d in &r.decisions {
             out.push_str(&format!(
                 "- `{}` — {} — because {} _(recorded by {})_\n",
-                d.loc, d.decision, d.why, d.model
+                one_line(&d.loc, 120),
+                one_line(&d.decision, 200),
+                one_line(&d.why, 300),
+                one_line(&d.model, 60)
             ));
         }
         if r.decisions_total > r.decisions.len() {

@@ -54,7 +54,13 @@ impl Agent {
             .with_reasoning(self.config.reasoning_effort.clone())
             .with_verbosity(self.config.verbosity.clone());
 
-        let summary = self.collect_text(request).await?;
+        let (summary, usage) = self.collect_text(request).await?;
+        // The summary turn re-reads the whole history — the most expensive
+        // side request the agent makes. Fold it into /cost like any turn.
+        if let Some(u) = &usage {
+            let model = self.config.model.clone();
+            self.record_cost(&model, u);
+        }
         if summary.trim().is_empty() {
             return Err(anyhow::anyhow!("compaction produced an empty summary"));
         }
@@ -192,13 +198,20 @@ impl Agent {
     }
 
     /// Drive a request through the streaming path and return the accumulated
-    /// assistant text. A minimal recv loop for tool-free turns (used by
+    /// assistant text plus the turn's parsed usage (when the provider reported
+    /// one). A minimal recv loop for tool-free turns (used by
     /// `compact_history`): it handles only text and terminal events. It does
     /// NOT call `emit_usage`, so the summary turn's large input doesn't re-fire
-    /// the 85% context warning while we are in the middle of compacting.
-    pub(super) async fn collect_text(&self, request: ResponsesRequest) -> Result<String> {
+    /// the 85% context warning while we are in the middle of compacting — but
+    /// the usage is still returned so callers can `record_cost` it: these side
+    /// turns are billed like any other and must show up in `/cost`.
+    pub(super) async fn collect_text(
+        &self,
+        request: ResponsesRequest,
+    ) -> Result<(String, Option<TurnUsage>)> {
         let mut handle = self.client.stream(request).await?;
         let mut text = String::new();
+        let mut usage = None;
         loop {
             let recv = tokio::time::timeout(STREAM_IDLE_TIMEOUT, handle.rx.recv()).await;
             let ev = match recv {
@@ -222,7 +235,10 @@ impl Agent {
                 ResponseStreamEvent::OutputTextDone { text: t, .. } if text.is_empty() => {
                     text = t;
                 }
-                ResponseStreamEvent::Completed { .. } => break,
+                ResponseStreamEvent::Completed { response } => {
+                    usage = parse_usage(&response);
+                    break;
+                }
                 ResponseStreamEvent::Failed { response } => {
                     let message = response
                         .get("error")
@@ -238,7 +254,7 @@ impl Agent {
                 _ => {}
             }
         }
-        Ok(text)
+        Ok((text, usage))
     }
 
     /// After a turn that changed files, ask the model — provider-agnostically —
@@ -259,7 +275,7 @@ impl Agent {
     /// like any other turn, with no per-model special-casing, so a model added
     /// later works automatically. Fail-open: a self-check error or a `NONE`
     /// answer records nothing and never disturbs the finished turn.
-    pub(super) async fn maybe_capture_decision(&self, turn_mutated: bool, turn_recorded: bool) {
+    pub(super) async fn maybe_capture_decision(&mut self, turn_mutated: bool, turn_recorded: bool) {
         if !should_auto_capture(
             self.config.auto_capture,
             self.non_interactive,
@@ -282,9 +298,15 @@ impl Agent {
             .with_instructions(self.system_prompt.clone())
             .with_reasoning("low")
             .with_verbosity("low");
-        let Ok(answer) = self.collect_text(request).await else {
+        let Ok((answer, usage)) = self.collect_text(request).await else {
             return;
         };
+        // The self-check replays the full history as input — billed work, so
+        // it must land in /cost even though it never emits usage events.
+        if let Some(u) = &usage {
+            let model = self.config.model.clone();
+            self.record_cost(&model, u);
+        }
         let Some(captured) = crate::decisions::parse_captured(&answer) else {
             return;
         };
@@ -319,8 +341,11 @@ impl Agent {
             .with_instructions(crate::conscience::CHECK_INSTRUCTIONS.to_string())
             .with_reasoning("low")
             .with_verbosity("low");
+        // Usage is dropped here: this caller is `&self` (the conscience
+        // pre-pass borrows the agent shared) and the check is a single short
+        // message at low effort — the one side turn /cost still undercounts.
         match self.collect_text(request).await {
-            Ok(answer) => crate::conscience::parse_check_answer(&answer),
+            Ok((answer, _)) => crate::conscience::parse_check_answer(&answer),
             Err(_) => crate::conscience::ConscienceVerdict::Clear,
         }
     }

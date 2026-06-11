@@ -36,7 +36,6 @@ const ENV_DENYLIST_SUBSTRINGS: &[&str] = &[
     "AWS_",
     "GOOGLE_",
     "GITHUB_",
-    "GH_",
     "SUPABASE",
     "PASSPHRASE",  // GPG/SSH key passphrases
     "KUBECONFIG",  // path to a kube credentials file
@@ -72,11 +71,17 @@ const ENV_DENYLIST_SUBSTRINGS: &[&str] = &[
     "DISCORD",      // Discord bot credentials
 ];
 
+/// Patterns that only count at the very start of the name: `GH_` as a bare
+/// substring would also strip benign vars like `HIGH_WATER_MARK` (chars 2-4).
+const ENV_DENYLIST_PREFIXES: &[&str] = &["GH_"];
+
 /// Whether an env var name looks secret enough to scrub before spawning a child
-/// process. Case-insensitive substring match over [`ENV_DENYLIST_SUBSTRINGS`].
+/// process. Case-insensitive substring match over [`ENV_DENYLIST_SUBSTRINGS`],
+/// plus the anchored [`ENV_DENYLIST_PREFIXES`].
 pub(crate) fn is_secret_env_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     ENV_DENYLIST_SUBSTRINGS.iter().any(|p| upper.contains(p))
+        || ENV_DENYLIST_PREFIXES.iter().any(|p| upper.starts_with(p))
 }
 
 /// Remove inherited secret-bearing env vars from a child command before spawn,
@@ -108,6 +113,7 @@ mod tests {
     fn secret_env_names_are_scrubbed_without_eating_benign_ones() {
         for name in [
             "GITHUB_TOKEN",
+            "GH_TOKEN",
             "AWS_ACCESS_KEY_ID",
             "OPENAI_API_KEY",
             "DATABASE_URL",
@@ -177,6 +183,10 @@ mod tests {
             // `_PASS` requires the underscore: BYPASS/COMPASS-style names survive.
             "CACHE_BYPASS",
             "COMPASS_DIR",
+            // `GH_` anchors to the start of the name: HIGH_* contains "GH_"
+            // but is not a GitHub credential.
+            "HIGH_WATER_MARK",
+            "HIGH_SCORE",
         ] {
             assert!(!is_secret_env_name(name), "should NOT scrub {name}");
         }

@@ -21,6 +21,16 @@ pub(super) fn read_large_text_slice(
         .with_context(|| format!("read {}", path.display()))?;
     if leading_bytes_are_binary(head) {
         let head = head.to_vec();
+        // UTF-16 text too large to decode in one piece: name the encoding and
+        // keep it NON-overwritable — it has real contents the model never saw.
+        if has_utf16_bom(&head) {
+            return Ok((
+                format!(
+                    "<system-reminder>`{display_path}` is UTF-16 text ({file_len} bytes), too large to decode here; convert it to UTF-8 (or read a smaller copy) to see its contents.</system-reminder>\n"
+                ),
+                false,
+            ));
+        }
         // A binary file's whole content is "recorded as read".
         return Ok((describe_binary(display_path, &head, file_len), true));
     }
@@ -29,6 +39,7 @@ pub(super) fn read_large_text_slice(
     let mut line_no = 0usize;
     let mut printed = 0usize;
     let mut hit_limit = false;
+    let mut any_line_truncated = false;
     let max_line_bytes = max_line_chars.saturating_mul(4);
     let cap = read_output_byte_cap();
 
@@ -53,6 +64,9 @@ pub(super) fn read_large_text_slice(
                     .trim_end_matches(['\r', '\n'])
                     .to_string()
             });
+            if was_byte_truncated || text.chars().count() > max_line_chars {
+                any_line_truncated = true;
+            }
             out.push_str(&numbered_line(
                 line_no + 1,
                 &text,
@@ -73,8 +87,10 @@ pub(super) fn read_large_text_slice(
         }
         line_no = line_no.saturating_add(1);
     }
-    // Full only if we read from the very top all the way to EOF.
-    let fully_read = start == 0 && !hit_limit;
+    // Full only if we read from the very top all the way to EOF and no line
+    // was cut — a truncated line is content the model never saw, so the file
+    // must not become overwritable on the strength of this read.
+    let fully_read = start == 0 && !hit_limit && !any_line_truncated;
     Ok((out, fully_read))
 }
 

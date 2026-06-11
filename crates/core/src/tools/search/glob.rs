@@ -191,6 +191,11 @@ fn relativize_glob_results(
 /// with a `/` matches the full relative path. Built on the shared
 /// [`crate::hooks::glob_match`] so `**`/`*`/`?` behave consistently.
 fn glob_fallback_matches(pattern: &str, rel_path: &str) -> bool {
+    // `!pattern` excludes matches, mirroring ripgrep's `--glob` — without
+    // this the fallback read `!` as a literal and silently dropped every file.
+    if let Some(neg) = pattern.strip_prefix('!') {
+        return !glob_fallback_matches(neg, rel_path);
+    }
     if pattern.contains('/') {
         crate::hooks::glob_match(pattern, rel_path)
     } else {
@@ -203,6 +208,23 @@ fn glob_fallback_matches(pattern: &str, rel_path: &str) -> bool {
 mod tests {
     use super::super::test_support::{ctx, rg_available, write};
     use super::*;
+
+    #[test]
+    fn fallback_glob_supports_braces_and_negation() {
+        // Brace alternation — used to be escaped literally and match nothing.
+        assert!(glob_fallback_matches("*.{ts,tsx}", "src/app.tsx"));
+        assert!(glob_fallback_matches("*.{ts,tsx}", "app.ts"));
+        assert!(!glob_fallback_matches("*.{ts,tsx}", "app.rs"));
+        assert!(glob_fallback_matches(
+            "src/**/*.{rs,toml}",
+            "src/a/b/x.toml"
+        ));
+        // Negation — the grep description itself suggests `!target/**`.
+        assert!(!glob_fallback_matches("!target/**", "target/debug/x.d"));
+        assert!(glob_fallback_matches("!target/**", "src/main.rs"));
+        // Unbalanced braces stay literal instead of erroring.
+        assert!(glob_fallback_matches("a{b", "a{b"));
+    }
 
     #[tokio::test]
     async fn glob_sorts_by_mtime_newest_first() {

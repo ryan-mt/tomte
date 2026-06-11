@@ -113,14 +113,34 @@ pub fn collect(cwd: &Path, base: Option<&str>) -> Result<WhyDiff, String> {
 
     // Changed = tracked changes vs the merge-base (committed AND uncommitted,
     // one query) + untracked files (a brand-new file is part of the diff too).
-    let mut changed: Vec<String> = git(cwd, &["diff", "--name-only", &merge_base])?
-        .lines()
-        .map(str::to_string)
-        .collect();
+    // quotepath off, or a non-ASCII filename comes back C-quoted and never
+    // matches the decision locs (same flag gitmap.rs passes).
+    let mut changed: Vec<String> = git(
+        cwd,
+        &[
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--name-only",
+            &merge_base,
+        ],
+    )?
+    .lines()
+    .map(str::to_string)
+    .collect();
     changed.extend(
-        git(cwd, &["ls-files", "--others", "--exclude-standard"])?
-            .lines()
-            .map(str::to_string),
+        git(
+            cwd,
+            &[
+                "-c",
+                "core.quotepath=false",
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+            ],
+        )?
+        .lines()
+        .map(str::to_string),
     );
     changed.retain(|f| !f.is_empty());
     changed.sort();

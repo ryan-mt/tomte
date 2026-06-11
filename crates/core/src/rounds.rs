@@ -260,12 +260,20 @@ pub async fn collect(cwd: &Path, run_proof: bool) -> RoundsReport {
 /// [`MAX_TODO_MARKS`]; a file the tree no longer has (or can't be read) is
 /// simply skipped — rounds reports, it never errors over one file.
 fn scan_todos(root: &Path, twin: &crate::repo_twin::RepoTwin) -> Vec<TodoMark> {
+    // Skip oversized files instead of slurping them whole: the twin keeps
+    // >512 KiB files as nodes, so a giant non-gitignored bundle would be read
+    // in full on every walk (the twin extractors cap for the same reason).
+    const MAX_TODO_SCAN_BYTES: u64 = 512 * 1024;
     let mut marks = Vec::new();
     for f in &twin.files {
         if !f.lang.is_source() {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(root.join(&f.path)) else {
+        let path = root.join(&f.path);
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_TODO_SCAN_BYTES) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
         for (i, line) in text.lines().enumerate() {

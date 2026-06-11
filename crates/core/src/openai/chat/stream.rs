@@ -56,13 +56,16 @@ pub fn handle_chat_response(resp: reqwest::Response) -> StreamHandle {
                         let _ = tx
                             .send(Err(anyhow::anyhow!(
                                 "parse Chat Completions SSE: {e}: {}",
-                                ev.data
+                                crate::sensitive::error_excerpt(&ev.data)
                             )))
                             .await;
                         continue;
                     }
                 };
-                if let Some(err) = chunk.get("error") {
+                // Some Chat-compatible providers serialize `"error": null` on
+                // every chunk (same shape habit as the null `finish_reason`
+                // below) — only a non-null error ends the stream.
+                if let Some(err) = chunk.get("error").filter(|e| !e.is_null()) {
                     had_error = true;
                     let msg = err
                         .get("message")

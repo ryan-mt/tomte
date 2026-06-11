@@ -333,8 +333,10 @@ fn render_choice_modal(f: &mut Frame, anchor_area: ratatui::layout::Rect, modal:
     )));
 
     // Trim context rows when context + tail won't fit above the anchor, keeping
-    // the leading rows (tool name / file) and marking the cut.
-    let avail_rows = anchor_area.y.saturating_sub(2) as usize; // minus the borders
+    // the leading rows (tool name / file) and marking the cut. Space is counted
+    // from the frame top, not row 0: the inline viewport's buffer starts at
+    // f.area().y, and drawing above it panics in ratatui's Clear.
+    let avail_rows = anchor_area.y.saturating_sub(f.area().y).saturating_sub(2) as usize; // minus the borders
     let mut context: Vec<Line<'static>> = modal
         .context
         .into_iter()
@@ -356,12 +358,16 @@ fn render_choice_modal(f: &mut Frame, anchor_area: ratatui::layout::Rect, modal:
     let x = anchor_area.x + 1;
     let bottom = anchor_area.y;
     let y = bottom.saturating_sub(height);
+    // Clamp into the frame: when the tail alone is taller than the space above
+    // the anchor (tiny viewport + tall input), the box clips at the frame top
+    // instead of panicking in Clear.
     let popup = ratatui::layout::Rect {
         x,
         y,
         width,
         height,
-    };
+    }
+    .intersection(f.area());
     // Clear the FULL row span the popup occupies, not just the narrow box.
     // The box is only `width` cols wide, but it floats over chat rows whose
     // long lines extend past it — without clearing to the right edge, the tail
@@ -371,7 +377,8 @@ fn render_choice_modal(f: &mut Frame, anchor_area: ratatui::layout::Rect, modal:
         y,
         width: anchor_area.width,
         height,
-    };
+    }
+    .intersection(f.area());
     f.render_widget(Clear, clear_area);
     let block = RBlock::default()
         .borders(Borders::ALL)

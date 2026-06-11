@@ -123,8 +123,17 @@ pub fn render(f: &mut Frame, anchor_area: Rect, picker: &Picker) {
     // Cap the popup at MAX_ROWS rows; a longer list scrolls (see the window
     // math below) so the selected row always stays on screen.
     const MAX_ROWS: usize = 10;
+    // Rows available above the anchor INSIDE the frame. The inline viewport's
+    // buffer starts at f.area().y — not row 0 — and drawing above it panics in
+    // ratatui's Clear ("index outside of buffer"), so the popup shrinks (and
+    // scrolls) instead of overflowing the top.
+    let space_above = anchor_area.y.saturating_sub(f.area().y);
+    if space_above < 3 {
+        return; // no room for even one row + borders
+    }
+    let max_rows = (MAX_ROWS as u16).min(space_above - 2) as usize;
     let item_count = visible.len().max(1);
-    let height = (item_count as u16).min(MAX_ROWS as u16) + 2; // borders
+    let height = (item_count as u16).min(max_rows as u16) + 2; // borders
     let width = 60u16.min(anchor_area.width.saturating_sub(4));
     // Anchor above the input area: bottom-left of popup just above anchor_area.
     let x = anchor_area.x + 1;
@@ -177,7 +186,7 @@ pub fn render(f: &mut Frame, anchor_area: Rect, picker: &Picker) {
             .iter()
             .position(|&i| i == picker.selected)
             .unwrap_or(0);
-        let (start, end) = scroll_window(sel_pos, visible.len(), MAX_ROWS);
+        let (start, end) = scroll_window(sel_pos, visible.len(), max_rows);
         for &idx in &visible[start..end] {
             let it = &picker.items[idx];
             let is_sel = idx == picker.selected

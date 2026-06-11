@@ -34,7 +34,6 @@ use crate::config::Config;
 pub fn is_quota_or_overload(error: &str) -> bool {
     let e = error.to_ascii_lowercase();
     const NEEDLES: &[&str] = &[
-        "429",
         "rate limit",
         "rate_limit",
         "too many requests",
@@ -44,9 +43,13 @@ pub fn is_quota_or_overload(error: &str) -> bool {
         "exceeded your current quota",
         "capacity",
         "service unavailable",
-        "503",
     ];
+    // The bare status codes count as standalone tokens only: "Anthropic 429
+    // {…}" is overload, but a fatal error whose text merely embeds the digit
+    // run ("input exceeds 42900 bytes") must not trigger a model switch.
     NEEDLES.iter().any(|needle| e.contains(needle))
+        || e.split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|t| t == "429" || t == "503")
 }
 
 /// Built-in same-provider ladders for [`default_fallbacks`], ordered by

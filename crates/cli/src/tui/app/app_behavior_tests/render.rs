@@ -272,6 +272,65 @@ fn inline_busy_panels_never_clip_input_or_status() {
 }
 
 #[test]
+fn inline_popups_stay_inside_an_offset_viewport() {
+    use ratatui::backend::{Backend, TestBackend};
+    use ratatui::layout::Position;
+    use ratatui::{Terminal, TerminalOptions, Viewport};
+
+    // A used shell: the inline viewport opens at the cursor row, not at row 0,
+    // so f.area().y > 0. Any popup that anchors on absolute coordinates without
+    // clamping to the frame walks off the buffer and ratatui's Clear panics
+    // ("index outside of buffer").
+    let mut backend = TestBackend::new(80, 40);
+    backend.set_cursor_position(Position::new(0, 25)).unwrap();
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(13),
+        },
+    )
+    .unwrap();
+
+    let mut app = App::new();
+    app.render_mode = RenderMode::Inline;
+
+    // Slash menu with plenty of matches — the uncapped popup (12 rows) is
+    // taller than the space above the input inside a 13-row viewport.
+    let items: Vec<crate::tui::picker::PickerItem> = (0..20)
+        .map(|i| crate::tui::picker::PickerItem {
+            key: format!("k{i}"),
+            title: format!("/cmd{i}"),
+            description: "a command".into(),
+        })
+        .collect();
+    app.overlay = Some((
+        OverlayKind::SlashMenu,
+        crate::tui::picker::Picker::new("commands", items),
+    ));
+    terminal
+        .draw(|f| crate::tui::ui::render_inline(f, &mut app))
+        .unwrap();
+
+    // Approval modal with a tall context block — the same clamp class.
+    app.overlay = None;
+    app.pending_approval = Some(PendingApproval {
+        call_id: "c1".into(),
+        tool_name: "write_file".into(),
+        args_json: "{\"path\":\"x.rs\"}".into(),
+        diff_preview: Some(
+            (0..20)
+                .map(|i| format!("+line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        selected: 0,
+    });
+    terminal
+        .draw(|f| crate::tui::ui::render_inline(f, &mut app))
+        .unwrap();
+}
+
+#[test]
 fn commit_advances_cursor_and_leaves_streaming_block() {
     use ratatui::backend::TestBackend;
     use ratatui::{Terminal, TerminalOptions, Viewport};

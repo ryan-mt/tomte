@@ -320,7 +320,13 @@ pub(super) fn clear_stale_tool_outputs(
     let mut cleared = 0;
     for &idx in positions.iter().take(clearable) {
         if let InputItem::FunctionCallOutput { output, media, .. } = &mut history[idx] {
-            if output.len() > min_bytes && output != CLEARED_TOOL_OUTPUT_MARKER {
+            // Attached media (base64 images/PDFs) is the real token bulk, so a
+            // short-text result with media still counts as clearable —
+            // otherwise image-heavy sessions shed nothing and ride into
+            // hard overflow.
+            if (output.len() > min_bytes || !media.is_empty())
+                && output != CLEARED_TOOL_OUTPUT_MARKER
+            {
                 *output = CLEARED_TOOL_OUTPUT_MARKER.to_string();
                 // Drop any attached media too — the marker replaces the whole
                 // result, and a stale image only burns context/tokens.
@@ -332,40 +338,58 @@ pub(super) fn clear_stale_tool_outputs(
     cleared
 }
 
-// Plumbing helper: threads one tool call's identity, text, error flag, media,
-// and canonical args into the two history items it produces.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn append_tool_result_history(
+// One completed tool call from a tool phase, ready to be written to history.
+pub(super) struct CompletedCall {
+    pub call_id: String,
+    pub raw_name: String,
+    pub output: String,
+    pub is_error: bool,
+    pub media: Vec<crate::openai::ToolMedia>,
+    pub canonical_args: Option<String>,
+}
+
+/// Append one tool phase's calls to history in wire-safe order: every
+/// `function_call` first, then every `function_call_output`, then any
+/// schema-mismatch notes. Grouping matters on the Anthropic translate:
+/// interleaving the pairs per call split one step into several assistant
+/// messages, and the second-plus started with a bare `tool_use` — rejected
+/// with a 400 whenever thinking is enabled. The outputs must also precede the
+/// mismatch notes so `tool_result` blocks stay first in the user message.
+pub(super) fn append_step_history(
     history: &mut Vec<InputItem>,
     registry: &crate::tools::Registry,
-    call_id: &str,
-    raw_name: &str,
-    output: String,
-    is_error: bool,
-    media: Vec<crate::openai::ToolMedia>,
-    canonical_args: Option<String>,
+    completed: Vec<CompletedCall>,
 ) {
-    if let Some(arguments) = canonical_args {
-        history.push(InputItem::FunctionCall {
-            call_id: call_id.to_string(),
-            name: history_tool_name_for_registry(registry, raw_name),
-            arguments,
-        });
-        history.push(InputItem::FunctionCallOutput {
-            call_id: call_id.to_string(),
-            output,
-            error: is_error,
-            media,
-        });
-        return;
+    for call in &completed {
+        if let Some(arguments) = &call.canonical_args {
+            history.push(InputItem::FunctionCall {
+                call_id: call.call_id.clone(),
+                name: history_tool_name_for_registry(registry, &call.raw_name),
+                arguments: arguments.clone(),
+            });
+        }
     }
-
-    history.push(InputItem::Message {
-        role: "user".to_string(),
-        content: vec![MessageContent::InputText {
-            text: safe_tool_error_message(raw_name, &output),
-        }],
-    });
+    let mut mismatched = Vec::new();
+    for call in completed {
+        if call.canonical_args.is_some() {
+            history.push(InputItem::FunctionCallOutput {
+                call_id: call.call_id,
+                output: call.output,
+                error: call.is_error,
+                media: call.media,
+            });
+        } else {
+            mismatched.push(call);
+        }
+    }
+    for call in mismatched {
+        history.push(InputItem::Message {
+            role: "user".to_string(),
+            content: vec![MessageContent::InputText {
+                text: safe_tool_error_message(&call.raw_name, &call.output),
+            }],
+        });
+    }
 }
 
 pub(super) fn safe_tool_error_message(raw_name: &str, output: &str) -> String {

@@ -176,6 +176,9 @@ pub async fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 None => app.overlay = None,
             }
         }
+        // Ctrl-chords (Ctrl+W/U/A…) are composer shortcuts, not text — inserting
+        // their letter into the input here was the old behavior. No-op instead.
+        KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => {}
         KeyCode::Char(c) if kind == OverlayKind::FilePicker => {
             app.input.insert_char(c);
             // A space (or any whitespace) ends the `@`-token; close the overlay.
@@ -197,9 +200,25 @@ pub async fn handle_overlay_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             app.chain_to_effort = false;
         }
         KeyCode::Enter => {
-            let key_sel = picker.selected_key().unwrap_or_default();
+            let key_sel = picker.selected_key();
             app.overlay = None;
-            handle_overlay_select(app, kind, &key_sel).await;
+            match key_sel {
+                Some(key_sel) => handle_overlay_select(app, kind, &key_sel).await,
+                // Nothing matches the query — the normal way to type a command
+                // WITH arguments (`/goal fix the tests` empties the filter).
+                // Run the composer text through the regular slash path instead
+                // of clearing it into "Unknown command /".
+                None if kind == OverlayKind::SlashMenu => {
+                    let raw = app.input.buffer.trim().to_string();
+                    app.input.clear();
+                    if let Some(cmd) = raw.strip_prefix('/') {
+                        if !cmd.is_empty() {
+                            handle_slash(app, cmd).await;
+                        }
+                    }
+                }
+                None => {}
+            }
         }
         KeyCode::Tab if kind == OverlayKind::SlashMenu => {
             // Autocomplete the highlighted command into the input (Tab-complete),

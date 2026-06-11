@@ -165,10 +165,19 @@ Constraints: files larger than 5 MB must be read with an explicit `limit`. Binar
                 }
                 Err(e) => {
                     let raw = e.as_bytes();
-                    let size = raw.len() as u64;
-                    // A binary file's whole content is "recorded as read": the
-                    // model can't see it but may intend to replace it wholesale.
-                    (describe_binary(&a.path, raw, size), true)
+                    // UTF-16 with a BOM (PowerShell's redirect default on
+                    // Windows) is text, not an opaque binary — decode it so
+                    // the model reads real contents instead of being invited
+                    // to overwrite them blind.
+                    if let Some(text) = decode_utf16_bom(raw) {
+                        render_text_read(&a.path, &text, start, effective_limit, MAX_LINE_CHARS)
+                    } else {
+                        let size = raw.len() as u64;
+                        // A binary file's whole content is "recorded as read":
+                        // the model can't see it but may intend to replace it
+                        // wholesale.
+                        (describe_binary(&a.path, raw, size), true)
+                    }
                 }
             }
         };
@@ -339,8 +348,12 @@ fn render_text_read(
     // Line index after the last one we actually rendered. Equals `end` for a
     // normal read; smaller when the byte cap stops us early.
     let mut shown_end = end;
+    let mut any_line_truncated = false;
     for (i, line) in lines[start..end].iter().enumerate() {
         let abs = start + i;
+        if line.chars().count() > max_line_chars {
+            any_line_truncated = true;
+        }
         out.push_str(&numbered_line(abs + 1, line, false, max_line_chars));
         // Stop once the rendered output passes the cap, so a file of long lines
         // can't flood the context. Always emits at least one line; only stops
@@ -367,8 +380,10 @@ fn render_text_read(
             shown_end
         ));
     }
-    // A full read starts at the top and reaches the last line untruncated.
-    let fully_read = start == 0 && shown_end >= total;
+    // A full read starts at the top, reaches the last line, and cut nothing:
+    // a per-line "… [line truncated]" means the model never saw that tail, so
+    // the file must not become overwritable on the strength of this read.
+    let fully_read = start == 0 && shown_end >= total && !any_line_truncated;
     (out, fully_read)
 }
 

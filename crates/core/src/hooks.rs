@@ -236,9 +236,48 @@ pub fn matches(matcher: &str, key: &str, path_hint: Option<&str>) -> bool {
 }
 
 /// Minimal glob matcher: `**` matches any path segments, `*` matches a
-/// path segment, `?` matches a single char. Good enough for the typical
-/// `**/*.rs` patterns; sidesteps adding the `glob` crate as a hard dep.
+/// path segment, `?` matches a single char, and `{a,b}` alternation expands
+/// (single level) like ripgrep's `--glob` — `*.{ts,tsx}` used to be treated
+/// as the literal braces and silently matched nothing. Good enough for the
+/// typical `**/*.rs` patterns; sidesteps adding the `glob` crate as a hard dep.
 pub fn glob_match(pattern: &str, path: &str) -> bool {
+    expand_braces(pattern, 0)
+        .iter()
+        .any(|p| glob_match_single(p, path))
+}
+
+/// Expand `{a,b}` alternations into the flat pattern list they stand for.
+/// Single-level (no nested braces) with a combination cap; an unbalanced or
+/// empty brace falls back to the literal pattern, matching the old behavior.
+fn expand_braces(pattern: &str, depth: usize) -> Vec<String> {
+    const MAX_EXPANSIONS: usize = 64;
+    let (Some(open), false) = (pattern.find('{'), depth >= 4) else {
+        return vec![pattern.to_string()];
+    };
+    let Some(close) = pattern[open..].find('}').map(|i| open + i) else {
+        return vec![pattern.to_string()];
+    };
+    let (prefix, body, suffix) = (
+        &pattern[..open],
+        &pattern[open + 1..close],
+        &pattern[close + 1..],
+    );
+    if body.is_empty() {
+        return vec![pattern.to_string()];
+    }
+    let mut out = Vec::new();
+    for alt in body.split(',') {
+        for rest in expand_braces(suffix, depth + 1) {
+            out.push(format!("{prefix}{alt}{rest}"));
+            if out.len() >= MAX_EXPANSIONS {
+                return out;
+            }
+        }
+    }
+    out
+}
+
+fn glob_match_single(pattern: &str, path: &str) -> bool {
     fn push_literal(out: &mut String, ch: char) {
         if matches!(
             ch,
@@ -495,8 +534,37 @@ async fn run_hook_with_timeout(
     // Child has exited; its stdin read-end is closed so any pending write fails
     // fast. Abort defensively so this can never hang.
     stdin_task.abort();
-    let stdout = stdout_task.await??.into_string("stdout");
-    let _ = stderr_task.await??;
+    // Bound the pipe drain too: a hook that backgrounds a child (`… &`) exits
+    // fast itself, but the grandchild inherits stdout/stderr and holds the
+    // pipes open — an unbounded await here hangs the agent forever. On a stall
+    // reap the process group (closing the pipes lets the readers hit EOF and
+    // hand back whatever the hook already wrote), then give the drain one more
+    // bounded chance.
+    const HOOK_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+    let stdout_abort = stdout_task.abort_handle();
+    let stderr_abort = stderr_task.abort_handle();
+    let drain = async { (stdout_task.await, stderr_task.await) };
+    tokio::pin!(drain);
+    let (stdout_res, stderr_res) = match tokio::time::timeout(HOOK_DRAIN_TIMEOUT, &mut drain).await
+    {
+        Ok(pair) => pair,
+        Err(_) => {
+            kill_process_group(child_pid);
+            match tokio::time::timeout(HOOK_DRAIN_TIMEOUT, &mut drain).await {
+                Ok(pair) => pair,
+                Err(_) => {
+                    stdout_abort.abort();
+                    stderr_abort.abort();
+                    anyhow::bail!(
+                        "hook output pipes stayed open past the drain deadline \
+                             (a backgrounded child still holds them)"
+                    );
+                }
+            }
+        }
+    };
+    let stdout = stdout_res??.into_string("stdout");
+    let _ = stderr_res??;
     let code = status.code().unwrap_or(-1);
     Ok((code, stdout))
 }

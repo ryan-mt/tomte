@@ -141,9 +141,17 @@ pub(crate) fn neutralize_block_markers(text: &str) -> String {
 fn pick_memory_file(dir: &Path) -> Option<(PathBuf, String)> {
     for name in MEMORY_CANDIDATES {
         let path = dir.join(name);
-        let Ok(text) = crate::config::read_text_file_capped(&path, PROJECT_DOC_MAX_BYTES as u64)
-        else {
-            continue;
+        let text = match crate::config::read_text_file_capped(&path, PROJECT_DOC_MAX_BYTES as u64) {
+            Ok(t) => t,
+            Err(e) => {
+                // An EXISTING file that fails the capped read (usually: grew
+                // past the 32 KiB cap) would silently vanish and a stale
+                // lower-priority candidate would be injected instead — say so.
+                if path.is_file() {
+                    tracing::warn!(path = %path.display(), error = %e, "instruction file skipped");
+                }
+                continue;
+            }
         };
         let trimmed = text.trim();
         if !trimmed.is_empty() {

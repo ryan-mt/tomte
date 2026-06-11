@@ -135,6 +135,73 @@ fn function_call_becomes_assistant_tool_use() {
 }
 
 #[test]
+fn grouped_multi_tool_step_stays_one_assistant_message_with_leading_thinking() {
+    // The history a multi-tool step writes (thinking, then all function_calls,
+    // then all outputs) must fold into exactly assistant[thinking, tool_use,
+    // tool_use] + user[tool_result, tool_result]. If the assistant turn split,
+    // the second message would open with a bare tool_use — Anthropic rejects
+    // that whenever thinking is enabled.
+    let req = ResponsesRequest::new(
+        "claude-opus-4-5",
+        vec![
+            InputItem::Reasoning {
+                id: String::new(),
+                summary: Vec::new(),
+                thinking: Some("plan both reads".into()),
+                signature: Some("sig".into()),
+                redacted_thinking: None,
+            },
+            InputItem::FunctionCall {
+                call_id: "call_a".into(),
+                name: "read_file".into(),
+                arguments: "{\"path\":\"a.rs\"}".into(),
+            },
+            InputItem::FunctionCall {
+                call_id: "call_b".into(),
+                name: "read_file".into(),
+                arguments: "{\"path\":\"b.rs\"}".into(),
+            },
+            InputItem::FunctionCallOutput {
+                call_id: "call_a".into(),
+                output: "a".into(),
+                error: false,
+                media: Vec::new(),
+            },
+            InputItem::FunctionCallOutput {
+                call_id: "call_b".into(),
+                output: "b".into(),
+                error: false,
+                media: Vec::new(),
+            },
+        ],
+    );
+    let out = to_messages_request(&req);
+    assert_eq!(out.messages.len(), 2);
+    assert_eq!(out.messages[0].role, "assistant");
+    assert!(
+        matches!(&out.messages[0].content[0], ContentBlock::Thinking { .. }),
+        "assistant message must start with the thinking block"
+    );
+    assert!(matches!(
+        &out.messages[0].content[1],
+        ContentBlock::ToolUse { id, .. } if id == "call_a"
+    ));
+    assert!(matches!(
+        &out.messages[0].content[2],
+        ContentBlock::ToolUse { id, .. } if id == "call_b"
+    ));
+    assert_eq!(out.messages[1].role, "user");
+    assert!(matches!(
+        &out.messages[1].content[0],
+        ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call_a"
+    ));
+    assert!(matches!(
+        &out.messages[1].content[1],
+        ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call_b"
+    ));
+}
+
+#[test]
 fn function_call_output_becomes_user_tool_result() {
     let req = ResponsesRequest::new(
         "claude-opus-4-5",

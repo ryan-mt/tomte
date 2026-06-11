@@ -454,15 +454,17 @@ fn unsupported_tool_result_history_becomes_safe_user_message() {
     let registry = crate::tools::Registry::standard();
     let mut history = Vec::new();
 
-    append_tool_result_history(
+    append_step_history(
         &mut history,
         &registry,
-        "call_sleep",
-        "Sleep",
-        "Error: unknown tool: Sleep".to_string(),
-        true,
-        Vec::new(),
-        None,
+        vec![CompletedCall {
+            call_id: "call_sleep".to_string(),
+            raw_name: "Sleep".to_string(),
+            output: "Error: unknown tool: Sleep".to_string(),
+            is_error: true,
+            media: Vec::new(),
+            canonical_args: None,
+        }],
     );
 
     assert_eq!(history.len(), 1);

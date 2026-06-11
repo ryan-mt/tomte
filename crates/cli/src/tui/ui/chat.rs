@@ -477,7 +477,9 @@ fn resolve_scroll(
     cur_scroll: u16,
 ) -> (u16, bool) {
     let inner_height = viewport.saturating_sub(2);
-    let max_scroll = total.saturating_sub(inner_height) as u16;
+    // Saturate, don't wrap: a >65535-line transcript would otherwise snap
+    // max_scroll to a bogus small value and strand the view far from the tail.
+    let max_scroll = u16::try_from(total.saturating_sub(inner_height)).unwrap_or(u16::MAX);
     // Scrolling back to (or past) the bottom resumes auto-follow — how
     // mouse-wheel / PageDown re-enables sticky-bottom without a dedicated key.
     let auto = auto_scroll || cur_scroll >= max_scroll;

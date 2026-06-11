@@ -650,20 +650,21 @@ impl Agent {
                 }],
             });
         }
-        for pc in &pending_calls {
-            if let Some((output, is_error, media)) = by_id.remove(&pc.call_id) {
-                append_tool_result_history(
-                    &mut self.history,
-                    &self.registry,
-                    &pc.call_id,
-                    &pc.name,
+        let completed: Vec<CompletedCall> = pending_calls
+            .iter()
+            .filter_map(|pc| {
+                let (output, is_error, media) = by_id.remove(&pc.call_id)?;
+                Some(CompletedCall {
+                    call_id: pc.call_id.clone(),
+                    raw_name: pc.name.clone(),
                     output,
                     is_error,
                     media,
-                    history_args_by_call_id.remove(&pc.call_id),
-                );
-            }
-        }
+                    canonical_args: history_args_by_call_id.remove(&pc.call_id),
+                })
+            })
+            .collect();
+        append_step_history(&mut self.history, &self.registry, completed);
 
         // Push a todos snapshot so the UI can render `/todos` and a
         // status-line hint without having to lock the agent itself.

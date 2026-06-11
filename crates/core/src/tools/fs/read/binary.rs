@@ -54,6 +54,39 @@ pub(super) fn leading_bytes_are_binary(bytes: &[u8]) -> bool {
     }
 }
 
+/// True when the bytes open with a UTF-16 BOM (FF FE little-endian /
+/// FE FF big-endian).
+pub(super) fn has_utf16_bom(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF])
+}
+
+/// Decode a whole UTF-16 file that carries a BOM — the default encoding of
+/// PowerShell 5.1's `Out-File`/`>` on Windows — so it reads like any other
+/// text file instead of an opaque "binary file" whose message invites a blind
+/// overwrite. Returns `None` without a BOM or on invalid UTF-16.
+pub(super) fn decode_utf16_bom(bytes: &[u8]) -> Option<String> {
+    let le = match bytes {
+        [0xFF, 0xFE, ..] => true,
+        [0xFE, 0xFF, ..] => false,
+        _ => return None,
+    };
+    let body = &bytes[2..];
+    if !body.len().is_multiple_of(2) {
+        return None;
+    }
+    let units: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|c| {
+            if le {
+                u16::from_le_bytes([c[0], c[1]])
+            } else {
+                u16::from_be_bytes([c[0], c[1]])
+            }
+        })
+        .collect();
+    String::from_utf16(&units).ok()
+}
+
 pub(super) fn bytes_to_line(bytes: &[u8], was_byte_truncated: bool) -> Result<String> {
     let text = match std::str::from_utf8(bytes) {
         Ok(s) => s,
@@ -63,4 +96,27 @@ pub(super) fn bytes_to_line(bytes: &[u8], was_byte_truncated: bool) -> Result<St
         Err(e) => return Err(anyhow!("file is not valid UTF-8: {e}")),
     };
     Ok(text.trim_end_matches(['\r', '\n']).to_string())
+}
+
+#[cfg(test)]
+mod utf16_tests {
+    use super::decode_utf16_bom;
+
+    #[test]
+    fn utf16_with_bom_decodes_both_endiannesses() {
+        let le: Vec<u8> = [0xFF, 0xFE]
+            .into_iter()
+            .chain("hi ✓".encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        assert_eq!(decode_utf16_bom(&le).as_deref(), Some("hi ✓"));
+        let be: Vec<u8> = [0xFE, 0xFF]
+            .into_iter()
+            .chain("hi ✓".encode_utf16().flat_map(u16::to_be_bytes))
+            .collect();
+        assert_eq!(decode_utf16_bom(&be).as_deref(), Some("hi ✓"));
+        // No BOM, odd length, or an unpaired surrogate → None, not garbage.
+        assert_eq!(decode_utf16_bom(b"plain"), None);
+        assert_eq!(decode_utf16_bom(&[0xFF, 0xFE, 0x41]), None);
+        assert_eq!(decode_utf16_bom(&[0xFF, 0xFE, 0x00, 0xD8]), None);
+    }
 }

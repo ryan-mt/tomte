@@ -149,6 +149,12 @@ pub(super) fn normalize_grep_output_mode(mode: Option<&str>) -> Option<&'static 
 /// any depth (gitignore-style), while a slashed pattern matches the full
 /// relative path. Same semantics as the `glob` tool's own fallback matcher.
 pub(super) fn glob_matches_rel(pattern: &str, rel_path: &str) -> bool {
+    // `!pattern` excludes matches, mirroring ripgrep's `--glob` (grep's own
+    // parameter description suggests "!target/**") — without this the
+    // fallback read `!` as a literal and silently matched nothing.
+    if let Some(neg) = pattern.strip_prefix('!') {
+        return !glob_matches_rel(neg, rel_path);
+    }
     if pattern.contains('/') {
         crate::hooks::glob_match(pattern, rel_path)
     } else {

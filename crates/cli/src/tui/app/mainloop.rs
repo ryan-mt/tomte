@@ -731,7 +731,9 @@ pub fn commit_finished_blocks<B: ratatui::backend::Backend>(
         return;
     }
     // height = line count; insert_before chunks it to the terminal height.
-    let height = lines.len() as u16;
+    // Saturate, don't wrap: a >65535-line commit (e.g. /resume of a huge
+    // session) would otherwise truncate to `len % 65536` lines.
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let _ = terminal.insert_before(height, move |buf| {
         ratatui::widgets::Widget::render(ratatui::widgets::Paragraph::new(lines), buf.area, buf);
     });

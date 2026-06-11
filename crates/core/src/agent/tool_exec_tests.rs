@@ -283,15 +283,17 @@ fn known_tool_result_history_keeps_canonical_function_call_pair() {
     let registry = crate::tools::Registry::standard();
     let mut history = Vec::new();
 
-    append_tool_result_history(
+    append_step_history(
         &mut history,
         &registry,
-        "call_read",
-        "Read",
-        "ok".to_string(),
-        false,
-        Vec::new(),
-        Some(r#"{"path":"Cargo.toml","offset":null,"limit":null}"#.to_string()),
+        vec![CompletedCall {
+            call_id: "call_read".to_string(),
+            raw_name: "Read".to_string(),
+            output: "ok".to_string(),
+            is_error: false,
+            media: Vec::new(),
+            canonical_args: Some(r#"{"path":"Cargo.toml","offset":null,"limit":null}"#.to_string()),
+        }],
     );
 
     assert_eq!(history.len(), 2);
@@ -330,15 +332,19 @@ fn known_tool_result_history_preserves_error_flag() {
     let registry = crate::tools::Registry::standard();
     let mut history = Vec::new();
 
-    append_tool_result_history(
+    append_step_history(
         &mut history,
         &registry,
-        "call_read",
-        "read_file",
-        "Error: missing file".to_string(),
-        true,
-        Vec::new(),
-        Some(r#"{"path":"missing.txt","offset":null,"limit":null}"#.to_string()),
+        vec![CompletedCall {
+            call_id: "call_read".to_string(),
+            raw_name: "read_file".to_string(),
+            output: "Error: missing file".to_string(),
+            is_error: true,
+            media: Vec::new(),
+            canonical_args: Some(
+                r#"{"path":"missing.txt","offset":null,"limit":null}"#.to_string(),
+            ),
+        }],
     );
 
     match &history[1] {
@@ -348,6 +354,54 @@ fn known_tool_result_history_preserves_error_flag() {
         }
         other => panic!("expected function call output, got {other:?}"),
     }
+}
+
+#[test]
+fn multi_call_step_history_groups_calls_before_outputs() {
+    // One step with two recorded calls and one schema-mismatch must land as
+    // [FC a][FC b][FCO a][FCO b][mismatch note]: the Anthropic translate folds
+    // that into ONE assistant message (thinking block intact at its head) and
+    // one user message with the tool_results first. Interleaved pairs split
+    // the step into several assistant messages — a 400 with thinking enabled.
+    let registry = crate::tools::Registry::standard();
+    let mut history = Vec::new();
+
+    let call = |id: &str, args: Option<&str>| CompletedCall {
+        call_id: id.to_string(),
+        raw_name: "read_file".to_string(),
+        output: format!("out-{id}"),
+        is_error: false,
+        media: Vec::new(),
+        canonical_args: args.map(str::to_string),
+    };
+    append_step_history(
+        &mut history,
+        &registry,
+        vec![
+            call("call_a", Some(r#"{"path":"a.rs"}"#)),
+            call("call_b", Some(r#"{"path":"b.rs"}"#)),
+            call("call_c", None),
+        ],
+    );
+
+    let kinds: Vec<&str> = history
+        .iter()
+        .map(|item| match item {
+            InputItem::FunctionCall { call_id, .. } => call_id.as_str(),
+            InputItem::FunctionCallOutput { call_id, .. } => match call_id.as_str() {
+                "call_a" => "out_a",
+                "call_b" => "out_b",
+                other => other,
+            },
+            InputItem::Message { .. } => "mismatch",
+            InputItem::Reasoning { .. } => "reasoning",
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec!["call_a", "call_b", "out_a", "out_b", "mismatch"],
+        "calls grouped first, then outputs in the same order, then mismatch notes"
+    );
 }
 
 #[test]

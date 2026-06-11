@@ -128,16 +128,23 @@ impl Agent {
                     .await;
             }
             ResponseStreamEvent::FunctionCallArgsDelta { item_id, delta } => {
-                if item_id.is_empty() {
-                    tracing::warn!("tool.args.delta missing item_id; dropping delta");
-                    return EventFlow::Continue;
-                }
                 // Stream delta event references the output-item id, which
-                // may differ from the function call_id. Match by either.
-                if let Some(pc) = pending_calls
-                    .iter_mut()
-                    .find(|p| p.item_id == item_id || p.call_id == item_id)
-                {
+                // may differ from the function call_id. Match by either. An
+                // EMPTY id (a Responses-shaped third-party endpoint that
+                // omits them) routes to the sole in-flight call — the same
+                // sole-call fallback the Chat path applies — instead of
+                // streaming the args into the void and executing with `{}`.
+                let pc = if item_id.is_empty() {
+                    match pending_calls.as_mut_slice() {
+                        [only] => Some(only),
+                        _ => None,
+                    }
+                } else {
+                    pending_calls
+                        .iter_mut()
+                        .find(|p| p.item_id == item_id || p.call_id == item_id)
+                };
+                if let Some(pc) = pc {
                     let call_id = pc.call_id.clone();
                     if let Some(delta) = pc.args.push(&delta) {
                         let _ = tx
@@ -147,19 +154,27 @@ impl Agent {
                             })
                             .await;
                     }
+                } else if item_id.is_empty() {
+                    tracing::warn!(
+                        "tool.args.delta missing item_id with several calls pending; dropping delta"
+                    );
                 } else if orphan_args_has_room(orphan_arg_buffers, &item_id) {
                     let _ = orphan_arg_buffers.entry(item_id).or_default().push(&delta);
                 }
             }
             ResponseStreamEvent::FunctionCallArgsDone { item_id, arguments } => {
-                if item_id.is_empty() {
-                    tracing::warn!("tool.args.done missing item_id; dropping arguments");
-                    return EventFlow::Continue;
-                }
-                let emit = match pending_calls
-                    .iter_mut()
-                    .find(|p| p.item_id == item_id || p.call_id == item_id)
-                {
+                // Same empty-id sole-call routing as the delta arm above.
+                let found = if item_id.is_empty() {
+                    match pending_calls.as_mut_slice() {
+                        [only] => Some(only),
+                        _ => None,
+                    }
+                } else {
+                    pending_calls
+                        .iter_mut()
+                        .find(|p| p.item_id == item_id || p.call_id == item_id)
+                };
+                let emit = match found {
                     Some(pc) => {
                         // Only overwrite when the done event actually
                         // carried args; an empty/absent `arguments` must
@@ -175,6 +190,12 @@ impl Agent {
                             pc.args_done_emitted = true;
                             Some((pc.call_id.clone(), pc.args.text.clone()))
                         }
+                    }
+                    None if item_id.is_empty() => {
+                        tracing::warn!(
+                            "tool.args.done missing item_id with several calls pending; dropping arguments"
+                        );
+                        None
                     }
                     None => {
                         if !arguments.is_empty()

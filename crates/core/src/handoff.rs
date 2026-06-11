@@ -170,6 +170,18 @@ pub fn collect(cwd: &Path) -> Handoff {
 }
 
 /// Render the capsule as paste-ready markdown.
+/// Collapse model-authored text onto one capped line so it cannot inject raw
+/// markdown (e.g. a forged heading) into the handoff document.
+fn one_line(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        let t: String = flat.chars().take(max.saturating_sub(1)).collect();
+        format!("{t}…")
+    }
+}
+
 pub fn render_markdown(h: &Handoff) -> String {
     let mut out = String::new();
     out.push_str(&format!("# Handoff — {}\n\n", h.root));
@@ -215,9 +227,14 @@ pub fn render_markdown(h: &Handoff) -> String {
         );
     } else {
         for d in &h.decisions {
+            // One capped line per decision: a multi-line model-authored `why`
+            // must not inject raw markdown into the handoff document.
             out.push_str(&format!(
                 "- `{}` — {} — because {} _(recorded by {})_\n",
-                d.loc, d.decision, d.why, d.model
+                one_line(&d.loc, 120),
+                one_line(&d.decision, 200),
+                one_line(&d.why, 300),
+                one_line(&d.model, 60)
             ));
         }
         if h.decisions_total > h.decisions.len() {
