@@ -39,8 +39,8 @@ fn todo_write_body_accepts_claude_code_active_form_spelling() {
 #[test]
 fn todo_write_body_uses_panel_glyphs_with_distinct_in_progress() {
     // The inline checklist must use the same glyph set as the pinned todo
-    // panel (✓ done, ▪ in-progress, □ pending) and give the in-progress item
-    // its own filled ▪ — not the hollow box it used to share with pending,
+    // panel (✓ done, ◆ in-progress, ◇ pending) and give the in-progress item
+    // its own filled ◆ — not the hollow diamond it would share with pending,
     // where the two were told apart by colour alone. Guards against a
     // regression to the old ☒/☐ set.
     let lines = friendly_body(
@@ -59,8 +59,8 @@ fn todo_write_body_uses_panel_glyphs_with_distinct_in_progress() {
     );
     let rendered = text(&lines);
     assert!(rendered.contains('✓'), "completed glyph: {rendered}");
-    assert!(rendered.contains('▪'), "in-progress glyph: {rendered}");
-    assert!(rendered.contains('□'), "pending glyph: {rendered}");
+    assert!(rendered.contains('◆'), "in-progress glyph: {rendered}");
+    assert!(rendered.contains('◇'), "pending glyph: {rendered}");
     assert!(
         !rendered.contains('☐') && !rendered.contains('☒'),
         "must not use the old checkbox glyphs: {rendered}"

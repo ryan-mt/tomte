@@ -321,12 +321,12 @@ pub(super) fn friendly_body<'a>(
                     .unwrap_or("pending");
                 // Same glyph set as the persistent todo panel (`render_todo_line`)
                 // so the inline tool-call checklist and the pinned panel read
-                // identically: a filled ▪ marks the one in-progress item (was a
-                // hollow ☐ indistinguishable from pending), ✓ done, □ pending.
+                // identically: a filled ◆ marks the one in-progress item (the
+                // lantern is on it), ✓ done, ◇ pending.
                 let (symbol, sym_style, body_style, label) = match status {
                     "completed" => ("✓", check_done, done_text, content),
-                    "in_progress" => ("▪", check_active, active_text, active),
-                    _ => ("□", check_pending, pending_text, content),
+                    "in_progress" => ("◆", check_active, active_text, active),
+                    _ => ("◇", check_pending, pending_text, content),
                 };
                 let label_wrapped = wrap(label, avail.saturating_sub(2));
                 let mut first = true;

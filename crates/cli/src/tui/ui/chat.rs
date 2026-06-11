@@ -17,7 +17,7 @@ pub(super) fn render_compact_progress(f: &mut Frame, area: Rect, app: &App) {
             .unwrap_or(0.0);
         (95.0 * t / (t + 4000.0)).round().clamp(0.0, 95.0) as u16
     };
-    let purple = Style::default().fg(palette::INFO);
+    let amber = Style::default().fg(palette::ACCENT);
     let dim = Style::default().fg(palette::TEXT_MUTED);
     let track = Style::default().fg(palette::TEXT_FAINT);
 
@@ -31,9 +31,9 @@ pub(super) fn render_compact_progress(f: &mut Frame, area: Rect, app: &App) {
     let empty = bar_width.saturating_sub(filled);
 
     let line = Line::from(vec![
-        Span::styled(label, purple.add_modifier(Modifier::BOLD)),
+        Span::styled(label, amber.add_modifier(Modifier::BOLD)),
         Span::styled("[", dim),
-        Span::styled("█".repeat(filled), purple),
+        Span::styled("█".repeat(filled), amber),
         Span::styled("░".repeat(empty), track),
         Span::styled("]", dim),
         Span::styled(suffix, dim),
@@ -51,7 +51,7 @@ pub(super) fn render_jump_to_bottom(f: &mut Frame, chat_area: Rect) -> Rect {
         width: chat_area.width,
         height: 1,
     };
-    let label = " Jump to bottom (ctrl+End) ↓ ";
+    let label = " ↓ jump to bottom · ctrl+End ";
     let total = row.width as usize;
     let label_w = unicode_width::UnicodeWidthStr::width(label);
     let rule = Style::default().fg(palette::TEXT_FAINT);
@@ -230,7 +230,7 @@ fn welcome_fp(app: &App) -> u64 {
     h.finish()
 }
 
-/// Push reasoning text as muted-italic rows (a `✦` marker on the first row, a
+/// Push reasoning text as muted-italic rows (a `∴` marker on the first row, a
 /// 2-col indent after). No trailing blank — the caller owns spacing. Shared by
 /// the live-thinking display and the click-to-expand of a collapsed thought, so
 /// both render identically.
@@ -247,7 +247,7 @@ fn push_reasoning_lines(lines: &mut Vec<Line<'static>>, reasoning: &str, inner_w
         for w in wrap(raw, content_width) {
             let row = if first {
                 vec![
-                    Span::styled("✦ ", marker_style),
+                    Span::styled("∴ ", marker_style),
                     Span::styled(w, think_style),
                 ]
             } else {
@@ -300,7 +300,7 @@ pub(super) fn push_assistant_lines(
             "  (click to show)"
         };
         lines.push(Line::from(vec![
-            Span::styled("· ", Style::default().fg(palette::INFO)),
+            Span::styled("∴ ", Style::default().fg(palette::INFO)),
             Span::styled(
                 format!("Thought for {secs}s"),
                 Style::default()
@@ -321,11 +321,11 @@ pub(super) fn push_assistant_lines(
     }
     // Raw reasoning text is intentionally suppressed in chat history.
     if !text.is_empty() {
-        // Mark the assistant's turn with a bullet on its first line (like the
-        // tool bullet, so prose and tool calls read as one consistent column),
-        // then indent continuation lines to align under it.
+        // Mark the assistant's turn with a lantern diamond on its first line
+        // (like the tool marker, so prose and tool calls read as one consistent
+        // column), then indent continuation lines to align under it.
         let marker_style = Style::default()
-            .fg(palette::INFO)
+            .fg(palette::ACCENT)
             .add_modifier(Modifier::BOLD);
         // Block-level markdown: fenced code blocks get syntax highlighting and
         // tables get box-drawing borders; everything else is wrapped + inline
@@ -335,7 +335,7 @@ pub(super) fn push_assistant_lines(
         let mut first = true;
         for spans in render_assistant_md(text, content_width) {
             let mut row = if first {
-                vec![Span::styled("● ", marker_style)]
+                vec![Span::styled("◆ ", marker_style)]
             } else {
                 vec![Span::raw("  ")]
             };
@@ -354,14 +354,16 @@ pub(super) fn push_assistant_lines(
 pub(super) fn push_user_lines(lines: &mut Vec<Line<'static>>, text: &str, inner_width: usize) {
     let user_bg = palette::SURFACE;
     let chevron_style = Style::default()
-        .fg(palette::INFO)
+        .fg(palette::ACCENT)
         .bg(user_bg)
         .add_modifier(Modifier::BOLD);
     let body_style = Style::default().fg(palette::TEXT).bg(user_bg);
     let mut first = true;
     for raw in text.split('\n') {
         for w in wrap(raw, inner_width.saturating_sub(2)) {
-            let prefix = if first { "> " } else { "  " };
+            // An amber gutter bar runs the stanza's full height; only the first
+            // row carries it brightly, continuations keep the bed alone.
+            let prefix = if first { "▌ " } else { "▏ " };
             first = false;
             let used = 2 + unicode_width::UnicodeWidthStr::width(w.as_str());
             let pad = inner_width.saturating_sub(used);

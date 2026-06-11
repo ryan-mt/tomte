@@ -39,8 +39,8 @@ pub async fn handle_slash_meta(app: &mut App, head: &str, arg: &str) {
                 for t in &app.session_todos {
                     let marker = match t.status {
                         TodoStatus::Completed => "✓",
-                        TodoStatus::InProgress => "▪",
-                        TodoStatus::Pending => "□",
+                        TodoStatus::InProgress => "◆",
+                        TodoStatus::Pending => "◇",
                     };
                     let label = match t.status {
                         TodoStatus::InProgress => &t.active_form,

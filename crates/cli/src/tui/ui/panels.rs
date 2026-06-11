@@ -75,7 +75,7 @@ pub(super) fn render_queue(f: &mut Frame, area: Rect, app: &App) {
     for msg in show {
         let one_line = msg.replace('\n', " ");
         lines.push(Line::from(vec![
-            Span::styled(" ⤴ ", chev),
+            Span::styled(" ▸ ", chev),
             Span::styled(truncate_to_width(&one_line, width), dim),
         ]));
     }
@@ -158,7 +158,7 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
         .fg(palette::TEXT_BRIGHT)
         .add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(palette::TEXT_MUTED);
-    let accent = Style::default().fg(palette::INFO);
+    let accent = Style::default().fg(palette::ACCENT);
 
     let total = app.subagents.len();
     let running = app.subagents.iter().filter(|s| s.done.is_none()).count();
@@ -174,7 +174,7 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
         ""
     };
     lines.push(Line::from(vec![
-        Span::styled(" ⛓ ", accent),
+        Span::styled(" ❖ ", accent),
         Span::styled(
             format!("Sub-agents · {running} running / {total}"),
             header_dim.add_modifier(Modifier::BOLD),
@@ -208,7 +208,7 @@ pub(super) fn render_fleet(f: &mut Frame, area: Rect, app: &mut App) {
             None => {
                 let frame = SPINNER_FRAMES
                     [(s.started_at.elapsed().as_millis() / 80) as usize % SPINNER_FRAMES.len()];
-                Span::styled(format!("{frame} "), Style::default().fg(palette::INFO))
+                Span::styled(format!("{frame} "), Style::default().fg(palette::ACCENT))
             }
         };
         // While running, show the live activity; once finished, show a settled
@@ -349,9 +349,9 @@ pub(super) fn render_todo_line(
 
     let (icon, mark_style, body_style) = match todo.status {
         TodoStatus::Completed => ("✓", done_mark, done_style),
-        TodoStatus::InProgress => ("▪", active_style, active_style),
+        TodoStatus::InProgress => ("◆", active_style, active_style),
         TodoStatus::Pending if blocked => ("⊘", blocked_style, blocked_style),
-        TodoStatus::Pending => ("□", pending_mark, pending_style),
+        TodoStatus::Pending => ("◇", pending_mark, pending_style),
     };
     let label = todo_label(todo);
     Line::from(vec![
@@ -431,11 +431,13 @@ pub(super) fn render_spinner(f: &mut Frame, area: Rect, app: &App) {
                 .unwrap_or_else(|| "Working".to_string())
         });
     let line = Line::from(vec![
-        Span::styled(format!(" {frame} "), Style::default().fg(palette::INFO)),
+        // The hearthfire glyph burns lantern-amber — the one warm light on a
+        // busy frame.
+        Span::styled(format!(" {frame} "), Style::default().fg(palette::ACCENT)),
         Span::styled(
             format!("{word}…"),
             Style::default()
-                .fg(palette::INFO)
+                .fg(palette::ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(

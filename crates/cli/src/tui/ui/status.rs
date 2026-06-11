@@ -38,9 +38,9 @@ pub(super) fn render_input(f: &mut Frame, area: Rect, app: &App) {
 
     if app.input.is_empty() {
         let lines = vec![Line::from(vec![
-            Span::styled("✿ ", prompt_style),
+            Span::styled("❯ ", prompt_style),
             Span::styled(
-                "what shall we build today?",
+                "what needs tending?",
                 Style::default().fg(palette::TEXT_MUTED),
             ),
         ])];
@@ -68,7 +68,7 @@ pub(super) fn render_input(f: &mut Frame, area: Rect, app: &App) {
         }
         for (vi, row) in rows.into_iter().enumerate() {
             let gutter = if li == 0 && vi == 0 {
-                Span::styled("✿ ", prompt_style)
+                Span::styled("❯ ", prompt_style)
             } else {
                 Span::raw("  ")
             };
@@ -143,10 +143,12 @@ pub(super) fn wrap_visual_rows(
 
 pub(super) fn render_status(f: &mut Frame, area: Rect, app: &App) {
     let left_text = status_left_text(app);
-    let left_para = Paragraph::new(Line::from(Span::styled(
-        left_text,
-        Style::default().fg(palette::TEXT_MUTED),
-    )));
+    // The lantern anchor: one amber diamond pinning the status line's left
+    // edge, so the bottom row carries the same mark as the prompt and chat.
+    let left_para = Paragraph::new(Line::from(vec![
+        Span::styled("◆ ", Style::default().fg(palette::ACCENT)),
+        Span::styled(left_text, Style::default().fg(palette::TEXT_MUTED)),
+    ]));
 
     // Right side: model · effort · cwd
     let cwd = shorten_home_path(&app.cwd);
@@ -320,7 +322,7 @@ fn render_choice_modal(f: &mut Frame, anchor_area: ratatui::layout::Rect, modal:
     let mut tail: Vec<Line<'static>> = vec![Line::from("")];
     for (i, label) in modal.options.iter().enumerate() {
         let is_sel = i == modal.selected;
-        let marker = if is_sel { "  ❯ " } else { "    " };
+        let marker = if is_sel { "  ◆ " } else { "    " };
         let style = if is_sel { sel_style } else { opt_style };
         tail.push(Line::from(vec![
             Span::styled(marker, style),

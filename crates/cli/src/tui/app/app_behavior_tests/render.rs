@@ -258,7 +258,7 @@ fn inline_busy_panels_never_clip_input_or_status() {
     let dump: String = (0..15).map(|y| row(y) + "\n").collect();
 
     assert!(
-        dump.contains("what shall we build today?"),
+        dump.contains("what needs tending?"),
         "the input row must survive the panel squeeze:\n{dump}"
     );
     assert!(
@@ -444,7 +444,7 @@ fn first_screen_renders_welcome_and_cute_placeholder() {
         "the welcome greeting renders in the live viewport, not just scrollback"
     );
     assert!(
-        dump.contains("what shall we build today?"),
+        dump.contains("what needs tending?"),
         "the cute input placeholder renders"
     );
 }
@@ -500,7 +500,7 @@ fn altscreen_pins_input_to_the_bottom() {
         .expect("welcome greeting renders");
     let input = rows
         .iter()
-        .position(|r| r.contains("what shall we build today?"))
+        .position(|r| r.contains("what needs tending?"))
         .expect("input placeholder renders");
     assert!(greet < 8, "welcome sits at the top (row {greet})");
     assert!(

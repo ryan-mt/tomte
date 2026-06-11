@@ -85,7 +85,7 @@ pub(super) fn render_welcome(lines: &mut Vec<Line<'static>>, app: &App) {
     // anchored to the right border so the header spans the full width.
     let rows: Vec<Row> = vec![
         Row {
-            prefix: vec![Span::styled("✿ ", accent)],
+            prefix: vec![Span::styled("◆ ", accent)],
             prefix_w: 2,
             body: greeting.to_string(),
             body_style: strong,
@@ -249,7 +249,7 @@ pub(super) fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block]
         // summary on the next line, no contents.
         let (path, lc, _err, _done) = &entries[0];
         lines.push(Line::from(vec![
-            Span::styled("● ", Style::default().fg(bullet_color)),
+            Span::styled("◆ ", Style::default().fg(bullet_color)),
             Span::styled(
                 "Read".to_string(),
                 Style::default()
@@ -259,14 +259,14 @@ pub(super) fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block]
             Span::styled(format!("({})", pretty_path(path)), gray),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("  ⎿ ".to_string(), dim),
+            Span::styled("  ╰ ".to_string(), dim),
             Span::styled(format!("{} line{}", lc, plural(*lc)), gray),
         ]));
     } else {
         // Multi-read: one header summarising the batch, optional file list
         // only when in expanded mode.
         lines.push(Line::from(vec![
-            Span::styled("● ", Style::default().fg(bullet_color)),
+            Span::styled("◆ ", Style::default().fg(bullet_color)),
             Span::styled(
                 format!("Read {} files", count),
                 Style::default()
@@ -277,7 +277,7 @@ pub(super) fn render_read_group(lines: &mut Vec<Line<'static>>, blocks: &[Block]
         ]));
         if expanded {
             for (idx, (path, lc, err, done)) in entries.iter().enumerate() {
-                let branch = if idx == 0 { "  ⎿ " } else { "    " };
+                let branch = if idx == 0 { "  ╰ " } else { "    " };
                 let path_style = if *err {
                     Style::default().fg(palette::DANGER)
                 } else if !*done {
@@ -326,9 +326,9 @@ pub(super) fn render_tool(
         palette::SUCCESS
     };
 
-    // Header: ● Write(file)
+    // Header: ◆ Write(file)
     let mut header_spans = vec![
-        Span::styled("● ", Style::default().fg(bullet_color)),
+        Span::styled("◆ ", Style::default().fg(bullet_color)),
         Span::styled(
             display_name,
             Style::default()
@@ -408,9 +408,9 @@ pub(super) fn render_tool(
         return;
     }
     for (i, body) in body_lines.into_iter().enumerate() {
-        // Branch the first result line with `⎿`, then align any continuation
+        // Branch the first result line with `╰`, then align any continuation
         // lines under it — no per-line gutter glyph.
-        let branch = if i == 0 { "  ⎿ " } else { "    " };
+        let branch = if i == 0 { "  ╰ " } else { "    " };
         lines.push(Line::from(
             std::iter::once(Span::styled(
                 branch.to_string(),
